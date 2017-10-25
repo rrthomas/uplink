@@ -1,0 +1,38 @@
+{
+    "script": "global int x = 0;\n\ntransition initial -> set;\ntransition set -> get;\n\n@get\ngetX() {\n  return x;\n}\n\n@set\nsetX() {\n  x = 42;\n  transitionTo(:get);\n  return void;\n}",
+    "state": "initial",
+    "address": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+    "owner": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+    "storage": {
+        "a": {
+            "tag": "VInt",
+            "contents": 3
+        },
+        "d": {
+            "tag": "VAddress",
+            "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
+        },
+        "b": {
+            "tag": "VFloat",
+            "contents": 3.14
+        },
+        "e": {
+            "tag": "VVoid",
+            "contents": null
+        },
+        "c": {
+            "tag": "VBool",
+            "contents": true
+        },
+        "f": {
+            "tag": "VCrypto",
+            "contents": 42
+        }
+    },
+    "methods": [
+        "getX",
+        "setX"
+    ],
+    "terminated": false,
+    "timestamp": 1231006505
+}

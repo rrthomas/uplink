@@ -1,0 +1,64 @@
+Type error at Line 2, Column 17:
+   Invalid definition for y:
+      Literal 0.0 does not have type int
+
+Type error at Line 3, Column 11:
+   Cannot unify type 'account' with type 'asset':
+      Type account was inferred from the argument type of prim op 'accountExists' on Line 27, Column 17
+      Type asset was inferred by top level definition for variable 'z' on Line 3, Column 11
+
+Type error at Line 5, Column 13:
+   Cannot unify type 'asset' with type 'account':
+      Type asset was inferred from the argument type of prim op 'assetExists' on Line 28, Column 15
+      Type account was inferred by top level definition for variable 'a' on Line 5, Column 13
+
+Type error at Line 10, Column 7:
+   Invalid local var assignment: 
+      Variable on the RHS of Local var assignment must be another local var
+      Type int was inferred because of the type signature of 'setX' on Line 8, Column 11
+
+Type error at Line 16, Column 16:
+   Cannot unify type 'int' with type 'float':
+      Type int was inferred from use of binary operator '*' on Line 16, Column 14
+      Type float was inferred from literal '1.0' on Line 16, Column 16
+
+Type error at Line 19, Column 11:
+   Cannot unify type 'int' with type 'float':
+      Type int was inferred from use of binary operator '+' on Line 19, Column 9
+      Type float was inferred from literal '7.0' on Line 19, Column 11
+
+Type error at Line 19, Column 11:
+   Cannot unify type 'int' with type 'float':
+      Type int was inferred from use of binary operator '+' on Line 19, Column 9
+      Type float was inferred from literal '7.0' on Line 19, Column 11
+
+Type error at Line 19, Column 11:
+   Cannot unify type 'int' with type 'float':
+      Type int was inferred by top level definition for variable 'y' on Line 2, Column 17
+      Type float was inferred from literal '7.0' on Line 19, Column 11
+
+Type error at Line 20, Column 15:
+   Cannot unify type 'fixed2' with type 'fixed3':
+      Type fixed2 was inferred from use of binary operator '+' on Line 20, Column 13
+      Type fixed3 was inferred from use of binary operator '*' on Line 20, Column 15
+
+Type error at Line 20, Column 26:
+   Cannot unify type 'fixed3' with type 'fixed5':
+      Type fixed3 was inferred from use of binary operator '*' on Line 20, Column 24
+      Type fixed5 was inferred from literal '1.23456f' on Line 20, Column 26
+
+Type error at Line 26, Column 3:
+   Invalid primitive operation:  transfer
+
+Type error at Line 33, Column 10:
+   Cannot unify type 'account' with type 'asset':
+      Type account was inferred from the argument type of prim op 'accountExists' on Line 34, Column 39
+      Type asset was inferred because of the type signature of 'g' on Line 33, Column 10
+
+Type error at Line 33, Column 21:
+   Cannot unify type 'asset' with type 'account':
+      Type asset was inferred from the argument type of prim op 'assetExists' on Line 34, Column 19
+      Type account was inferred because of the type signature of 'g' on Line 33, Column 21
+
+Type error at Line 35, Column 5:
+   Invalid primitive operation:  transfer

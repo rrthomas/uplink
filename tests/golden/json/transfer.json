@@ -1,0 +1,17 @@
+{
+    "signature": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE05Njk5MDg5NjgwMDE5MTgzODA1MjU4NzgzMTcwMDQwMjkyMjE4MzAwNzgxOTI5OTM4NjM5MDAwODYyMzk3MDA4NDA3OTkzNTAwNTE5Mg==",
+    "origin": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+    "to": null,
+    "header": {
+        "tag": "TxAsset",
+        "contents": {
+            "tag": "Transfer",
+            "contents": {
+                "toAddr": "7mR5d7s6cKB4qjuX1kiwwNtygfURhFQ9TKvEd9kmq6QL",
+                "assetAddr": "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB",
+                "balance": 1
+            }
+        }
+    },
+    "timestamp": 1231006505
+}

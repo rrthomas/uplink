@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set +e
+
+stack build --fast --no-docker uplink:exe:uplink
+stack exec uplink --no-docker -- "$@"

@@ -1,0 +1,17 @@
+{
+    "signature": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE01OTM2MDEwMjA4MzUxMDU5ODUyODA4MjU4MzM0OTAyMzk5MDQ0NDM3MDM0NDk1NTk1MjE4MTkyMjI5MTI2OTgxMzI1MDI0MzU4MjQ1MQ==",
+    "origin": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+    "to": null,
+    "header": {
+        "tag": "TxAccount",
+        "contents": {
+            "tag": "CreateAccount",
+            "contents": {
+                "metadata": {},
+                "pubKey": "af0b33d9e8af2b771200a87012fc6aa07b391d8ac01b40975359a7d35d38f13b9d1d65b28a9a1a413436cf6dc5bafcb551a4953b8f30c751d111262ed07a13fd",
+                "timezone": "GMT"
+            }
+        }
+    },
+    "timestamp": 1231006505
+}

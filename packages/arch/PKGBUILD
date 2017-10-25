@@ -1,0 +1,41 @@
+pkgname=uplink
+pkgver=0.1
+pkgrel=1
+epoch=
+pkgdesc="Uplink Distributed Ledger"
+arch=()
+url="http://www.adjoint.io"
+license=('Apache')
+groups=()
+depends=()
+makedepends=()
+checkdepends=()
+optdepends=()
+provides=()
+conflicts=()
+replaces=()
+backup=()
+options=()
+install=
+changelog=
+source=("uplink-1.0.tgz")
+noextract=()
+md5sums=(b83e1310027ecb7798cce3da9566d191)
+validpgpkeys=()
+
+prepare() {
+	cd "$pkgname-$pkgver"
+}
+
+build() {
+}
+
+check() {
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	make DESTDIR="$pkgdir/"
+	install install -D -755 $pkgdir/usr/bin/uplink /usr/bin/uplink
+	install install -D -755 $pkgdir/etc/node.config /etc/node.config
+}

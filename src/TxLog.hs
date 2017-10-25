@@ -1,0 +1,50 @@
+{-|
+
+Global transaction log.
+
+-}
+
+module TxLog (
+  -- ** Types
+  TxLog,
+  TxLogElem,
+
+  -- ** Delta logging
+  writeDeltas,
+  writeDeltasJSON,
+) where
+
+import Protolude
+
+import Delta
+import Address
+import Script.Pretty hiding ((<>))
+import qualified Data.Aeson as A
+import qualified Data.ByteString.Lazy as BS
+
+import System.FilePath
+import System.Directory
+import System.Posix.Files
+
+-------------------------------------------------------------------------------
+-- Log Generation
+-------------------------------------------------------------------------------
+
+type TxLogElem = (Int64, Address, Delta)
+type TxLog = [TxLogElem]
+
+-- | Write delta
+writeDelta :: Int64 -> Address -> Delta -> FilePath -> IO ()
+writeDelta blkIx addr dt file = appendFile file (line <> "\n")
+  where
+    line :: Text
+    line = prettyPrint ("Block " <+> ppr blkIx <+> ":" <+> ppr (Address.shortAddr addr) <+> ppr dt)
+
+-- | Write delta list associated with a block
+writeDeltas :: Int64 -> FilePath -> Address -> [Delta] -> IO ()
+writeDeltas blkIx file addr = mapM_ (\dt -> writeDelta blkIx addr dt file)
+
+-- | Write delta list associated with a block in JSON
+writeDeltasJSON :: Int64 -> FilePath -> Address -> [Delta] -> IO ()
+writeDeltasJSON blkIx file addr dts =
+  BS.appendFile file $ A.encode [(blkIx, addr, Script.Pretty.print dt) | dt <- dts]

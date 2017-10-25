@@ -1,0 +1,15 @@
+{
+    "signature": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE02OTI0NTk2MDk3MzEzOTAzOTc5NzYwOTkzMDI0MzM3OTgxMzA2Njk3MDE0OTEyMDIxNTg4MTA3MDAxNzI1NTcyNzAxNTMxNDg3MTU3Mg==",
+    "origin": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+    "to": null,
+    "header": {
+        "tag": "TxAccount",
+        "contents": {
+            "tag": "RevokeAccount",
+            "contents": {
+                "address": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
+            }
+        }
+    },
+    "timestamp": 1231006505
+}

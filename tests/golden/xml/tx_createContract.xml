@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transactionHeaders>
+    <CreateContract address="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve">&quot;global float x = 0.0;  local int y = 7; asset z = &apos;H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65&apos;;  contract c = &apos;H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65&apos;;  account a = &apos;H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65&apos;;  setX (int z) {    x = 42.0;   y = y * z;   return x; } getX () {   j = 10 + 7 * 10;   k = j;   l = k;   return l;  } f (int j, bool k) {    if (k) { return j; } else { return -1; };  } g (asset f, account t) {    if (assetExists(f) &amp;&amp; accountExists(t)) {      transferTo(f,20);      transferFrom(f, 20, t);   } else {     return void;    }; }&quot;</CreateContract>
+</transactionHeaders>

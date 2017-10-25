@@ -1,0 +1,10 @@
+[ ( Name { unName = "sellerSetup" }
+  , Sig [ TAccount , TAsset , TAsset , TInt , TInt ] TVoid
+  )
+, ( Name { unName = "buyerSetup" }
+  , Sig [ TAccount , TAsset , TAsset , TInt , TInt ] TVoid
+  )
+, ( Name { unName = "transferSell" } , Sig [] TVoid )
+, ( Name { unName = "transferBuy" } , Sig [] TVoid )
+, ( Name { unName = "payOut" } , Sig [] TVoid )
+]

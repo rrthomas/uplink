@@ -1,0 +1,62 @@
+[ ModifyGlobal
+    Name { unName = "dt_future" }
+    (VDateTime
+       DateTime
+         { unDateTime =
+             Datetime
+               { year = 2090
+               , month = 10
+               , day = 11
+               , hour = 4
+               , minute = 13
+               , second = 40
+               , zone = 300
+               , week_day = 3
+               }
+         })
+, ModifyGlobal
+    Name { unName = "dt_past" }
+    (VDateTime
+       DateTime
+         { unDateTime =
+             Datetime
+               { year = 1999
+               , month = 2
+               , day = 24
+               , hour = 4
+               , minute = 13
+               , second = 40
+               , zone = 300
+               , week_day = 3
+               }
+         })
+, ModifyGlobal
+    Name { unName = "dt_past" }
+    (VDateTime
+       DateTime
+         { unDateTime =
+             Datetime
+               { year = 2003
+               , month = 6
+               , day = 28
+               , hour = 8
+               , minute = 17
+               , second = 44
+               , zone = 300
+               , week_day = 6
+               }
+         })
+, ModifyGlobal Name { unName = "w" } (VFloat 6.0)
+, ModifyGlobal Name { unName = "x" } (VInt 5)
+, ModifyGlobal Name { unName = "z" } (VInt 4)
+, ModifyGlobal Name { unName = "y" } (VInt (-2))
+, ModifyGlobal Name { unName = "y" } (VInt (-3))
+, ModifyGlobal Name { unName = "w" } (VFloat 3.0)
+, ModifyGlobal Name { unName = "m" } (VFixed (Fixed1 (F1 (-4.0))))
+, ModifyGlobal
+    Name { unName = "n" } (VFixed (Fixed5 (F5 (-45.00000))))
+, ModifyGlobal Name { unName = "t" } (VBool False)
+, ModifyGlobal Name { unName = "y" } (VInt 9997)
+, ModifyGlobal Name { unName = "x" } (VInt 10005)
+, ModifyGlobal Name { unName = "x" } (VInt 30015)
+]

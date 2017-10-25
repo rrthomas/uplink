@@ -1,0 +1,16 @@
+{
+    "transactions": [],
+    "header": {
+        "origin": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
+        "merkleRoot": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+        "prevHash": "",
+        "timestamp": 1231006505
+    },
+    "signatures": [
+        {
+            "signature": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE0zNDMyMDI5NDIxMzI4MTA2OTgzNTQwNjkyMDAxNDY1MTc4NDA1MjA5ODQ4MjkxMTA0NDYzMjk1NDcwODM5OTc0OTU1MzIzNTc2ODcwNA==",
+            "signerAddr": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
+        }
+    ],
+    "index": 0
+}

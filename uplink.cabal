@@ -1,0 +1,439 @@
+-- This file has been generated from package.yaml by hpack version 0.17.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           uplink
+version:        0.1.0
+synopsis:       A distributed ledger for finance.
+category:       Database
+homepage:       https://github.com/adjoint-io/uplink#readme
+bug-reports:    https://github.com/adjoint-io/uplink/issues
+maintainer:     Stephen Diehl (stephen@adjoint.io)
+license:        Apache
+build-type:     Simple
+cabal-version:  >= 1.10
+
+source-repository head
+  type: git
+  location: https://github.com/adjoint-io/uplink
+
+flag optimized
+  description: Perform compiler optimizations
+  manual: False
+  default: False
+
+flag static
+  description: Emit statically-linked binary
+  manual: False
+  default: False
+
+library
+  hs-source-dirs:
+      src
+  default-extensions: LambdaCase RecordWildCards OverloadedStrings NoImplicitPrelude FlexibleInstances FlexibleContexts Rank2Types
+  ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
+  build-depends:
+      base >= 4.7 && < 5
+    , protolude >= 0.2
+    , deepseq
+    , directory
+    , filepath
+    , network
+    , unix
+    , process
+    , array
+    , pretty-show
+    , safe
+    , hslogger
+    , gitrev
+    , scientific
+    , filelock
+    , ansi-terminal
+    , time
+    , datetimes
+    , hourglass
+    , mtl >= 2.2
+    , transformers-base
+    , containers
+    , hashable ==1.2.4.0
+    , unordered-containers
+    , fgl
+    , dlist
+    , merkle-tree
+    , exceptions
+    , stm
+    , async
+    , text
+    , bytestring
+    , parsec
+    , wl-pprint-text
+    , base58-bytestring
+    , base64-bytestring
+    , cryptonite >= 0.21
+    , memory
+    , pem
+    , x509
+    , asn1-types
+    , asn1-encoding
+    , merkle-tree
+    , pedersen-commitment
+    , arithmoi
+    , cereal
+    , binary
+    , configurator
+    , aeson >= 0.11
+    , aeson-pretty
+    , pretty-hex
+    , hexpat >= 0.20
+    , hexpat-pickle >= 0.6
+    , http-types
+    , http-client
+    , network-transport
+    , network-transport-tcp
+    , network-transport-inmemory
+    , distributed-process
+    , wai-logger
+    , warp
+    , warp-tls
+    , leveldb-haskell
+    , repline
+    , haskeline
+    , scotty
+    , lifted-base
+    , random
+  if os(linux) && flag(static)
+    ghc-options: -static -optl-static
+  exposed-modules:
+      Driver
+      Config
+      Opts
+      Account
+      Logging
+      Utils
+      Version
+      Console
+      Console.Config
+      Console.Command
+      Console.Completion
+      Console.Parser
+      Console.Lexer
+      Ledger
+      Block
+      Asset
+      Contract
+      Bind
+      Transaction
+      Storage
+      MemPool
+      Time
+      Address
+      Derivation
+      Hash
+      Key
+      Homomorphic
+      Shamir
+      Threshold
+      Commit
+      Encoding
+      DB
+      TxLog
+      XML
+      RPC
+      NodeState
+      SafeString
+      SafeInteger
+      Network.Utils
+      Network.P2P
+      Network.P2P.Cmd
+      Network.P2P.Controller
+      Network.P2P.Consensus
+      Network.P2P.Message
+      Network.P2P.Service
+      Consensus
+      Consensus.Authority
+      Consensus.Authority.Types
+      Authority
+      Validate
+      Script
+      Delta
+      Script.Init
+      Script.Fixed
+      Script.Storage
+      Script.Pretty
+      Script.Graph
+      Script.Error
+      Script.Eval
+      Script.Prim
+      Script.Token
+      Script.Lexer
+      Script.Parser
+      Script.Compile
+      Script.Typecheck
+      Script.Analysis
+  other-modules:
+      Repl
+      Paths_uplink
+  default-language: Haskell2010
+
+executable uplink
+  main-is: Main.hs
+  hs-source-dirs:
+      exe
+  default-extensions: NoImplicitPrelude OverloadedStrings
+  build-depends:
+      base >= 4.7 && < 5
+    , protolude >= 0.2
+    , deepseq
+    , directory
+    , filepath
+    , network
+    , unix
+    , process
+    , array
+    , pretty-show
+    , safe
+    , hslogger
+    , gitrev
+    , scientific
+    , filelock
+    , ansi-terminal
+    , time
+    , datetimes
+    , hourglass
+    , mtl >= 2.2
+    , transformers-base
+    , containers
+    , hashable ==1.2.4.0
+    , unordered-containers
+    , fgl
+    , dlist
+    , merkle-tree
+    , exceptions
+    , stm
+    , async
+    , text
+    , bytestring
+    , parsec
+    , wl-pprint-text
+    , base58-bytestring
+    , base64-bytestring
+    , cryptonite >= 0.21
+    , memory
+    , pem
+    , x509
+    , asn1-types
+    , asn1-encoding
+    , merkle-tree
+    , pedersen-commitment
+    , arithmoi
+    , cereal
+    , binary
+    , configurator
+    , aeson >= 0.11
+    , aeson-pretty
+    , pretty-hex
+    , hexpat >= 0.20
+    , hexpat-pickle >= 0.6
+    , http-types
+    , http-client
+    , network-transport
+    , network-transport-tcp
+    , network-transport-inmemory
+    , distributed-process
+    , wai-logger
+    , warp
+    , warp-tls
+    , leveldb-haskell
+    , repline
+    , haskeline
+    , scotty
+    , lifted-base
+    , random
+    , uplink
+    , protolude >= 0.2
+    , optparse-applicative
+  if os(linux) && flag(static)
+    ghc-options: -static -optl-static
+  if flag(optimized)
+    ghc-options: -threaded -O2 -rtsopts
+  other-modules:
+      Paths_uplink
+  default-language: Haskell2010
+
+test-suite uplink-test
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs:
+      tests
+  build-depends:
+      base >= 4.7 && < 5
+    , protolude >= 0.2
+    , deepseq
+    , directory
+    , filepath
+    , network
+    , unix
+    , process
+    , array
+    , pretty-show
+    , safe
+    , hslogger
+    , gitrev
+    , scientific
+    , filelock
+    , ansi-terminal
+    , time
+    , datetimes
+    , hourglass
+    , mtl >= 2.2
+    , transformers-base
+    , containers
+    , hashable ==1.2.4.0
+    , unordered-containers
+    , fgl
+    , dlist
+    , merkle-tree
+    , exceptions
+    , stm
+    , async
+    , text
+    , bytestring
+    , parsec
+    , wl-pprint-text
+    , base58-bytestring
+    , base64-bytestring
+    , cryptonite >= 0.21
+    , memory
+    , pem
+    , x509
+    , asn1-types
+    , asn1-encoding
+    , merkle-tree
+    , pedersen-commitment
+    , arithmoi
+    , cereal
+    , binary
+    , configurator
+    , aeson >= 0.11
+    , aeson-pretty
+    , pretty-hex
+    , hexpat >= 0.20
+    , hexpat-pickle >= 0.6
+    , http-types
+    , http-client
+    , network-transport
+    , network-transport-tcp
+    , network-transport-inmemory
+    , distributed-process
+    , wai-logger
+    , warp
+    , warp-tls
+    , leveldb-haskell
+    , repline
+    , haskeline
+    , scotty
+    , lifted-base
+    , random
+    , base >= 4.7 && < 5
+    , uplink
+    , protolude >= 0.2
+    , aeson
+    , cereal
+    , QuickCheck
+    , tasty
+    , pretty-hex
+    , tasty-golden
+    , tasty-hunit
+    , tasty-quickcheck
+  other-modules:
+      KeyTests
+      Reference
+      TestBinary
+      TestDB
+      TestJson
+      TestPaillier
+      TestScript
+      TestStorage
+      TestTx
+      TestTxAsset
+      TestWire
+      TestXML
+  default-language: Haskell2010
+
+benchmark uplink-benchmarks
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs:
+      bench
+  build-depends:
+      base >= 4.7 && < 5
+    , protolude >= 0.2
+    , deepseq
+    , directory
+    , filepath
+    , network
+    , unix
+    , process
+    , array
+    , pretty-show
+    , safe
+    , hslogger
+    , gitrev
+    , scientific
+    , filelock
+    , ansi-terminal
+    , time
+    , datetimes
+    , hourglass
+    , mtl >= 2.2
+    , transformers-base
+    , containers
+    , hashable ==1.2.4.0
+    , unordered-containers
+    , fgl
+    , dlist
+    , merkle-tree
+    , exceptions
+    , stm
+    , async
+    , text
+    , bytestring
+    , parsec
+    , wl-pprint-text
+    , base58-bytestring
+    , base64-bytestring
+    , cryptonite >= 0.21
+    , memory
+    , pem
+    , x509
+    , asn1-types
+    , asn1-encoding
+    , merkle-tree
+    , pedersen-commitment
+    , arithmoi
+    , cereal
+    , binary
+    , configurator
+    , aeson >= 0.11
+    , aeson-pretty
+    , pretty-hex
+    , hexpat >= 0.20
+    , hexpat-pickle >= 0.6
+    , http-types
+    , http-client
+    , network-transport
+    , network-transport-tcp
+    , network-transport-inmemory
+    , distributed-process
+    , wai-logger
+    , warp
+    , warp-tls
+    , leveldb-haskell
+    , repline
+    , haskeline
+    , scotty
+    , lifted-base
+    , random
+    , uplink
+    , criterion
+  default-language: Haskell2010

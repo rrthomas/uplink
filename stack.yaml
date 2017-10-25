@@ -1,0 +1,45 @@
+resolver: lts-9.0
+
+packages:
+- '.'
+- location:
+    git: https://github.com/adjoint-io/pedersen-commitment.git
+    commit: f610759235eb777e16091df96fa40dc7dcc2f2a7
+  extra-dep: true
+
+- location:
+    git: https://github.com/adjoint-io/datetime.git 
+    commit: 070e0332374b3edd8544f70a3e9e514ff5c57cea
+  extra-dep: true
+
+- location:
+    git: https://github.com/adjoint-io/merkle-tree.git 
+    commit: a942ee26f56d24473757af5d1bda48c39b2ebd44 
+  extra-dep: true
+    
+extra-deps:
+- protolude-0.2
+- syb-0.6
+- hashable-1.2.4.0 # Explicit, because of bug with serializer compat
+- repline-0.1.6.0
+- pretty-hex-1.0
+- base58-bytestring-0.1.0
+- distributed-process-0.6.6
+- hexpat-pickle-0.6
+
+flags: {}
+arch: x86_64
+extra-package-dbs: []
+require-stack-version: ">=1.2"
+
+docker:
+  enable: true
+  auto-pull: true
+
+image:
+  container:
+    name: uplink
+    base: fpco/stack-run
+    # Add files ( relative to build dir )
+    add:
+      config: /config

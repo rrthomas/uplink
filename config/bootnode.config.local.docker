@@ -1,0 +1,54 @@
+
+# Default node settings
+
+network
+{
+  # Networking port
+  port = 8001
+  # hostname = "bootnode"
+
+  # Bootnodes ( ip:port )
+  bootnodes = [ "bootnode:8001" ]
+
+  # Peers
+  max-peers = 200  # -1 for unbounded
+  min-peers = 2
+
+  # Only allow peers specified in bootnodes
+  closed = false
+
+  # Disable networking
+  nonetwork = false
+
+  # Proxy settings
+
+  # Number of authority accounts
+  authorities = 10
+}
+
+storage
+{
+  dbpath      = ".uplink"
+  overwrite   = false
+  cacheSize   = 4000  # Data packed per block.
+  blockSize   = 16    # Number of keys between restart points for delta encoding of keys.
+}
+
+logging
+{
+  verbose      = true
+  logfile      = "/var/log/uplink/debug.log"
+
+  # DEBUG INFO NOTICE WARNING ERROR CRITICAL ALERT EMERGENCY
+  loglevel     = "WARNING"
+}
+
+rpc
+{
+  port         = 8545
+  ssl          = false
+  key          = "key.pem"
+  crt          = "certificate.pem"
+  cors-origin  = []
+  cors-headers = []
+}

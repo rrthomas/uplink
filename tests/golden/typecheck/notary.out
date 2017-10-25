@@ -1,0 +1,4 @@
+[ ( Name { unName = "put" } , Sig [ TMsg ] TVoid )
+, ( Name { unName = "isSigAvail" } , Sig [] TBool )
+, ( Name { unName = "get" } , Sig [] TSig )
+]

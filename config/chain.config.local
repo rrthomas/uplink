@@ -1,0 +1,68 @@
+block 
+{
+  min-transactions  = 1
+  max-transacctions = 100
+}
+
+genesis 
+{
+  # Initial ledger seed that uniquely identifies the genesis block of this
+  # network.
+  seed = "3J5k5GpWMG8Lxq6v"
+  
+  # Genesis block timestamp
+  timestamp = 1231006505
+
+  # Genesis block previousHash
+  hash = "0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+consensus
+{
+  # Algorithm used for creating and signing new blocks 
+  algorithm = "authority"
+
+  # Algorithm used for scoring and pruning forks
+  chain-scoring = "height"
+}
+
+contracts
+{
+  # Maximum contract size in KB
+  max-size = 1024
+
+  # Enable private storage
+  private-store = true
+}
+
+authority
+{
+  # Minimum difference between two consecutive block's timestamps in seconds
+  block-period = 5 
+
+  # Number of consecutive blocks out of which a validator may only generate one
+  block-gen-limit = 1
+
+  # Voting threshold
+  threshold = 1
+  
+  # Number of consecutive blocks out of which a validator may only generate one
+  block-sign-limit = 1
+
+  # Minimum nubmer of transactions needed for block
+  transactions = 1
+
+  validators = [
+    "F8XUEiSUDKRhG6Srfft7zB4n8KWEZ6G3YnRg3F5MetVU",
+    "32zr5nyqWfguKBWEWW6SbB9NnciR8yU9rTz4sRwRmK4S",
+    "4nn4beQTAT1vo44GDWq97KARVtAg5kN6iDctyPhDnUbv",
+    "H8L7BGsbLZVkCytBC35SA6FesTP1Y1b8neydvVQ4FY7h",
+    "BHAZvsLnFgvmYkaJQpQwcZZAALFxxqttKQtqompDb426",
+    "HyP48is6eiQP1QURvvbVhAFABpP3FKPskFy4qdDCgjKh",
+    "74Zh9ieinY2fozrvX8cMK2x3hqgP3oXLnCbCceuQZFDY",
+    "Hocqmrjip3MwyGuTXhfQpUPMhpMZkapo6DnWUDtuuVfu",
+    "E1qLYBKYgNJerohFhGuBC7q2kBQ7sVGRopn6gNwaBqQf",
+    "vLKc7J2aZEsXzRnxAcZ7tw2kRKKr69ffzTDjRU5fpRh",
+    "7fpCnRDgm8B4VdjRk1jvskhNoAPbZ4S5eMD2TF8sytWF"
+  ]
+}

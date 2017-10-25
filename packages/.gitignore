@@ -1,0 +1,7 @@
+matrix/usr
+matrix/etc/node.conf
+*.deb
+*.rpm
+*.tgz
+*.db
+*.tar

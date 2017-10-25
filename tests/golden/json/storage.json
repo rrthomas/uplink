@@ -1,0 +1,26 @@
+{
+    "a": {
+        "tag": "VInt",
+        "contents": 3
+    },
+    "d": {
+        "tag": "VAddress",
+        "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
+    },
+    "b": {
+        "tag": "VFloat",
+        "contents": 3.14
+    },
+    "e": {
+        "tag": "VVoid",
+        "contents": null
+    },
+    "c": {
+        "tag": "VBool",
+        "contents": true
+    },
+    "f": {
+        "tag": "VCrypto",
+        "contents": 42
+    }
+}

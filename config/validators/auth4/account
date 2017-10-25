@@ -1,0 +1,9 @@
+{
+    "publicKey": "26ef82659bd9267bb2a70fc0c8b270883afb84fb53ef060a3e92e7d34c88b555d7e3fcaf0b1490bdcd1c7377aad2c2bb36fdce65d5104c416df5d5bd32d3661c",
+    "address": "BHAZvsLnFgvmYkaJQpQwcZZAALFxxqttKQtqompDb426",
+    "nodeKey": 1,
+    "metadata": {
+        "validator": "true"
+    },
+    "timezone": "GMT"
+}

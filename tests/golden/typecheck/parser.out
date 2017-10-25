@@ -1,0 +1,193 @@
+Script
+  { scriptDefs =
+      [ GlobalDef TFloat Name { unName = "x" } (LFloat 0.0)
+      , GlobalDef
+          (TFixed Prec3) Name { unName = "f" } (LFixed (Fixed3 (F3 1.234)))
+      , GlobalDefNull (TFixed Prec2) Name { unName = "q" }
+      , LocalDef TInt Name { unName = "y" } (LInt 7)
+      , LocalDefNull TFloat Name { unName = "v" }
+      , GlobalDef
+          TAsset
+          Name { unName = "z" }
+          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+      , GlobalDef
+          TContract
+          Name { unName = "c" }
+          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+      , GlobalDef
+          TAccount
+          Name { unName = "a" }
+          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+      , GlobalDefNull TDateTime Name { unName = "dt" }
+      ]
+  , scriptTransitions =
+      [ Arrow Initial (Step (Label "setup"))
+      , Arrow (Step (Label "setup")) (Step (Label "confirmation"))
+      , Arrow (Step (Label "confirmation")) (Step (Label "settlement"))
+      , Arrow Initial (Step (Label "getX"))
+      , Arrow (Step (Label "setX")) (Step (Label "getX"))
+      , Arrow (Step (Label "getX")) (Step (Label "setX"))
+      , Arrow (Step (Label "settlement")) Terminal
+      ]
+  , scriptMethods =
+      [ Method
+          { methodTag = Main (Label "setDate")
+          , methodName = Name { unName = "setDate" }
+          , methodArgs = []
+          , methodBody =
+              EAssign
+                Name { unName = "dt" }
+                (ELit
+                   (LDateTime
+                      DateTime
+                        { unDateTime =
+                            Datetime
+                              { year = 2020
+                              , month = 10
+                              , day = 20
+                              , hour = 15
+                              , minute = 50
+                              , second = 12
+                              , zone = 0
+                              , week_day = 2
+                              }
+                        }))
+          }
+      , Method
+          { methodTag = Main (Label "initial")
+          , methodName = Name { unName = "initialize" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" } [ ELit (LState (Label "getX")) ]
+          }
+      , Method
+          { methodTag = Main (Label "setX")
+          , methodName = Name { unName = "setX" }
+          , methodArgs =
+              [ Arg { argType = TInt , argName = Name { unName = "j" } }
+              , Arg { argType = TFloat , argName = Name { unName = "k" } }
+              ]
+          , methodBody =
+              ESeq
+                (EAssign Name { unName = "x" } (EVar Name { unName = "k" }))
+                (ESeq
+                   (EAssign
+                      Name { unName = "y" }
+                      (EBinOp
+                         Mul (EVar Name { unName = "y" }) (EVar Name { unName = "j" })))
+                   (ESeq
+                      (EAssign
+                         Name { unName = "f" }
+                         (EBinOp
+                            Add
+                            (ELit (LFixed (Fixed3 (F3 2.516))))
+                            (EVar Name { unName = "f" })))
+                      (ESeq
+                         (EAssign
+                            Name { unName = "x" }
+                            (EBinOp
+                               Add
+                               (ECall
+                                  Name { unName = "fixed3ToFloat" }
+                                  [ ECall
+                                      Name { unName = "floatToFixed3" }
+                                      [ EVar Name { unName = "k" } ]
+                                  ])
+                               (EVar Name { unName = "x" })))
+                         (ESeq
+                            (ECall
+                               Name { unName = "transitionTo" } [ ELit (LState (Label "getX")) ])
+                            (ERet (EVar Name { unName = "x" }))))))
+          }
+      , Method
+          { methodTag = Main (Label "getX")
+          , methodName = Name { unName = "getX" }
+          , methodArgs = []
+          , methodBody =
+              ESeq
+                (EAssign
+                   Name { unName = "j" }
+                   (EBinOp
+                      Add
+                      (ELit (LInt 10))
+                      (EBinOp Mul (ELit (LInt 7)) (ELit (LInt 10)))))
+                (ESeq
+                   (EAssign Name { unName = "k" } (EVar Name { unName = "j" }))
+                   (ESeq
+                      (EAssign Name { unName = "l" } (EVar Name { unName = "k" }))
+                      (ESeq
+                         (EAssign
+                            Name { unName = "m" }
+                            (EBinOp
+                               Div
+                               (EBinOp
+                                  Sub
+                                  (EBinOp
+                                     Add
+                                     (ELit (LFixed (Fixed2 (F2 1.23))))
+                                     (ELit (LFixed (Fixed2 (F2 4.56)))))
+                                  (EBinOp
+                                     Mul
+                                     (ELit (LFixed (Fixed2 (F2 7.89))))
+                                     (ELit (LFixed (Fixed2 (F2 9.87))))))
+                               (ELit (LFixed (Fixed2 (F2 65.43))))))
+                         (ESeq
+                            (EAssign
+                               Name { unName = "q" }
+                               (EBinOp
+                                  Add
+                                  (EBinOp
+                                     Add
+                                     (EVar Name { unName = "m" })
+                                     (ELit (LFixed (Fixed2 (F2 1.00)))))
+                                  (ECall
+                                     Name { unName = "floatToFixed2" }
+                                     [ EVar Name { unName = "x" } ])))
+                            (ESeq
+                               (ECall
+                                  Name { unName = "transitionTo" } [ ELit (LState (Label "setX")) ])
+                               (ERet (EVar Name { unName = "q" })))))))
+          }
+      , Method
+          { methodTag = Main (Label "f")
+          , methodName = Name { unName = "f" }
+          , methodArgs =
+              [ Arg { argType = TInt , argName = Name { unName = "j" } }
+              , Arg { argType = TBool , argName = Name { unName = "k" } }
+              ]
+          , methodBody =
+              EIf
+                (EVar Name { unName = "k" })
+                (ERet (EVar Name { unName = "j" }))
+                (ERet (ELit (LInt (-1))))
+          }
+      , Method
+          { methodTag = Main (Label "g")
+          , methodName = Name { unName = "g" }
+          , methodArgs =
+              [ Arg { argType = TAsset , argName = Name { unName = "f" } }
+              , Arg { argType = TAccount , argName = Name { unName = "t" } }
+              ]
+          , methodBody =
+              EIf
+                (EBinOp
+                   And
+                   (ECall
+                      Name { unName = "assetExists" } [ EVar Name { unName = "f" } ])
+                   (ECall
+                      Name { unName = "accountExists" } [ EVar Name { unName = "t" } ]))
+                (ESeq
+                   (ECall
+                      Name { unName = "transferTo" }
+                      [ EVar Name { unName = "f" } , ELit (LInt 20) ])
+                   (ECall
+                      Name { unName = "transferFrom" }
+                      [ EVar Name { unName = "f" }
+                      , ELit (LInt 20)
+                      , EVar Name { unName = "t" }
+                      ]))
+                (ERet (ELit LVoid))
+          }
+      ]
+  }
