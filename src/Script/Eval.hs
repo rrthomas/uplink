@@ -45,7 +45,7 @@ import Key (PrivateKey)
 import Time (Timestamp, posixMicroSecsToDatetime)
 import Ledger (World)
 import Storage
-import Contract (Contract)
+import Contract (Contract, LocalStorageVars(..))
 import Derivation (addrContract')
 import Account (publicKey, readKeys)
 import Script.Init (initLocalStorageVars)
@@ -105,7 +105,7 @@ type LocalStorages = Map Address Storage
 data EvalState = EvalState
   { tempStorage      :: Storage          -- ^ Tmp variable env
   , globalStorage    :: Storage          -- ^ Global variable env
-  , localStorageVars :: Set.Set Name     -- ^ Set of local var names
+  , localStorageVars :: LocalStorageVars -- ^ Set of local var names
   , localStorage     :: LocalStorages    -- ^ Local Variable per counter party
   , graphState       :: GraphState       -- ^ Current state of contract
   , worldState       :: World            -- ^ Current world state
@@ -187,7 +187,7 @@ lookupGlobalVar (Name var) = do
 
 isLocalVar :: Name -> (EvalM Bool)
 isLocalVar name = do
-  vars <- gets localStorageVars
+  vars <- Contract.unLocalStorageVars <$> gets localStorageVars
   return $ name `Set.member` vars
 
 lookupTempVar :: Name -> EvalM (Maybe Value)
@@ -506,7 +506,7 @@ evalLExpr (Located _ e) = case e of
       Nothing -> do
         isLocal <- isLocalVar var
         if isLocal
-          then throwError $ LocalVarNotFound (unName var)
+          then throwError $ LocalVarNotFound var
           else panicImpossible $ Just "evalLExpr: EVar"
       Just val -> return val
 
@@ -519,14 +519,14 @@ evalLExpr (Located _ e) = case e of
     now <- currentTimestamp <$> getEvalCtx
     let noLoc = Located NoLoc
     let nowDtLLit  = noLoc $ LDateTime $ DateTime $ posixMicroSecsToDatetime now
-    let predicate = EBinOp (noLoc LEqual) dt (noLoc $ ELit nowDtLLit)
+    let predicate = EBinOp (noLoc LEqual) (noLoc $ ELit nowDtLLit) dt
     evalLExpr $ noLoc $ EIf (noLoc predicate) e (noLoc ENoOp)
 
   EAfter dt e -> do
     now <- currentTimestamp <$> getEvalCtx
     let noLoc = Located NoLoc
     let nowDtLLit  = noLoc $ LDateTime $ DateTime $ posixMicroSecsToDatetime now
-    let predicate = EBinOp (noLoc GEqual) dt (noLoc $ ELit nowDtLLit)
+    let predicate = EBinOp (noLoc GEqual) (noLoc $ ELit nowDtLLit) dt
     evalLExpr $ noLoc $ EIf (noLoc predicate) e (noLoc ENoOp)
 
   EBetween startDte endDte e -> do
@@ -773,7 +773,7 @@ evalPrim ex args = case ex of
         let msgBS = SS.toBytes msgSS
         case Contract.lookupVarGlobalStorage msgBS contract of
           Nothing -> throwError $ ContractIntegrity $
-            "Contract does not define a variable named " <> decodeUtf8 msgBS
+            "Contract does not define a variable named " <> msgBS
           Just val -> pure val
 
   ContractValueExists -> do
@@ -885,7 +885,7 @@ checkGraph meth = do
 -- | Does not perform typechecking on args supplied, eval should only happen
 -- after typecheck.
 evalMethod :: Method -> [Value] -> EvalM Value
-evalMethod meth @ (Method _ (Name nm) argTyps body) args
+evalMethod meth @ (Method _ nm argTyps body) args
   | numArgs /= numArgsGiven = throwError $
       MethodArityError nm numArgs numArgsGiven
   | otherwise = do

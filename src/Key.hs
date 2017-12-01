@@ -169,6 +169,11 @@ import Crypto.Cipher.TripleDES (DES_EDE3)
 import Crypto.Cipher.Types (Cipher(..), BlockCipher(..), IV, makeIV, blockSize,
   ecbEncrypt, ecbDecrypt)
 
+import Database.PostgreSQL.Simple.FromRow   (FromRow(..), field)
+import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
+import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
 -------------------------------------------------------------------------------
 -- Generation
 -------------------------------------------------------------------------------
@@ -618,7 +623,16 @@ data InvalidSignature
   = InvalidSignature ECDSA.Signature ByteString
   | DecodeSignatureFail ByteString
   | SignatureSplittingFail ByteString
-  deriving (Show, Eq, Generic, NFData)
+  deriving (Show, Eq, Generic, S.Serialize, NFData)
+
+-- XXX Wrap ECDSA.Signature in newtype to prevent orphan instances
+instance Serialize ECDSA.Signature where
+  put = put . encodeSig
+  get = do
+    sigBS <- get
+    case sigBS of
+      Left err -> fail err
+      Right sig -> pure sig
 
 -- | Binary encoding of a signature
 encodeSig :: ECDSA.Signature -> ByteString
@@ -937,3 +951,24 @@ decrypt key msg = do
   let ctx = cipherInitNoErr key'
   let msg'' = cbcDecrypt ctx iv' msg'
   return (unpad (PKCS7 blockLength) msg'')
+
+-------------------------------------------------------------------------------
+-- Postgres DB
+-------------------------------------------------------------------------------
+
+instance FromField PubKey where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case S.decode <$> bs of
+      Nothing             -> returnError UnexpectedNull f ""
+      Just (Left err)     -> returnError ConversionFailed f (toS err)
+      Just (Right pubkey) -> return pubkey
+
+instance ToField PubKey where
+  toField = EscapeByteA . S.encode
+
+instance ToRow PubKey where
+  toRow pubKey = [toField pubKey]
+
+instance FromRow PubKey where
+  fromRow = field

@@ -14,6 +14,9 @@ module Repl(
 ) where
 
 import Protolude
+
+import Control.Monad.Base
+
 import Unsafe
 import Text.Read (readMaybe)
 import qualified System.Console.Haskeline as Readline
@@ -28,6 +31,7 @@ import Data.Time.Clock
 import Data.Time.Clock.POSIX
 import Data.Time.Format
 
+import Key
 import Utils
 import Script
 import Storage
@@ -36,7 +40,8 @@ import Address (Address)
 import Account (Account)
 import Contract (Contract)
 
-import qualified DB
+import DB
+import qualified DB.LevelDB as DB (Database(..), lastBlock, loadDBs)
 import qualified Time
 import qualified Delta
 import qualified Block
@@ -260,36 +265,24 @@ replEval script name args evalCtx evalState verbose = do
 -------------------------------------------------------------------------------
 
 initEvalCtxRepl
-  :: DB.Databases
-  -> FilePath
-  -> Address
+  :: (Address, Key.PrivateKey)
+  -> Block
   -> Contract
   -> IO (Either Text Eval.EvalCtx)
-initEvalCtxRepl DB.Databases{..} dbpath nodeAddr contract = do
-  eLatestBlock <- DB.latestBlock blockDB
-  eNodeAddr <- fmap Account.address <$> Account.loadAccount dbpath
-  ePrivKey <- fmap snd <$> Account.readKeys dbpath
-
-  let eVals = (,,)
-        <$> eLatestBlock
-        <*> first T.unpack eNodeAddr
-        <*> first T.unpack ePrivKey
-
-  case eVals of
-    Left err -> pure $ Left $ toS err
-    Right (block,nodeAddr,privKey) -> do
-      let blockIdx = fromIntegral $ Block.index block
-      let blockTs  = Block.timestamp $ Block.header block
-      let txHash   = "REPL-EVAL-NO-TRANSACTION-HASH"          -- XXX
-      let txIssuer = Address.fromRaw "THISISANINVALIDADDRESS" -- XXX
-      Right <$> Eval.initEvalCtx
-        blockIdx
-        blockTs
-        nodeAddr
-        txHash
-        txIssuer
-        privKey
-        contract
+initEvalCtxRepl (nodeAddr, nodePrivKey) latestBlock contract = do
+  let blockIdx = fromIntegral $ Block.index latestBlock
+  let blockTs  = Block.timestamp $ Block.header latestBlock
+  let txHash   = "REPL-EVAL-NO-TRANSACTION-HASH"          -- XXX
+  let txIssuer = Address.fromRaw "THISISANINVALIDADDRESS" -- XXX
+  fmap Right $
+    Eval.initEvalCtx
+      blockIdx
+      blockTs
+      nodeAddr
+      txHash
+      txIssuer
+      nodePrivKey
+      contract
 
 -------------------------------------------------------------------------------
 -- Entry
@@ -298,21 +291,43 @@ initEvalCtxRepl DB.Databases{..} dbpath nodeAddr contract = do
 
 -- | Interactive contract evaluation REPL
 repl
-  :: FilePath         -- ^ Path to DB
-  -> Address          -- ^ Node address
+  :: MonadReadDB m
+  => FilePath         -- ^ Node Account filepath
   -> [(Name, TC.Sig)] -- ^ Contract signatures
   -> Script           -- ^ Contract AST
   -> Bool             -- ^ Verbosity
-  -> IO ()
-repl dbpath nodeAddr sigs script verbose = do
-  now <- Time.now
-  let contract = Eval.scriptToContract now nodeAddr script
-  dbs <- DB.loadDBs dbpath
-  eEvalCtx <- initEvalCtxRepl dbs dbpath nodeAddr contract
-  eWorld <- DB.readWorld dbs
-  case (,) <$> eEvalCtx <*> first show eWorld of
-    Left err -> dieRed $
-      "Could not initialize EvalCtx or read world from DB:\n\t" <> toS err
-    Right (evalCtx,world)  -> do
-      let evalState = Eval.initEvalState contract world
-      replLoop sigs script evalCtx evalState verbose
+  -> m ()
+repl accPath sigs script verbose = do
+  now <- liftBase Time.now
+
+  let accDataErrPref = "Could not read Account data from filepath supplied: "
+  eAccData <- liftBase $
+    first ((<>) accDataErrPref) <$>
+      Account.readAccountData accPath
+
+  let latestBlockErrPref = "Failed reading latest block from DB: "
+  eLatestBlock <-
+    first ((<>) latestBlockErrPref) <$> do
+      eBlocks <- DB.readBlocks
+      case lastMay <$> eBlocks of
+        Left err         -> pure $ Left err
+        Right Nothing    -> pure $ Left "No blocks in DB"
+        Right (Just blk) -> pure $ Right blk
+
+  case (,) <$> eAccData <*> eLatestBlock of
+    Left err                            -> liftBase $ dieRed $ show err
+    Right (nodeAccAndKeys, latestBlock) -> do
+
+      let nodeAddr = Account.address $ fst nodeAccAndKeys
+      let nodePrivKey = snd $ snd nodeAccAndKeys
+      let contract = Eval.scriptToContract now nodeAddr script
+
+      eEvalCtx <- liftBase $
+        initEvalCtxRepl (nodeAddr,nodePrivKey) latestBlock contract
+      eWorld   <- DB.readWorld
+      case (,) <$> eEvalCtx <*> first show eWorld of
+        Left err -> liftBase $ dieRed $
+          "Could not initialize EvalCtx or read world from DB:\n\t" <> toS err
+        Right (evalCtx,world)  -> do
+          let evalState = Eval.initEvalState contract world
+          liftBase $ replLoop sigs script evalCtx evalState verbose

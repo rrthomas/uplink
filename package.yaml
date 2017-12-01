@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.0
+version: 0.1.1
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
@@ -46,7 +46,11 @@ dependencies:
 
   # Control Structures
   - mtl >= 2.2
+  - transformers
   - transformers-base
+  - monad-control
+  - lifted-base
+  - distributed-process-lifted
 
   # Data Structures
   - containers
@@ -101,12 +105,17 @@ dependencies:
   - network-transport-tcp
   - network-transport-inmemory
   - distributed-process
+  - wai
   - wai-logger
   - warp
   - warp-tls
+  - network-uri
 
   # Persistence
   - leveldb-haskell
+  - postgresql-simple
+  - resource-pool
+  - file-embed
 
   # Console
   - repline
@@ -207,6 +216,19 @@ library:
 
     # Database
     - DB
+    - DB.Class
+
+    - DB.LevelDB
+
+    - DB.PostgreSQL
+    - DB.PostgreSQL.Account
+    - DB.PostgreSQL.Asset
+    - DB.PostgreSQL.Contract
+    - DB.PostgreSQL.Block
+    - DB.PostgreSQL.Transaction
+    - DB.PostgreSQL.InvalidTransaction
+    - DB.PostgreSQL.Tmp
+
     - TxLog
     - XML
 
@@ -226,7 +248,8 @@ library:
     # Consensus
     - Consensus
     - Consensus.Authority
-    - Consensus.Authority.Types
+    - Consensus.Authority.Params
+    - Consensus.Authority.State
     - Authority
 
     # Validation

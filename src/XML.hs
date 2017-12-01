@@ -18,12 +18,13 @@ import Block
 import Asset
 import Script
 import Address
+import Account (Metadata(..))
 import SafeString
 import SafeInteger
 import Transaction
 import Script.Parser
 import Datetime.Types
-import Consensus.Authority.Types
+import Consensus.Authority.Params
 import qualified Key
 import qualified Data.Set as Set
 import qualified Script.Pretty as Pretty
@@ -72,8 +73,8 @@ xpByteString =
 
 xpBlock :: PU [Node Text Text] Block
 xpBlock =
-   xpWrap (\(index, (signatures, header, transactions)) -> Block header (Set.fromList $signatures) index transactions,
-           \(Block header signatures index transactions) -> (index, (Set.toList signatures, header, transactions))) $
+   xpWrap (\(index, (signatures, header, transactions)) -> Block index header (Set.fromList $signatures) transactions,
+           \(Block index header signatures transactions) -> (index, (Set.toList signatures, header, transactions))) $
    xpElem "block"
            (xpAttr "index" xpPrim)
        (xpTriple
@@ -121,13 +122,12 @@ xpConsensus =
 
 xpTransaction :: PU [Node Text Text] Transaction
 xpTransaction =
-   xpWrap (\((signature, origin, to, timestamp), header) -> Transaction header (encodeUtf8 signature) origin to timestamp,
-           \(Transaction header signature origin to timestamp) -> ((decodeUtf8 signature, origin, to, timestamp), header)) $
+   xpWrap (\((signature, origin, timestamp), header) -> Transaction header (encodeUtf8 signature) origin timestamp,
+           \(Transaction header signature origin timestamp) -> ((decodeUtf8 signature, origin, timestamp), header)) $
    xpElem "transaction"
-       (xp4Tuple
+       (xpTriple
            (xpAttr "signature" xpText0)
            (xpAttr "origin" xpPrim)
-           (xpAttr "to" xpPrim)
            (xpAttr "timestamp" xpPrim))
        xpTransactionHeader
 
@@ -241,14 +241,18 @@ xpTxAsset :: PU [UNode Text] TxAsset
 xpTxAsset =
   xpAlt tag ps
   where
-    tag (CreateAsset _ _ _ _) = 0
-    tag (Transfer _ _ _) = 1
-    tag (Bind  _ _ _) = 2
-    ps = [ xpWrap (\((name, supply, reference), type_) -> CreateAsset (SafeString.fromBytes' name) supply (fmap toEnum reference) type_,
-                    \(CreateAsset name supply reference type_) -> (((SafeString.toBytes name), supply, (fmap fromEnum reference)), type_))
+    tag (CreateAsset _ _ _ _ _) = 0
+    tag (Transfer _ _ _)        = 1
+    tag (Circulate _ _)         = 2
+    tag (Bind  _ _ _)           = 3
+    tag (RevokeAsset _)         = 4
+
+    ps = [ xpWrap (\((addr, name, supply, reference), type_) -> CreateAsset addr (SafeString.fromBytes' name) supply (fmap toEnum reference) type_,
+                    \(CreateAsset addr name supply reference type_) -> ((addr, (SafeString.toBytes name), supply, (fmap fromEnum reference)), type_))
             $ xpElem "CreateAsset"
-              (xpTriple
-                (xpAttr "name" xpPrim)
+              (xp4Tuple
+                (xpAttr "assetAddr" xpPrim)
+                (xpAttr "assetName" xpPrim)
                 (xpAttr "supply" xpPrim)
                 (xpOption $ xpAttr "reference" xpPrim))
                 xpAssetType
@@ -259,6 +263,12 @@ xpTxAsset =
                 (xpAttr "address" xpAddress)
                 (xpAttr "to" xpPrim)
                 (xpAttr "balance" xpPrim))
+         , xpWrap (\(assetAddr, amount) -> Circulate assetAddr amount,
+                    \(Circulate assetAddr amount) -> (assetAddr, amount))
+            $ xpElemAttrs "Circulate"
+              (xpPair
+                (xpAttr "assetAddr" xpAddress)
+                (xpAttr "amount" xpPrim))
          , xpWrap (\(assetAddr, contractAddr, bindProof) -> Bind assetAddr contractAddr bindProof,
                     \(Bind assetAddr contractAddr bindProof) -> (assetAddr, contractAddr, bindProof))
             $ xpElemAttrs "Bind"
@@ -266,6 +276,9 @@ xpTxAsset =
                 (xpAttr "assetAddr" xpAddress)
                 (xpAttr "contractAddr" xpAddress)
                 (xpAttr "bindProof" xpPrim))
+         , xpWrap (RevokeAsset, \(RevokeAsset addr) -> addr)
+          $ xpElemAttrs "RevokeAsset"
+            (xpAttr "address" xpAddress)
       ]
 
 xpAssetType :: PU [UNode Text] AssetType
@@ -292,8 +305,8 @@ xpTxAccount =
   where
     tag (CreateAccount _ _ _) = 0
     tag (RevokeAccount _) = 1
-    ps = [ xpWrap (\((pubkey, timezone), metadata) -> CreateAccount pubkey timezone metadata,
-           \(CreateAccount pubkey timezone metadata) -> ((pubkey, timezone), metadata))
+    ps = [ xpWrap (\((pubkey, timezone), metadata) -> CreateAccount pubkey timezone (Metadata metadata),
+           \(CreateAccount pubkey timezone metadata) -> ((pubkey, timezone), unMetadata metadata))
           $ xpElem "CreateAccount"
             (xpPair
               (xpAttr "pubkey" xpPrim)

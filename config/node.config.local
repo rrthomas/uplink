@@ -1,6 +1,6 @@
 # Default node settings
 
-network 
+network
 {
   # Networking port
   port = 8001
@@ -16,29 +16,29 @@ network
 
   # Peers
   max-peers = 200  # -1 for unbounded
-  min-peers = 2 
+  min-peers = 2
 
   # Only allow peers specified in bootnodes
   closed = false
 
   # Disable networking
   nonetwork = false
-  
+
   # Proxy settings
 
-  # Number of authority accounts
-  authorities = 10
+  # Preallocated accounts directory on the network (existing)
+  preallocated = "config/validators"
 }
 
 storage
 {
-  dbpath      = ".uplink"
-  overwrite   = false
-  cacheSize   = 4000  # Data packed per block.
-  blockSize   = 16    # Number of keys between restart points for delta encoding of keys.
+  backend   = "leveldb:///uplink"
+  cacheSize = 4000       # Data packed per block.
+  blockSize = 16         # Number of keys between restart points for delta encoding of keys.
+  directory = ".uplink"  # Directory to store uplink node specific files
 }
 
-logging 
+logging
 {
   verbose      = true
   logfile      = "./debug.log"
@@ -47,7 +47,7 @@ logging
   loglevel     = "WARNING"
 }
 
-rpc 
+rpc
 {
   port         = 8545
   ssl          = false

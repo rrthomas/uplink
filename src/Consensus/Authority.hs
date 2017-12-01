@@ -11,27 +11,27 @@ module Consensus.Authority (
 
 import Protolude
 
-import NodeState
+import Control.Monad.Base
 
 import Control.Arrow ((&&&))
 
+import Data.Either
 import qualified Data.List as List
 import qualified Data.Set as Set
 
+import DB
+import NodeState (NodeT)
 import qualified Account
 import qualified Address
 import qualified Block
 import qualified DB
 import qualified Key
 import qualified Ledger
+import qualified NodeState as NS
 import qualified Validate as V
 
-import Consensus.Authority.Types
-  ( ValidatorSet(..)
-  , PoA(..)
-  , PoAError(..)
-  , PoAState(..)
-  )
+import Consensus.Authority.State (PoAState(..))
+import Consensus.Authority.Params (ValidatorSet(..), PoA(..), PoAError(..))
 
 -------------------------------------------------------------------------------
 -- Validation - PoA Consensus
@@ -42,13 +42,13 @@ data ValidationCtx = BeforeAccept | BeforeSigning
 -- | Validate a block given a PoAContext (by nodes about to accept the block):
 -- Collects errors that occur during validation and reports them.
 validateBlock
-  :: MonadIO m
+  :: MonadReadDB m
   => ValidationCtx       -- ^ Validate Signatures?
   -> Block.Block         -- ^ Block to validate
   -> PoA                 -- ^ PoA params(from prev block)
   -> NodeT m ([PoAError], Bool)
 validateBlock validateCtx newBlock poa = do
-    prevBlock <- NodeState.getLatestBlock
+    prevBlock <- NS.getLastBlock
 
     -- Verify that block signatures are
     --   1) Properly encoded as ByteStrings
@@ -126,10 +126,10 @@ validateBlock validateCtx newBlock poa = do
 
     -- Validate the block gen limit. In practice, `blockGenLimit` should not
     -- surpass # of validators, or consensus will get stuck.
-    validateBlockGenLimit :: MonadIO m => Int -> NodeT m (Either PoAError ())
+    validateBlockGenLimit :: MonadReadDB m => Int -> NodeT m (Either PoAError ())
     validateBlockGenLimit blockIdx = do
       let n = blockGenLimit poa - 1
-      eBlocks <- NodeState.withBlockDB $ liftIO . flip DB.lastNBlocks n
+      eBlocks <- lift $ DB.readLastNBlocks n
       case eBlocks of
         Left err -> pure $ Left $ BlockValidationError $ toS err
         Right blks -> do
@@ -146,13 +146,13 @@ validateBlock validateCtx newBlock poa = do
     -- surpass (# of validators / # of block signatures required) or consensus
     -- will get stuck.
     validateSignerLimit
-      :: MonadIO m
+      :: MonadReadDB m
       => Int               -- ^ Current Block index
       -> [Address.Address] -- ^ Current Block signer addresses
       -> NodeT m (Either PoAError ())
     validateSignerLimit blockIdx currBlkSignerAddrs = do
       let n = signerLimit poa - 1
-      eBlocks <- NodeState.withBlockDB $ liftIO . flip DB.lastNBlocks n
+      eBlocks <- lift $ DB.readLastNBlocks n
       let eBlockSigners = concatMap (Set.toList . Block.signatures) <$> eBlocks
       case eBlockSigners of
         Left err -> pure $ Left $ BlockValidationError $ toS err
@@ -183,11 +183,11 @@ validateBlockSignatures block vAddrs blockSigs =
 
 -- | Get an account's public key by address from the ledger state
 getPubKey
-  :: MonadIO m
+  :: MonadBase IO m
   => Address.Address
   -> NodeT m (Either PoAError Key.PubKey)
 getPubKey addr = do
-  mAcc <- NodeState.lookupAccount addr
+  mAcc <- NS.lookupAccount addr
   case mAcc of
     Left _ -> return $ Left $ AccountDoesNotExist addr
     Right acc -> return $ Right $ Account.publicKey acc
@@ -221,9 +221,7 @@ signBlock applyCtx poaState privKey world block = do
     validateBlockPoAState :: PoAState -> Either PoAError ()
     validateBlockPoAState pstate
       | blockIdx <= psbIdx = Left $ InvalidBlockIdx blockIdx psbIdx
-      | blockIdx <= pgbIdx = Left $ InvalidBlockIdx blockIdx pgbIdx
       | otherwise = Right ()
       where
         blockIdx = Block.index block
         psbIdx = prevSignedBlockIdx pstate
-        pgbIdx = prevGenBlockIdx pstate

@@ -13,7 +13,9 @@ module Derivation (
 
 import Protolude
 
-import Asset (Asset)
+import qualified Data.Serialize as S
+
+import Asset (Asset(..))
 import Account (Account)
 import Address (Address)
 import Contract (Contract(..))
@@ -28,14 +30,30 @@ import qualified Storage
 import qualified Contract
 import qualified Encoding
 
--- | Derive the address of a new asset and digitally sign it to produce it's deployment address
-addrAsset :: Key.Signature -> Time.Timestamp -> Address -> Address
-addrAsset sig issuedOn issuer = Address.fromRaw (Encoding.b58 hash)
+-- | XXX Currently, this address derivation does not match the Python SDK's
+-- derivation of asset addresses. We should sync them soon, as the
+-- `Validate.applyTxAsset CreateAsset{..}` case should throw err on diff addr
+
+addrAsset
+  :: ByteString      -- ^ Asset Name
+  -> Address         -- ^ Asset issuer
+  -> Asset.Balance   -- ^ Asset Supply
+  -> Maybe Asset.Ref -- ^ Reference
+  -> Asset.AssetType -- ^ Type of Asset Supply
+  -> Time.Timestamp  -- ^ Timestamp of transaction issuing asset
+  -> Address
+addrAsset name issuer supply mref typ txts =
+    Address.fromRaw (Encoding.b58 hash)
   where
-    hash    = Hash.getHash (Hash.toHash (r,s,b,c))
-    (r,s)   = Key.getSignatureRS sig :: (Integer, Integer)
-    b       = issuedOn               :: Time.Timestamp
-    c       = issuer                 :: Address
+    hash = Hash.getHash $ Hash.toHash $
+      mconcat [ n, i, s, r, t, ts ]
+
+    n = name
+    i = S.encode issuer
+    s = S.encode supply
+    r = S.encode mref
+    t = S.encode typ
+    ts = S.encode txts
 
 -- | Derive the address of an contract
 addrContract :: Contract -> Address

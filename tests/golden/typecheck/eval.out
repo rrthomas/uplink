@@ -56,7 +56,7 @@
 , ModifyGlobal
     Name { unName = "n" } (VFixed (Fixed5 (F5 (-45.00000))))
 , ModifyGlobal Name { unName = "t" } (VBool False)
-, ModifyGlobal Name { unName = "y" } (VInt 9997)
-, ModifyGlobal Name { unName = "x" } (VInt 10005)
-, ModifyGlobal Name { unName = "x" } (VInt 30015)
+, ModifyGlobal Name { unName = "x" } (VInt 6)
+, ModifyGlobal Name { unName = "y" } (VInt (-2))
+, ModifyGlobal Name { unName = "x" } (VInt 18)
 ]

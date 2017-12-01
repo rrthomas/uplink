@@ -91,9 +91,12 @@ import Data.Time.Clock
 import Data.Hashable (Hashable)
 import Data.String (IsString(..))
 import Data.Time.Calendar (Day(..))
-import Data.Serialize (Serialize(..))
+import Data.Serialize (Serialize(..), encode, decode)
 import Data.Aeson (ToJSON(..), FromJSON(..))
 import qualified Data.Text as T
+
+import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
 
 -------------------------------------------------------------------------------
 -- Core Language
@@ -591,3 +594,29 @@ evalLit lit = case lit of
 
 evalLLit :: LLit -> Script.Value
 evalLLit (Located _ lit) = evalLit lit
+
+-------------------------------------------------------------------------------
+-- Postgres Serialization
+-------------------------------------------------------------------------------
+
+instance ToField Script where
+  toField = EscapeByteA . Data.Serialize.encode
+
+instance FromField Script where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case Data.Serialize.decode <$> bs of
+      Nothing             -> returnError UnexpectedNull f ""
+      Just (Left err)     -> returnError ConversionFailed f err
+      Just (Right script) -> return script
+
+instance ToField Value where
+  toField = EscapeByteA . Data.Serialize.encode
+
+instance FromField Value where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case Data.Serialize.decode <$> bs of
+      Nothing          -> returnError UnexpectedNull f ""
+      Just (Left err)  -> returnError ConversionFailed f err
+      Just (Right val) -> return val

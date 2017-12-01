@@ -63,6 +63,7 @@ import qualified Account
 import qualified Address
 import qualified Storage
 import qualified Contract
+import qualified Derivation as D
 import qualified Transaction as Tx
 
 import qualified Script
@@ -70,7 +71,7 @@ import qualified Script.Eval as Eval
 import qualified Script.Init
 import qualified Script.Typecheck as TC
 
-import qualified Consensus.Authority.Types as CAT
+import qualified Consensus.Authority.Params as CAP
 
 -- | Verifies a block by verifying and validating all transactions
 verifyAndValidateBlock :: ApplyCtx -> World -> Block -> IO (Either Block.InvalidBlock ())
@@ -137,23 +138,23 @@ verifyBlock :: World -> Block -> Either Block.InvalidBlock ()
 verifyBlock world block =
   let genAddr = Block.origin (Block.header block) in
   case Ledger.lookupAccount genAddr world of
-    Left err -> Left $ Block.InvalidBlockOrigin genAddr
-    Right acc ->
+    Left err  -> Left $ Block.InvalidBlockOrigin genAddr
+    Right acc -> do
+      -- Verify all block signatures
       forM_ (Block.signatures block) $ \(Block.BlockSignature signature signerAddr) -> do
-        let blockHash = Block.hashBlock block
         case Ledger.lookupAccount signerAddr world of
-          Left _ -> Left $ Block.InvalidBlockSigner signerAddr
+          Left _    -> Left $ Block.InvalidBlockSigner signerAddr
           Right acc -> do
             let accPubKey = Account.publicKey acc
-            let blockTxs  = Block.transactions block
-            verifyBlock' accPubKey signature blockHash blockTxs
+            verifyBlockSig accPubKey signature
+      -- Verify signatures of all transactions in block
+      let blockTxs  = Block.transactions block
+      first Block.InvalidBlockTx $
+        mapM_ (verifyTransaction world) blockTxs
   where
-    verifyBlock' pubKey sig blockHash txs
-      | Key.verify pubKey sig blockHash =
-          first Block.InvalidBlockTx $
-            mapM_ (verifyTransaction world) txs
-      | otherwise = Left $ Block.InvalidBlockSignature $
-          Block.InvalidBlockSig $ Key.InvalidSignature sig blockHash
+    verifyBlockSig pubKey sig = do
+      first Block.InvalidBlockSignature $
+        Block.verifyBlockSig pubKey sig block
 
 -- | Verify a transaction signature & hash
 verifyTransaction :: World -> Transaction -> Either Tx.InvalidTransaction ()
@@ -281,7 +282,7 @@ applyTxHeader tx@Transaction{..} =
 
       -- Transactions
       Tx.TxAsset txAsset ->
-        applyTxAsset tx txAsset (Tx.origin tx) (Tx.to tx) (Tx.timestamp tx)
+        applyTxAsset tx txAsset
 
       -- Contracts
       Tx.TxContract txContract ->
@@ -291,37 +292,58 @@ applyTxHeader tx@Transaction{..} =
 applyTxAsset
   :: Transaction
   -> Tx.TxAsset
-  -> Address
-  -> Maybe Address
-  -> Time.Timestamp
   -> ApplyM Tx.InvalidTransaction ()
-applyTxAsset tx txAsset origin mTo ts = do
+applyTxAsset tx txAsset = do
 
   world <- gets accumWorld
 
   case txAsset of
 
-    Tx.CreateAsset name supply mRef type_ -> do
-      let asset = createAsset (toBytes name) origin supply mRef type_ ts
-      case mTo of
-        Nothing -> throwTxAsset $ Tx.MissingAssetAddress
-        Just to -> do
-          case Ledger.addAsset to asset world of
-            Left err -> throwError $
-              mkInvalidTx tx (Tx.InvalidTxAsset (Tx.AssetError err))
+    Tx.CreateAsset addr name supply mRef atyp -> do
+      let assetAddr = D.addrAsset (toBytes name) origin supply mRef atyp txTimestamp
+      if assetAddr /= addr
+        then throwInvalidTxAsset $ Tx.DerivedAddressesDontMatch assetAddr addr
+        else do
+          let asset = createAsset (toBytes name) origin supply mRef atyp txTimestamp assetAddr
+          case Ledger.addAsset addr asset world of
+            Left err -> throwInvalidTxAsset $ Tx.AssetError err
             Right newworld -> putWorld newworld
 
     Tx.Transfer assetAddr toAddr amnt -> do
       let eLedger = Ledger.transferAsset assetAddr origin toAddr amnt world
       case eLedger of
-        Left err -> throwError $
-          mkInvalidTx tx (Tx.InvalidTxAsset (Tx.AssetError err))
+        Left err -> throwInvalidTxAsset $ Tx.AssetError err
+        Right newWorld -> putWorld newWorld
+
+    Tx.Circulate assetAddr amnt -> do
+      let eLedger = Ledger.circulateAsset assetAddr (Tx.origin tx) amnt world
+      case eLedger of
+        Left err -> throwInvalidTxAsset $ Tx.AssetError err
         Right newWorld -> putWorld newWorld
 
     Tx.Bind _ _ _ -> pure ()
 
+    Tx.RevokeAsset addr -> do
+      let txIssuer = Tx.origin tx
+      case Ledger.lookupAsset addr world of
+        Left err -> throwInvalidTxAsset $ Tx.AssetError err
+        Right asset -> do
+          let assetIssuer = Asset.issuer asset
+          if assetIssuer /= txIssuer
+            then throwInvalidTxAsset $ Tx.AssetError $
+              Ledger.RevokerIsNotIssuer txIssuer asset
+          else do
+            let eLedger = Ledger.removeAsset addr world
+            case eLedger of
+              Left err -> throwInvalidTxAsset $ Tx.AssetError err
+              Right newWorld -> putWorld newWorld
+
   where
-    throwTxAsset = throwError . mkInvalidTx tx . Tx.InvalidTxAsset
+    origin = Tx.origin tx
+    txTimestamp = Tx.timestamp tx
+
+    throwInvalidTxAsset =
+      throwError . mkInvalidTx tx . Tx.InvalidTxAsset
 
 -- | Applies TxAccount headers to world state
 applyTxAccount
@@ -337,7 +359,7 @@ applyTxAccount tx txAccount = do
     Tx.CreateAccount pub tz md ->
       case Key.tryDecodePub pub of
         Left err -> throwError $ mkInvalidTx tx $
-          Tx.InvalidTxAccount $ Tx.InvalidPubKeyByteString err
+          Tx.InvalidTxAccount $ Tx.InvalidPubKeyByteString $ toS err
         Right pub' -> do
           let newAccount = Account.createAccount pub' tz md
           let eWorld = first Tx.AccountError $
@@ -355,7 +377,7 @@ applyTxAccount tx txAccount = do
           let validatorSet' = Block.getValidatorSet currBlock
           let accAddr = Account.address acc
           -- If account is validator account, do not allow revocation
-          if accAddr `CAT.isValidatorAddr` validatorSet'
+          if accAddr `CAP.isValidatorAddr` validatorSet'
             then throwError $ mkInvalidTx tx $
               Tx.InvalidTxAccount $ Tx.RevokeValidatorError accAddr
             else do
@@ -380,7 +402,7 @@ applyTxContract tx txContract = do
       let scriptText = decodeUtf8 $ SafeString.toBytes scriptSS
           eContract = Script.Init.createContract issuer addr ts scriptText
       case eContract of
-        Left err -> throwTxContract $ Tx.InvalidContract err
+        Left err -> throwTxContract $ Tx.InvalidContract $ toS err
         Right contract -> do
           world <- gets accumWorld
           let eContract = Ledger.addContract addr contract world
@@ -407,10 +429,9 @@ applyTxContract tx txContract = do
       -> [Script.Value]
       -> Either Tx.InvalidTxContract Script.Method
     processCallInputs c methodNmBS args = do
-      let methodNm = decodeUtf8 methodNmBS
+      let methodNm = Script.Name $ decodeUtf8 methodNmBS
       let methods = Script.scriptMethods $ Contract.script c
-      let getMethodNm = Script.unName . Script.methodName
-      case find ((==) methodNm . getMethodNm) methods of
+      case find ((==) methodNm . Script.methodName) methods of
         Nothing -> Left $ Tx.MethodDoesNotExist methodNm
         Just method -> do
           -- Typecheck method w/ supplied args
@@ -481,7 +502,7 @@ initEvalCtxTxCall ApplyCtx{..} c tx =
     (fromIntegral $ Block.index applyCurrBlock)
     (Block.timestamp $ Block.header applyCurrBlock)
     applyNodeAddress
-    (Tx.hashTransaction tx)
+    (Tx.base16HashTransaction tx)
     (Tx.origin tx)
     applyNodePrivKey
     c

@@ -6,6 +6,7 @@ Typechecker and elaboration for FCL langauge.
 
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 
 module Script.Typecheck (
@@ -34,7 +35,7 @@ import Unsafe (unsafeIndex)
 import Script
 import Script.Prim
 import Script.Pretty hiding ((<>))
-import Address (validateAddress)
+import Address (Address, validateAddress)
 
 import Control.Monad.Writer
 import Control.Monad.State.Strict (modify')
@@ -53,6 +54,8 @@ data Sig = Sig [Type] Type
   deriving (Eq, Show)
 
 -- | Type error metadata
+-- This type uses ByteString for ad-hoc error messages so that we can get a
+-- Serialize instance for free.
 data TypeErrInfo
   = UnboundVariable Name                -- ^ Unbound variables
   | InvalidDefinition Name Type Lit     -- ^ Invalid definition
@@ -60,13 +63,13 @@ data TypeErrInfo
   | InvalidBinOp BinOp Type Type        -- ^ Invalid binary op
   | InvalidPrimOp Name                  -- ^ Invocation of non-primop function
   | InvalidReturnType                   -- ^ Invalid return value (cannot return locals)
-  | InvalidAddress Text                 -- ^ Invalid address
+  | InvalidAddress Address              -- ^ Invalid address
   | InvalidArgType Name Type Type       -- ^ Invalid argument to Method call
-  | InvalidLocalVarAssign Text TypeInfo -- ^ Invalid local variable assignment
+  | InvalidLocalVarAssign ByteString TypeInfo -- ^ Invalid local variable assignment
   | ArityFail Name Int Int              -- ^ Incorrect # args supplied to function
   | UnificationFail TypeInfo TypeInfo   -- ^ Unification fail
-  | Impossible Text                     -- ^ Malformed syntax, impossible
-  deriving (Eq, Show)
+  | Impossible ByteString               -- ^ Malformed syntax, impossible
+  deriving (Eq, Show, Generic, Serialize)
 
 -- | Type error
 data TypeError = TypeError
@@ -93,14 +96,14 @@ data TypeOrigin
   | ArgToMethod Name      -- ^ Var passed as method arg
   | PrimOpArg Name        -- ^ Passed to prim op
   | PrimOpRet Name        -- ^ Returned from prip op
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, Serialize)
 
 -- | Type error metadata
 data TypeInfo = TypeInfo
   { ttype :: Type        -- ^ What type
   , torig :: TypeOrigin  -- ^ Where did it come from
   , tloc  :: Loc         -- ^ Where is it located
-  } deriving (Show, Eq)
+  } deriving (Show, Eq, Generic, Serialize)
 
 tCryptoInfo, tIntInfo, tFloatInfo, tContractInfo, tBoolInfo, tAssetInfo, tAccountInfo, tDatetimeInfo, tDeltaInfo, tMsgInfo :: TypeOrigin -> Loc -> TypeInfo
 tCryptoInfo = TypeInfo (TCrypto TInt)
@@ -425,7 +428,7 @@ tcLit lit =
   where
     tcAddr addr typ
       | validateAddress addr = Right typ
-      | otherwise = Left $ InvalidAddress $ show addr
+      | otherwise = Left $ InvalidAddress addr
 
 tcFixedN :: FixedN -> Type
 tcFixedN = TFixed . \case

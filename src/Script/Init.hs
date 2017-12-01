@@ -30,16 +30,18 @@ createContract
 createContract ownerAddr contractAddr ts body = do
   (sigs, ast) <- Compile.compile body
   pure $ Contract.Contract {
-      Contract.timestamp     = ts
-    , Contract.script        = ast
-    , Contract.globalStorage = Storage.initStorage ast
-    , Contract.localStorage  = Map.empty
+      Contract.timestamp        = ts
+    , Contract.script           = ast
+    , Contract.globalStorage    = Storage.initStorage ast
+    , Contract.localStorage     = Map.empty
     , Contract.localStorageVars = initLocalStorageVars ast
-    , Contract.methods       = Script.methodNames ast
-    , Contract.state         = Graph.GraphInitial
-    , Contract.owner         = ownerAddr
-    , Contract.address       = contractAddr
+    , Contract.methods          = Script.methodNames ast
+    , Contract.state            = Graph.GraphInitial
+    , Contract.owner            = ownerAddr
+    , Contract.address          = contractAddr
     }
 
-initLocalStorageVars :: Script -> Set.Set Name
-initLocalStorageVars (Script defns _ _) = Set.fromList [name | LocalDefNull _ (Located _ name) <- defns]
+initLocalStorageVars :: Script -> Contract.LocalStorageVars
+initLocalStorageVars (Script defns _ _) =
+  Contract.LocalStorageVars $ Set.fromList
+    [ name | LocalDefNull _ (Located _ name) <- defns ]

@@ -8,7 +8,9 @@ Remote procedure call interface for interacting with an individual node.
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module RPC (
   -- ** Server
@@ -22,8 +24,10 @@ module RPC (
 import Protolude hiding (sourceLine, sourceColumn, catch)
 
 import Control.Monad.Base (MonadBase, liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Exception.Lifted (catch)
 
+import DB
 import NodeState (NodeT, runNodeT)
 import Script.Pretty (prettyPrint)
 import qualified DB
@@ -42,7 +46,7 @@ import qualified Contract
 import qualified Validate
 import qualified NodeState
 import qualified Derivation
-import qualified Transaction
+import qualified Transaction as Tx
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Network.P2P.Cmd as Cmd
@@ -52,6 +56,7 @@ import Data.Aeson.Types (typeMismatch)
 import qualified Data.Aeson as A
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.Text.Lazy as TL
 
 import Control.Distributed.Process (nodeAddress, processNodeId)
 import Network.Transport (endPointAddressToByteString)
@@ -61,11 +66,16 @@ import qualified Control.Concurrent.Chan as Chan
 import Network
 import Network.HTTP.Client
 import Network.HTTP.Types.Status
-import qualified Web.Scotty as WS
+import qualified Web.Scotty.Trans as WS
 import qualified Web.Scotty.Internal.Types as WS
+import qualified Network.Wai as Warp
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WarpTLS as Warp
 import qualified Network.Wai.Logger as WL
+
+instance WS.ScottyError Text where
+  stringError = (toS :: TL.Text -> Text) . WS.stringError
+  showError = WS.showError . (toSL :: Text -> TL.Text)
 
 -------------------------------------------------------
 -- RPC Server
@@ -82,13 +92,16 @@ opts logger = WS.Options
   }
 
 scottyTLS
-  :: WL.ApacheLogger
+  :: MonadIOReadDB m
+  => WL.ApacheLogger
   -> Warp.Port
   -> FilePath         -- ^ SSL Key
   -> FilePath         -- ^ SSL Certificate
-  -> (WS.ScottyM () -> IO ())
-scottyTLS logger port key cert =
-    Warp.runTLS tlsSettings warpSettings <=< WS.scottyApp
+  -> (NodeT m Warp.Response -> IO Warp.Response)
+  -> (WS.ScottyT Text (NodeT m) () -> IO ())
+scottyTLS logger port key cert runDBInIO =
+    Warp.runTLS tlsSettings warpSettings <=<
+      WS.scottyAppT runDBInIO
   where
     tlsSettings = Warp.defaultTlsSettings
       { Warp.keyFile = key
@@ -99,19 +112,19 @@ scottyTLS logger port key cert =
       Warp.setPort port Warp.defaultSettings
 
 rpcServer
-  :: Config.Config
+  :: MonadIOReadDB m
+  => Config.Config
   -> Chan.Chan Cmd.Cmd
-  -> NodeState.NodeConfig
-  -> NodeState.NodeState
+  -> (NodeT m Warp.Response -> IO Warp.Response)
   -> IO ()
-rpcServer config chan nodeConfig nodeState = do
+rpcServer config chan runInIO = do
 
-    let rpcPort = Config.rpcPort $ NodeState.config nodeConfig
-    let key  = Config.rpcKey config
-    let cert = Config.rpcCrt config
+    let rpcPort = Config.rpcPort config
+    let key     = Config.rpcKey config
+    let cert    = Config.rpcCrt config
 
     -- XXX Move from Stdout to a log file (set in Config?)
-    WL.withStdoutLogger $ \apLogger ->
+    WL.withStdoutLogger $ \appLogger ->
 
       -- Die with better error message if server can't be started. This is
       -- *probably* and ok catch-all, because exceptions during execution of RPC
@@ -120,10 +133,13 @@ rpcServer config chan nodeConfig nodeState = do
       catchFailedSocketBind rpcPort $ do
         -- Setup HTTP server for RPC
         if Config.rpcSsl config
-          then scottyTLS apLogger rpcPort key cert (rpcApi chan nodeConfig nodeState)
+          then
+            scottyTLS appLogger rpcPort key cert runInIO $
+              rpcApi chan
           else do
             sock <- listenOn $ PortNumber (fromIntegral rpcPort)
-            WS.scottySocket (opts apLogger) sock (rpcApi chan nodeConfig nodeState)
+            WS.scottySocketT (opts appLogger) sock runInIO $
+              rpcApi chan
   where
     catchFailedSocketBind port a =
       catch a $ \(SomeException err) ->
@@ -137,30 +153,36 @@ rpcServer config chan nodeConfig nodeState = do
 -- API Routes
 -------------------------------------------------------------------------------
 
+type MonadIOReadDB m = (MonadBaseControl IO m, MonadIO m, MonadReadDB m)
+type RpcT m a = WS.ScottyT Text (NodeT m) a
+
+-- Helper `WS.post` function that catches all fatal errors
+-- thrown by `panic` in the `ScottyT e (NodeT m) a` stack
+post_
+  :: MonadIOReadDB m
+  => WS.RoutePattern
+  -> WS.ActionT Text (NodeT m) ()
+  -> RpcT m ()
+post_ route action =
+  WS.post route $ do
+    isTestNode <- lift $ NodeState.isTestNode
+    catch action $ \(FatalError e) ->
+      if isTestNode
+        then jsonInternalErr $ show e
+        else jsonInternalErr "Uplink encountered a fatal internal error."
+
 rpcApi
-  :: Chan.Chan Cmd.Cmd
-  -> NodeState.NodeConfig
-  -> NodeState.NodeState
-  -> WS.ScottyM ()
-rpcApi chan nodeConfig nodeState = do
-
-    let runNodeT' = liftIO . runNodeT nodeConfig nodeState
-
-    -- Helper `WS.post` function that catches all fatal errors thrown by `panic`
-    let post route action =
-          WS.post route $ do
-            isTestNode <- runNodeT' $ lift NodeState.isTestNode
-            catch action $ \(FatalError e) ->
-              if isTestNode
-                then jsonInternalErr $ show e
-                else jsonInternalErr "Uplink encountered a fatal internal error."
+  :: (MonadIO m, MonadBaseControl IO m, MonadReadDB m)
+  => Chan.Chan Cmd.Cmd
+  -> RpcT m ()
+rpcApi chan = do
 
     --------------------------------------------------
     -- RPC Command API
     --------------------------------------------------
 
-    post "/" $ do
-      config <- runNodeT' $ lift NodeState.askConfig
+    post_ "/" $ do
+      config <- lift $ NodeState.askConfig
       if Config.rpcReadOnly config
         then jsonReadOnlyErr
         else do
@@ -168,7 +190,7 @@ rpcApi chan nodeConfig nodeState = do
           case A.eitherDecode reqBody of
             Left err -> jsonParseErr $ toS err
             Right val -> do
-              resp <- runNodeT' $ handleRPCCmd chan val
+              resp <- lift $ handleRPCCmd chan val
               WS.json $ toJSON resp
 
     --------------------------------------------------
@@ -179,10 +201,10 @@ rpcApi chan nodeConfig nodeState = do
     -- Status API
     ---------------------------
 
-    post "/health" $
+    post_ "/health" $
       WS.status status200
 
-    post "/version" $
+    post_ "/version" $
       WS.json $ object [
           "version" .= Version.version
         , "branch"  .= Version.branch
@@ -193,20 +215,21 @@ rpcApi chan nodeConfig nodeState = do
     -- Blocks API
     ---------------------------
 
-    post "/blocks" $ do
-      eBlocks <- runNodeT' getBlocks
+    post_ "/blocks" $ do
+      eBlocks <- lift $ lift DB.readBlocks
       case eBlocks of
         Left err -> jsonInternalErr $ toS err
         Right blocks -> jsonRPCRespM blocks
 
-    post "/blocks/:blockIdx" $ do
+    post_ "/blocks/:blockIdx" $ do
       eBlockIdx <- WS.parseParam <$> WS.param "blockIdx"
       case eBlockIdx of
         Left _ -> do
           let errMsg = "Block index should be a positive integer."
           jsonInvalidParamErr errMsg
         Right blockIdx -> do
-          eBlock <- runNodeT' $ getBlock blockIdx
+          eBlock <- lift $
+            lift $ DB.readBlock blockIdx
           case eBlock of
             Left err -> jsonNotFoundErr $ toS err
             Right block -> jsonRPCRespM block
@@ -215,26 +238,26 @@ rpcApi chan nodeConfig nodeState = do
     -- Peers API
     ---------------------------
 
-    post "/peers" $ do
-      peers <- runNodeT' NodeState.getPeers
+    post_ "/peers" $ do
+      peers <- lift NodeState.getPeers
       jsonRPCRespM peers
 
-    post "/peers/validators" $ do
-      validatorPeers <- runNodeT' NodeState.getValidatorPeers
+    post_ "/peers/validators" $ do
+      validatorPeers <- lift NodeState.getValidatorPeers
       jsonRPCRespM validatorPeers
 
     ---------------------------
     -- Accounts API
     ---------------------------
 
-    post "/accounts" $
-      jsonRPCRespM =<< runNodeT' getAccounts
+    post_ "/accounts" $
+      jsonRPCRespM =<< lift getAccounts
 
-    post "/accounts/:addr" $ do
+    post_ "/accounts/:addr" $ do
       addr <- Address.fromRaw <$> WS.param "addr"
       if Address.validateAddress addr
         then do
-          eAcct <- runNodeT' $ getAccount addr
+          eAcct <- lift $ getAccount addr
           either (jsonNotFoundErr . toS) jsonRPCRespM eAcct
       else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
 
@@ -242,15 +265,15 @@ rpcApi chan nodeConfig nodeState = do
     -- Assets API
     ---------------------------
 
-    post "/assets" $ do
-      assetsWithAddrs <- runNodeT' getAssetsWithAddrs
+    post_ "/assets" $ do
+      assetsWithAddrs <- lift getAssetsWithAddrs
       jsonRPCRespM $ map (uncurry $ Asset.assetWithAddrJSON) assetsWithAddrs
 
-    post "/assets/:addr" $ do
+    post_ "/assets/:addr" $ do
       addr <- Address.fromRaw <$> WS.param "addr"
       if Address.validateAddress addr
         then do
-          eAsset <- runNodeT' $ getAsset addr
+          eAsset <- lift $ getAsset addr
           either (jsonNotFoundErr . toS) jsonRPCRespM eAsset
       else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
 
@@ -258,22 +281,22 @@ rpcApi chan nodeConfig nodeState = do
     -- Contract API
     ---------------------------
 
-    post "/contracts" $
-      jsonRPCRespM =<< runNodeT' getContracts
+    post_ "/contracts" $
+      jsonRPCRespM =<< lift getContracts
 
-    post "/contracts/:addr" $ do
+    post_ "/contracts/:addr" $ do
       addr <- Address.fromRaw <$> WS.param "addr"
       if Address.validateAddress addr
         then do
-          eContract <- runNodeT' $ getContract addr
+          eContract <- lift $ getContract addr
           either (jsonNotFoundErr . toS) jsonRPCRespM eContract
       else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
 
-    post "/contracts/:addr/callable" $ do
+    post_ "/contracts/:addr/callable" $ do
       addr <- Address.fromRaw <$> WS.param "addr"
       if Address.validateAddress addr
         then do
-          eContract <- runNodeT' $ getContract addr
+          eContract <- lift $ getContract addr
           case eContract of
             Left err -> jsonNotFoundErr $ toS err
             Right contract -> do
@@ -287,36 +310,61 @@ rpcApi chan nodeConfig nodeState = do
     -- Transactions API
     ---------------------------
 
-    post "/txlog" $ do
+    post_ "/txlog" $ do
       jsonRPCRespM ()
 
-    post "/transactions/pool" $ do
-      memPool <- runNodeT' NodeState.getTxMemPool
+    post_ "/transactions/pool" $ do
+      memPool <- lift NodeState.getTxMemPool
       jsonRPCRespM memPool
 
-    post "/transactions/pool/size" $ do
-      memPool <- runNodeT' NodeState.getTxMemPool
+    post_ "/transactions/pool/size" $ do
+      memPool <- lift NodeState.getTxMemPool
       jsonRPCRespM $ MemPool.size memPool
 
-    post "/transactions/pool/all" $ do
-      memPoolMap <- runNodeT' getAllMemPools
+    post_ "/transactions/pool/all" $ do
+      memPoolMap <- lift getAllMemPools
       jsonRPCRespM (memPoolMap :: Map Text (Either Text MemPool.MemPool))
 
-    post "/transactions/pool/all/sizes" $ do
-      memPoolsSizeMap <- runNodeT' getAllMemPoolSizes
+    post_ "/transactions/pool/all/sizes" $ do
+      memPoolsSizeMap <- lift getAllMemPoolSizes
       jsonRPCRespM (memPoolsSizeMap :: Map Text (Either Text Int))
 
-    post "/transactions/:blockIdx" $ do
+    -- Query the status of a transaction
+    post_ "/transactions/status/:hash" $ do
+      eTxHash <- WS.parseParam <$> WS.param "hash"
+      case encodeUtf8 <$> eTxHash of
+        Left _ -> jsonInvalidParamErr "Invalid transaction hash"
+        Right txHash -> jsonRPCRespM =<<
+          lift (NodeState.getTxStatus txHash)
+
+    -- XXX Pagination, because could have unbounded invalid txs
+    post_ "/transactions/invalid" $ do
+      eRes <- lift $ lift DB.readInvalidTxs
+      case eRes of
+        Left err -> jsonInternalErr $ show err
+        Right res -> jsonRPCRespM res
+
+    -- Query a specific invalid tx from DB
+    -- XXX look in invalidTxPool (in memory) before DB
+    post_ "/transactions/invalid/:hash" $ do
+      eTxHash <- WS.parseParam <$> WS.param "hash"
+      case encodeUtf8 <$> eTxHash of
+        Left _ -> jsonInvalidParamErr "Invalid transaction hash"
+        Right txHash -> do
+          itx <- lift $ lift $ getInvalidTx txHash
+          jsonRPCRespM itx
+
+    post_ "/transactions/:blockIdx" $ do
       eBlockIdx <- WS.parseParam <$> WS.param "blockIdx"
       case eBlockIdx of
         Left _ -> do
           let errMsg = "Block index should be a positive integer."
           jsonInvalidParamErr errMsg
         Right blockIdx -> do
-          eTxs <- runNodeT' $ getTransactions blockIdx
+          eTxs <- lift $ lift $ getTransactions blockIdx
           either (jsonNotFoundErr . toS) jsonRPCRespM eTxs
 
-    post "/transactions/:blockIdx/:txIdx" $ do
+    post_ "/transactions/:blockIdx/:txIdx" $ do
       eBlockIdx <- WS.parseParam <$> WS.param "blockIdx"
       eTxIdx    <- WS.parseParam <$> WS.param "txIdx"
       case (,) <$> eBlockIdx <*> eTxIdx of
@@ -324,88 +372,88 @@ rpcApi chan nodeConfig nodeState = do
           let errMsg = "Both block and transaction indexs should be positive integers."
           jsonInvalidParamErr errMsg
         Right (blockIdx, txIdx) -> do
-          eTx <- runNodeT' $ getTransaction blockIdx txIdx
+          eTx <- lift $ lift $ getTransaction blockIdx txIdx
           either (jsonNotFoundErr . toS) jsonRPCRespM eTx
 
+
 -- | Construct a RPC response from a serializeable structure
-jsonRPCRespM :: ToJSON a => a -> WS.ActionM ()
+jsonRPCRespM :: (Monad m, ToJSON a) => a -> WS.ActionT Text m ()
 jsonRPCRespM = WS.json . RPCResp . toJSON
 
 -- | Construct a RPC response indicating success
-jsonRPCRespOK :: WS.ActionM ()
+jsonRPCRespOK :: Monad m => WS.ActionT Text m ()
 jsonRPCRespOK = WS.json $ RPCRespOK
 
-jsonInvalidParamErr :: Text -> WS.ActionM ()
+jsonInvalidParamErr :: Monad m => Text -> WS.ActionT Text m ()
 jsonInvalidParamErr = WS.json . RPCRespError . InvalidParam
 
-jsonInternalErr :: Text -> WS.ActionM ()
+jsonInternalErr :: Monad m => Text -> WS.ActionT Text m ()
 jsonInternalErr = WS.json . RPCRespError . Internal
 
-jsonParseErr :: Text -> WS.ActionM ()
+jsonParseErr :: Monad m => Text -> WS.ActionT Text m ()
 jsonParseErr = WS.json . RPCRespError . JSONParse
 
-jsonReadOnlyErr :: WS.ActionM ()
+jsonReadOnlyErr :: Monad m => WS.ActionT Text m ()
 jsonReadOnlyErr = WS.json readOnlyErr
 
-jsonNotFoundErr :: Text -> WS.ActionM ()
+jsonNotFoundErr :: Monad m => Text -> WS.ActionT Text m ()
 jsonNotFoundErr = WS.json . RPCRespError . NotFound
 
 -------------------------------------------------------------------------------
--- Querying (Local NodeState)
+-- Querying (Local NodeState or DB)
 -------------------------------------------------------------------------------
 
-getBlocks :: MonadIO m => NodeT m (Either [Char] [Block.Block])
-getBlocks = NodeState.withBlockDB $ \blockDB ->
-  liftIO $ fmap Block.sortBlocks <$> DB.allBlocks blockDB
-
-getBlock :: MonadIO m => Int -> NodeT m (Either [Char] Block.Block)
-getBlock idx = NodeState.withBlockDB $ liftIO . flip DB.lookupBlock idx
-
-getAccounts :: MonadIO m => NodeT m [Account.Account]
+getAccounts :: MonadBase IO m => NodeT m [Account.Account]
 getAccounts = NodeState.withLedgerState $ pure . Map.elems . Ledger.accounts
 
-getAccount :: MonadIO m => Address.Address -> NodeT m (Either [Char] Account.Account)
+getAccount :: MonadBase IO m => Address.Address -> NodeT m (Either Text Account.Account)
 getAccount addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAccount addr
 
-getAssetsWithAddrs :: MonadIO m => NodeT m [(Address.Address, Asset.Asset)]
+getAssetsWithAddrs :: MonadBase IO m => NodeT m [(Address.Address, Asset.Asset)]
 getAssetsWithAddrs = NodeState.withLedgerState $ pure . Map.toList . Ledger.assets
 
-getAsset :: MonadIO m => Address.Address -> NodeT m (Either [Char] Asset.Asset)
+getAsset :: MonadBase IO m => Address.Address -> NodeT m (Either Text Asset.Asset)
 getAsset addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAsset addr
 
-getContracts :: MonadIO m => NodeT m [Contract.Contract]
+getContracts :: MonadBase IO m => NodeT m [Contract.Contract]
 getContracts = NodeState.withLedgerState $ pure . Map.elems . Ledger.contracts
 
-getContract :: MonadIO m => Address.Address -> NodeT m (Either [Char] Contract.Contract)
+getContract :: MonadBase IO m => Address.Address -> NodeT m (Either Text Contract.Contract)
 getContract addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupContract addr
 
-getTransactions :: MonadIO m => Int -> NodeT m (Either [Char] [Transaction.Transaction])
+getTransactions :: MonadReadDB m => Int -> m (Either Text [Tx.Transaction])
 getTransactions blockIdx = do
-  eBlock <- getBlock blockIdx
-  liftIO $ return $ Block.transactions <$> eBlock
+  eBlock <- DB.readBlock blockIdx
+  return $ Block.transactions <$> eBlock
 
-getTransaction :: MonadIO m => Int -> Int -> NodeT m (Either [Char] Transaction.Transaction)
+getTransaction :: MonadReadDB m => Int -> Int -> m (Either Text Tx.Transaction)
 getTransaction blockIdx txIdx = do
   eTxs <- getTransactions blockIdx
   return $ case eTxs of
     Left err -> Left err
     Right [] -> Left "No transactions in the specified block"
     Right txs -> case txs `atMay` txIdx of
-      Nothing -> Left $ "No transaction at index " ++ show txIdx
+      Nothing -> Left $ toS $ "No transaction at index " ++ show txIdx
       Just tx -> Right tx
+
+getInvalidTx :: MonadReadDB m => ByteString -> m (Either Text Tx.InvalidTransaction)
+getInvalidTx = DB.readInvalidTx
+
+getInvalidTxs :: MonadReadDB m => m (Either Text [Tx.InvalidTransaction])
+getInvalidTxs = first show <$> DB.readInvalidTxs
 
 -------------------------------------------------------------------------------
 -- Querying (Network, using RPC)
 -------------------------------------------------------------------------------
 
-getAllMemPoolSizes :: MonadIO m => NodeT m (Map Text (Either Text Int))
+getAllMemPoolSizes :: MonadBase IO m => NodeT m (Map Text (Either Text Int))
 getAllMemPoolSizes = queryAllRPC mkPeerUrl
   where
     urlPrefix = "POST http://"
     urlSuffix = ":8545/transactions/pool/size" -- XXX 8545 not guarenteed to be RPC port
     mkPeerUrl hn = urlPrefix <> toS hn <> urlSuffix
 
-getAllMemPools :: MonadIO m => NodeT m (Map Text (Either Text MemPool.MemPool))
+getAllMemPools :: MonadBase IO m => NodeT m (Map Text (Either Text MemPool.MemPool))
 getAllMemPools = queryAllRPC mkPeerUrl
   where
     urlPrefix = "POST http://"
@@ -413,14 +461,14 @@ getAllMemPools = queryAllRPC mkPeerUrl
     mkPeerUrl hn = urlPrefix <> toS hn <> urlSuffix
 
 queryAllRPC
-  :: forall a m. (FromJSON a, MonadIO m)
+  :: forall a m. (FromJSON a, MonadBase IO m)
   => (Text -> Text)
   -> NodeT m (Map Text (Either Text a))
 queryAllRPC mkUrl = do
-    manager   <- liftIO $ newManager defaultManagerSettings
+    manager   <- liftBase $ newManager defaultManagerSettings
     peerAddrs <- getPeerAddrs
-    requests  <- liftIO $ mapM (parseRequest . toS . mkUrl) peerAddrs
-    responseBodys <- liftIO $ mapM (fmap responseBody . flip httpLbs manager) requests
+    requests  <- liftBase $ mapM (parseRequest . toS . mkUrl) peerAddrs
+    responseBodys <- liftBase $ mapM (fmap responseBody . flip httpLbs manager) requests
     let rpcResps = mapMaybe A.decode responseBodys
     let respVals = map (decodeVal . contents) rpcResps
     return $ Map.fromList $ zip peerAddrs respVals
@@ -437,12 +485,12 @@ queryAllRPC mkUrl = do
 -- Command
 -------------------------------------------------------------------------------
 
-handleRPCCmd :: MonadIO m => Chan Cmd.Cmd -> RPCCmd -> NodeT m RPCResponse
+handleRPCCmd :: MonadBase IO m => Chan Cmd.Cmd -> RPCCmd -> NodeT m RPCResponse
 handleRPCCmd chan rpcCmd = do
   (mP2PCmd, rpcResp) <- case rpcCmd of
 
     Transaction tx -> do
-      liftIO $ putText $
+      liftBase $ putText $
         "RPC Recieved Transaction:\n\t" <> show tx
 
       validationRes <- NodeState.withLedgerState $ \worldState ->
@@ -456,28 +504,31 @@ handleRPCCmd chan rpcCmd = do
         Right _ -> return (Just p2pCmd, RPCRespOK)
 
     Test testCmd -> do
-      isTestNode <- lift NodeState.isTestNode
+      isTestNode <- NodeState.isTestNode
       if not isTestNode then
         return (Nothing, notTestNodeErr)
       else handleTestRPCCmd testCmd
 
   case mP2PCmd of
     Nothing -> return ()
-    Just p2pCmd -> liftIO $ writeChan chan p2pCmd
+    Just p2pCmd -> liftBase $ writeChan chan p2pCmd
 
   return rpcResp
 
-handleTestRPCCmd :: MonadIO m => TestRPCCmd -> NodeT m (Maybe Cmd.Cmd, RPCResponse)
-handleTestRPCCmd testRPCCmd =
-  case testRPCCmd of
+handleTestRPCCmd :: MonadBase IO m => TestRPCCmd -> NodeT m (Maybe Cmd.Cmd, RPCResponse)
+handleTestRPCCmd testRPCCmd = do
+  let p2pCmd = case testRPCCmd of
 
-    SaturateNetwork nTxs nSecs -> do
-      let p2pCmd = Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
-      return (Just p2pCmd, RPCRespOK)
+        SaturateNetwork nTxs nSecs ->
+          Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
 
-    ResetMemPools -> do
-      let p2pCmd = Cmd.Test $ Cmd.ResetMemPools
-      return (Just p2pCmd, RPCRespOK)
+        ResetMemPools ->
+          Cmd.Test $ Cmd.ResetMemPools
+
+        ResetDB addr sig ->
+          Cmd.Test $ Cmd.ResetDB addr sig
+
+  return (Just p2pCmd, RPCRespOK)
 
 -------------------------------------------------------------------------------
 -- Protocol
@@ -485,7 +536,7 @@ handleTestRPCCmd testRPCCmd =
 
 -- | An RPC Command (changes state of server)
 data RPCCmd
-  = Transaction Transaction.Transaction
+  = Transaction Tx.Transaction
   | Test TestRPCCmd
   deriving (Eq, Show, Generic)
 
@@ -495,6 +546,10 @@ data TestRPCCmd
     , nSecs :: Int
     }
   | ResetMemPools
+  | ResetDB
+    { address   :: Address.Address
+    , signature :: ByteString
+    }
   deriving (Eq, Show)
 
 -- | An RPC response body
@@ -572,6 +627,9 @@ instance FromJSON TestRPCCmd where
         <$> params .: "nTxs"
         <*> params .: "nSecs"
       "ResetMemPools" -> pure ResetMemPools
+      "ResetDB" -> ResetDB
+        <$> params .: "address"
+        <*> fmap encodeUtf8 (params .: "signature")
       invalid -> typeMismatch "TestRPCCmd" $ A.String invalid
   parseJSON invalid = typeMismatch "TestRPCCmd" invalid
 

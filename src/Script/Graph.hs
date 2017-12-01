@@ -33,12 +33,11 @@ import Data.String (IsString(..))
 import qualified Hash
 import qualified Control.Monad
 
-
 -------------------------------------------------------------------------------
 -- Static Specification
 -------------------------------------------------------------------------------
 
-newtype Label = Label Text
+newtype Label = Label { unLabel :: Text }
   deriving (Eq, Show, Ord, Generic, NFData, Hashable, Hash.Hashable, ToJSON)
 
 -- | Represents valid state flows

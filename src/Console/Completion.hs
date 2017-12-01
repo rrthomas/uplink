@@ -2,7 +2,11 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Console.Completion (completion) where
+
+module Console.Completion (
+  completion
+) where
+
 import Protolude hiding (Prefix)
 
 import System.Console.Repline
@@ -22,13 +26,14 @@ defaultMatcher =
   , (toS ping       , noCompletion)
   , (toS pingPeer   , noCompletion)
   , (toS addPeer    , noCompletion)
-  
-  , (toS createAccount , fileCompleter) 
-  , (toS createAsset   , noCompletion) 
-  , (toS createContract, fileCompleter) 
-  , (toS transferAsset , noCompletion) 
-  , (toS transaction, fileCompleter) 
-  , (toS setAccount, fileCompleter) 
+
+  , (toS createAccount , fileCompleter)
+  , (toS createAsset   , noCompletion)
+  , (toS createContract, fileCompleter)
+  , (toS transferAsset , noCompletion)
+  , (toS circulateAsset, noCompletion)
+  , (toS transaction, fileCompleter)
+  , (toS setAccount, fileCompleter)
   ]
 
 -- Completion
@@ -46,7 +51,6 @@ noCompletion = listCompleter []
   {-ns <- get-}
   {-{-peers <- runNodeT' NodeState.getPeers-}-}
   {-return $ filter (isPrefixOf n) ["0.0.0.0", "bootnode"]-}
-
 
 completion :: (MonadIO m, MonadState ConsoleCtx m) => CompleterStyle m
 completion = Prefix (wordCompleter comp) defaultMatcher

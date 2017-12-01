@@ -8,7 +8,7 @@ Asset data types.
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Asset (
   -- ** Assets
@@ -31,10 +31,10 @@ module Asset (
 
   -- ** Holdings
   Holder,
-  Holdings,
+  Holdings(..),
   emptyHoldings,
-  adjustHolding,
-  transferHolding,
+  transferHoldings,
+  circulateSupply,
 
   -- ** Serialization
   encodeAsset,
@@ -43,8 +43,7 @@ module Asset (
   getAssetType,
   putRef,
   getRef,
-  assetWithAddrJSON,
-  jsonType,
+  assetWithAddrJSON, -- XXX not needed
 
   -- ** Save/Load Asset
   saveAsset,
@@ -76,6 +75,11 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Encode.Pretty as A
 
+import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
+import Database.PostgreSQL.Simple.FromRow   (FromRow(..), field)
+import Database.PostgreSQL.Simple.ToField   (ToField(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
 import Numeric (showFFloat)
 
 -------------------------------------------------------------------------------
@@ -92,7 +96,19 @@ type Holder = Address
 type Balance = Int64
 
 -- | A map of holdings to balances. i.e. a ledger
-type Holdings = Map.Map Holder Balance
+newtype Holdings = Holdings { unHoldings :: Map.Map Holder Balance }
+  deriving (Eq, Ord, Show, Generic, NFData, Serialize)
+
+instance ToJSON Holdings where
+  toJSON (Holdings holdings) = toJSON holdings
+
+instance FromJSON Holdings where
+  parseJSON = fmap Holdings . A.parseJSON
+
+instance Monoid Holdings where
+  mempty = Holdings mempty
+  (Holdings h1) `mappend` (Holdings h2) =
+    Holdings $ h1 <> h2
 
 -- | An asset is a named quantity that once issued is a fixed supply of
 -- immutably issued "units" of value. Units can be held by other addresses.
@@ -104,6 +120,7 @@ data Asset = Asset
   , holdings  :: Holdings   -- ^ Holdings map
   , reference :: Maybe Ref  -- ^ Reference unit
   , assetType :: AssetType  -- ^ Asset type
+  , address   :: Address    -- ^ Asset address
   } deriving (Eq, Ord, Show, Generic, NFData, Serialize)
 
 -- | An asset reference is metadata assigning a off-chain reference quantity to
@@ -117,9 +134,74 @@ data Ref
   | Security          -- ^ Security
   deriving (Eq, Ord, Show, Enum, Bounded, Generic, NFData, ToJSON, FromJSON, Hash.Hashable)
 
+-- | Type of an asset's value. Underlying value is always a Int64, but this
+-- informs the representation and range of valid values.
+data AssetType
+  = Discrete          -- ^ Discrete (Non-zero integer value)
+  | Fractional Int    -- ^ Fractional (Fixed point decimal value)
+  | Binary            -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+
+-- | Initial holdings, all allocated to issuer.
+emptyHoldings :: Holdings
+emptyHoldings = mempty
+
+-- | Verify that an asset value contains valid data
+validateAsset :: Asset -> IO Bool
+validateAsset Asset{..} = do
+    return $ and [ totalHoldings <= supply ]
+  where
+    totalHoldings = foldl (+) 0 $ unHoldings holdings
+
+-------------------------------------------------------------------------------
+-- Serialization
+-------------------------------------------------------------------------------
+
+-- XXX REMOVE, unnecessary now (need to change SDK)
+assetWithAddrJSON :: Address.Address -> Asset -> A.Value
+assetWithAddrJSON addr asset = object
+  [ "address" .= decodeUtf8 (rawAddr addr)
+  , "asset"   .= asset
+  ]
+
+instance ToJSON Asset where
+  toJSON asset = object
+    [ "name"      .= decodeUtf8 (name asset)
+    , "issuer"    .= issuer asset
+    , "issuedOn"  .= issuedOn asset
+    , "supply"    .= supply asset
+    , "holdings"  .= holdings asset
+    , "reference" .= reference asset
+    , "assetType" .= assetType asset
+    , "address"   .= address asset
+    ]
+
+instance FromJSON Asset where
+  parseJSON (A.Object v) = do
+    name      <- encodeUtf8 <$> v .: "name"
+    issuer    <- v .: "issuer"
+    issuedOn  <- v .: "issuedOn"
+    supply    <- v .: "supply"
+    holdings  <- v .: "holdings"
+    reference <- v .: "reference"
+    assetType <- v .: "assetType"
+    address   <- v .: "address"
+    return Asset{..}
+
+  parseJSON invalid = typeMismatch "Asset" invalid
+
+instance Binary.Binary Asset where
+  put tx = Binary.put $ encode tx
+  get = do
+    bs <- Binary.get
+    case decode bs of
+      (Right tx) -> return tx
+      (Left err) -> fail err
+
+-------------------------------------------------------------------------------
+
 instance Serialize Ref where
   put = putRef
-
   get = getRef
 
 putRef :: Ref -> PutM ()
@@ -142,17 +224,36 @@ getRef = do
      | str == "Security" -> pure Security
      | otherwise -> fail $ "Cannot decode asset reference: " <> toS str
 
--- | Type of an asset's value. Underlying value is always a Int64, but this
--- informs the representation and range of valid values.
-data AssetType
-  = Discrete          -- ^ Discrete (Non-zero integer value)
-  | Fractional Int    -- ^ Fractional (Fixed point decimal value)
-  | Binary            -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
-  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+-------------------------------------------------------------------------------
+
+-- | XXX "type" and "precison" tags are from Python SDK being difficult
+-- to work with. usual Uplink convention is "tag" and "contents"
+instance ToJSON AssetType where
+  toJSON (Fractional n) = object
+    ["tag" .= ("Fractional" :: Text), "contents" .= n]
+  toJSON Discrete = object
+    ["tag" .= ("Discrete" :: Text), "contents" .= A.Null]
+  toJSON Binary = object
+    ["tag" .= ("Binary" :: Text), "contents" .= A.Null]
+
+-- | XXX "type" and "precison" tags are from Python SDK being difficult
+-- to work with. usual Uplink convention is "tag" and "contents"
+instance FromJSON AssetType where
+  parseJSON (A.Object v) = do
+    constr <- v .: "tag"
+    mPrec <- v .:? "contents"
+    case constr :: [Char] of
+      "Discrete"   -> pure Discrete
+      "Binary"     -> pure Binary
+      "Fractional" -> case mPrec of
+        Nothing -> fail "Fractional AssetType must have 'contents' field."
+        Just n  -> pure $ Fractional n
+      invalid -> fail $ invalid ++ " is not a valid AssetType"
+
+  parseJSON invalid = typeMismatch "AssetType" invalid
 
 instance Serialize AssetType where
   put = putAssetType
-
   get = getAssetType
 
 getAssetType :: Get AssetType
@@ -175,98 +276,6 @@ putAssetType (Fractional n) = do
     putWord16be 10
     putByteString "Fractional"
     putWord64be $ Utils.toWord64 n
-
-instance FromJSON AssetType where
-  parseJSON (A.Object v) = do
-    constr <- v .: "tag"
-    mContents <- v .:? "contents"
-    case constr :: [Char] of
-      "Discrete"   -> pure Discrete
-      "Binary"     -> pure Binary
-      "Fractional" -> case mContents of
-        Nothing -> fail "Fractional AssetType must have 'contents' field."
-        Just int -> pure $ Fractional int
-      invalid -> fail $ invalid ++ " is not a valid AssetType"
-
-  parseJSON invalid = typeMismatch "AssetType" invalid
-
--- | Initial holdings, all allocated to issuer.
-emptyHoldings :: Holdings
-emptyHoldings = mempty
-
--- | Verify that an asset value contains valid data
-validateAsset :: Asset -> IO Bool
-validateAsset Asset{..} = do
-    return $ and [ totalHoldings <= supply ]
-  where
-    totalHoldings = sum $ map snd $ Map.toList holdings
-
--------------------------------------------------------------------------------
--- Serialization
--------------------------------------------------------------------------------
-
-instance ToJSON Asset where
-  toJSON asset = object
-    [ "name"      .= decodeUtf8 (name asset)
-    , "issuer"    .= issuer asset
-    , "issuedOn"  .= issuedOn asset
-    , "supply"    .= supply asset
-    , "holdings"  .= Map.mapKeys (decodeUtf8 . rawAddr) (holdings asset)
-    , "reference" .= reference asset
-    , "assetType" .= jsonType (assetType asset)
-    ]
-
-instance ToJSON AssetType where
-  toJSON (Fractional n) =
-    object ["tag" .= ("Fractional" :: Text), "contents" .= n]
-  toJSON Discrete =
-    object ["tag" .= ("Discrete" :: Text), "contents" .= A.Null]
-  toJSON Binary =
-    object ["tag" .= ("Binary" :: Text), "contents" .= A.Null]
-
-jsonType :: AssetType -> A.Value -- Used by TxAsset
-jsonType = \case
-  Fractional n -> object ["type" .= ("Fractional" :: Text), "precision" .= n]
-  Discrete     -> object ["type" .= ("Discrete" :: Text), "precision" .= A.Null]
-  Binary       -> object ["type" .= ("Binary" :: Text), "precision" .= A.Null]
-
-assetWithAddrJSON :: Address.Address -> Asset -> A.Value
-assetWithAddrJSON addr asset = object
-  [ "address" .= decodeUtf8 (rawAddr addr)
-  , "asset"   .= asset
-  ]
-
-instance FromJSON Asset where
-  parseJSON (A.Object v) = do
-    nm <- encodeUtf8 <$> v .: "name"
-    issuer <- v .: "issuer"
-    issOn  <- v .: "issuedOn"
-    supply <- v .: "supply"
-    holds  <- Map.mapKeys (fromRaw . encodeUtf8) <$> v .: "holdings"
-    ref    <- v .: "reference"
-    assetT <- deJsonType v
-
-    return $ Asset nm issuer issOn supply holds ref assetT
-
-  parseJSON invalid = typeMismatch "Asset" invalid
-
-deJsonType :: A.Object -> Parser AssetType
-deJsonType v = do
-  at <- v .: "assetType"
-  t <- at .: "type"
-  if | t == "Fractional" -> Fractional <$> at .: "precision"
-     | t == "Discrete"   -> pure Discrete
-     | t == "Binary"     -> pure Binary
-     | otherwise -> typeMismatch "AssetType deJsonType" t
-
-instance Binary.Binary Asset where
-  put tx = Binary.put $ encode tx
-  get = do
-    bs <- Binary.get
-    case decode bs of
-      (Right tx) -> return tx
-      (Left err) -> fail err
-
 
 -------------------------------------------------------------------------------
 -- Printing
@@ -298,58 +307,71 @@ displayType ty bal = case ty of
     | otherwise      -> panic "Invalid precision. "
 
 -------------------------------------------------------------------------------
--- Persistence
+-- Operations over Assets
 -------------------------------------------------------------------------------
 
 data AssetError
   = InsufficientHoldings Holder Balance
-  | InsufficientSupply Text Balance
+  | InsufficientSupply [Char] Balance     -- [Char] for serialize instance
+  | CiruclatorIsNotIssuer Address Address
+  | SelfTransfer Address
   | HolderDoesNotExist Address
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, Serialize)
 
 -- | Binary serialize an asset.
 encodeAsset :: Asset -> ByteString
 encodeAsset = encode
 
 -- | Binary deserialize an asset.
-decodeAsset :: ByteString -> Either [Char] Asset
-decodeAsset = decode
+decodeAsset :: ByteString -> Either Text Asset
+decodeAsset = first toS . decode
 
 -- | Lookup balance of a holder, returning Nothing if no
 balance :: Asset -> Holder -> Maybe Balance
-balance asset holder = Map.lookup holder (holdings asset)
+balance asset holder = Map.lookup holder (unHoldings $ holdings asset)
 
 -- | Amount of assets in circulation.
 circulation :: Asset -> Balance
-circulation asset = (supply asset) - sum (Map.elems (holdings asset))
+circulation asset = supply asset - inCirculation
+  where
+    inCirculation = foldl (+) 0 $ unHoldings (holdings asset)
 
 -- | Set an assets initial balances.
 preallocate :: [(Holder, Balance)] -> Asset -> Asset
-preallocate balances asset = asset { holdings = Map.fromList balances }
+preallocate balances asset = asset { holdings = holdings' }
+  where
+    holdings' = Holdings $ Map.fromList balances
 
-adjustHolding :: Address -> Balance -> Asset -> Either AssetError Asset
-adjustHolding addr bal asset
+-- | Transfer an amount of the asset supply to an account's holdings
+circulateSupply :: Address -> Balance -> Asset -> Either AssetError Asset
+circulateSupply addr bal asset
   | integrity = Right $ asset { holdings = holdings', supply = supply' }
   | otherwise = Left $ InsufficientSupply (toS $ name asset) (supply asset)
   where
-    holdings' = Map.insertWith (+) addr bal (holdings asset)
+    holdings' = Holdings $ clearZeroes $
+      Map.insertWith (+) addr bal $ unHoldings (holdings asset)
+
     supply'   = supply asset - bal
     integrity = supply asset >= bal
 
--- | Atomically transfer amount from -> to
-transferHolding :: Address -> Address -> Balance -> Asset -> Either AssetError Asset
-transferHolding from to amount asset =
-  case balance asset from of
-    Nothing
-      | issuerTransfer -> adjustHolding from amount asset
-      | otherwise      -> Left $ HolderDoesNotExist from
-    Just bal
-      | amount <= bal ->
-          adjustHolding from (negate amount) asset
-            >>= adjustHolding to amount
-      | otherwise     -> Left $ InsufficientHoldings from bal
+    clearZeroes = Map.filter (/= 0)
+
+-- | Atomically transfer holdings 'from' one account 'to' another
+transferHoldings :: Address -> Address -> Balance -> Asset -> Either AssetError Asset
+transferHoldings from to amount asset
+  | from == to = Left $ SelfTransfer from
+  | otherwise  =
+      case balance asset from of
+        Nothing ->
+          Left $ HolderDoesNotExist from
+        Just bal
+          | amount <= bal -> do
+              asset' <- circulateSupply from (negate amount) asset
+              circulateSupply to amount asset'
+          | otherwise     ->
+              Left $ InsufficientHoldings from bal
   where
-    issuerTransfer = from == issuer asset
+    assetIssuer = issuer asset
 
 -- | Smart constructor for asset
 createAsset
@@ -359,9 +381,10 @@ createAsset
   -> Maybe Ref
   -> AssetType
   -> Time.Timestamp
+  -> Address
   -> Asset
-createAsset name holder supply mRef assetType ts =
-  Asset name holder ts supply mempty mRef assetType
+createAsset name holder supply mRef assetType ts addr =
+  Asset name holder ts supply mempty mRef assetType addr
 
 -------------------------------------------------------------------------------
 -- Export / Import

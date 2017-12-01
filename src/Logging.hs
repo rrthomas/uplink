@@ -20,6 +20,9 @@ module Logging (
 ) where
 
 import Protolude
+
+import Control.Monad.Base
+
 import System.Log (Priority(..))
 import System.Log.Logger
 import System.Log.Formatter
@@ -32,11 +35,11 @@ import System.FilePath.Posix (takeDirectory)
 -- Logger
 -------------------------------------------------------------------------------
 
-info, debug, warning, critical :: MonadIO m => Text -> m ()
-info = liftIO . infoM mainProgram . toS
-debug = liftIO . debugM mainProgram . toS
-warning = liftIO . warningM mainProgram . toS
-critical = liftIO . criticalM mainProgram . toS
+info, debug, warning, critical :: MonadBase IO m => Text -> m ()
+info = liftBase . infoM mainProgram . toS
+debug = liftBase . debugM mainProgram . toS
+warning = liftBase . warningM mainProgram . toS
+critical = liftBase . criticalM mainProgram . toS
 
 mainProgram :: [Char]
 mainProgram = "MAIN"

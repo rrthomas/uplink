@@ -43,7 +43,8 @@ import Protolude hiding (get,put,catch)
 
 import Control.Monad.Base (liftBase)
 
-import Control.Monad.Catch (catch)
+import Control.Exception.Lifted (catch)
+import Control.Distributed.Process.Lifted.Class (MonadProcessBase, liftP)
 import Control.Distributed.Process hiding (Message, catch, handleMessage)
 
 import Data.Serialize as S
@@ -60,6 +61,7 @@ import Network.P2P.Controller
 import Network.Utils (mkNodeId, extractNodeId)
 import NodeState
 
+import DB.Class
 import qualified DB
 import qualified Block
 import qualified Utils
@@ -160,14 +162,14 @@ data Message
   | Malformed SafeString                -- Message was malformed
   deriving (Show)
 
-mkBlockMsg :: Block.Block -> NodeProcessT Message
+mkBlockMsg :: MonadProcessBase m => Block.Block -> NodeT m Message
 mkBlockMsg blk = do
-  nodeIdSS <- fmap fromBytes' $ liftBase extractNodeId
+  nodeIdSS <- fmap fromBytes' $ liftP extractNodeId
   pure $ Block $ BlockMsg blk nodeIdSS
 
-mkGetBlockAtIdxMsg :: Int -> NodeProcessT Message
+mkGetBlockAtIdxMsg :: MonadProcessBase m => Int -> NodeT m Message
 mkGetBlockAtIdxMsg idx = do
-  nodeIdSS <- fromBytes' <$> liftBase extractNodeId
+  nodeIdSS <- fromBytes' <$> liftP extractNodeId
   let getBlkAtMsg = GetBlockMsg idx nodeIdSS
   pure $ GetBlock getBlkAtMsg
 
@@ -212,7 +214,11 @@ data MsgType
 -- Expects a bytestring because the canonical serialization library used in this
 -- software is Data.Serialize, whereas in order to use cloud haskell's `match`
 -- function to receive typed values, a Data.Binary instance must be written.
-handleMessage :: Service -> ByteString -> NodeProcessT ()
+handleMessage
+  :: (MonadReadWriteDB m, MonadProcessBase m)
+  => Service
+  -> ByteString
+  -> NodeT m ()
 handleMessage replyService msg =
   case decodeMsg msg of
     Left err -> Log.warning ("Malformed message:" <> show err)
@@ -224,9 +230,9 @@ handleMessage replyService msg =
           nodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
           Log.info $ "Got a ping from " <> show sender
 
-          myNodeId <- liftBase $ toS <$> extractNodeId
+          myNodeId <- liftP $ toS <$> extractNodeId
           let response = Pong (SafeString.fromBytes' myNodeId)
-          liftBase $ nsendPeer' replyService nodeId response
+          liftP $ nsendPeer' replyService nodeId response
 
         Pong sender -> do
           nodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
@@ -246,7 +252,7 @@ handleMessage replyService msg =
               ]
 
             Right _ -> do
-              isUnique <- NodeState.isTxUnique tx
+              isUnique <- NodeState.elemTxMemPool tx
               if isUnique
                 then do
                   isValidatingNode <- NodeState.isValidatingNode
@@ -261,19 +267,18 @@ handleMessage replyService msg =
           when success $ do
             blkAtIdxMsg <- mkGetBlockAtIdxMsg (Block.index block + 1)
             replyToNodeId <- liftIO $ mkNodeId $ toBytes sender
-            liftBase $ nsendPeer' replyService replyToNodeId blkAtIdxMsg
+            liftP $ nsendPeer' replyService replyToNodeId blkAtIdxMsg
 
-        GetBlock gmsg@(GetBlockMsg idx sender) ->
-          NodeState.withBlockDB $ \blockDB -> do
-            eBlock <- liftIO $ DB.lookupBlock blockDB idx
-            nodeId <- liftIO $ mkNodeId (toBytes sender)
-            case eBlock of
-              Left err  -> Log.info $ "No block with index " <> show idx
-              Right blk -> do
-                Log.info $ show gmsg
-                nodeId <- liftIO $ mkNodeId (toBytes sender)
-                blockMsg <- mkBlockMsg blk
-                liftBase $ nsendPeer' replyService nodeId blockMsg
+        GetBlock gmsg@(GetBlockMsg idx sender) -> do
+          eBlock <- lift $ DB.readBlock idx
+          nodeId <- liftBase $ mkNodeId (toBytes sender)
+          case eBlock of
+            Left err  -> Log.info $ "No block with index " <> show idx
+            Right blk -> do
+              Log.info $ show gmsg
+              nodeId <- liftIO $ mkNodeId (toBytes sender)
+              blockMsg <- mkBlockMsg blk
+              liftP $ nsendPeer' replyService nodeId blockMsg
 
         -- For Messages operating on a "test node"
         Test testMsg -> handleTestMessage replyService testMsg
@@ -284,7 +289,7 @@ handleMessage replyService msg =
 
 
 -- | Handler for TestMessages when node is operating in "test" mode
-handleTestMessage :: Service -> TestMessage -> NodeProcessT ()
+handleTestMessage :: MonadProcessBase m => Service -> TestMessage -> NodeT m ()
 handleTestMessage service testMsg = case testMsg of
 
   ServiceRestart (ServiceRestartMsg service delay) -> do
@@ -304,11 +309,11 @@ handleTestMessage service testMsg = case testMsg of
 
 -- XXX Write code to restart all restartable processes,
 -- Take advantage of Control.Distributed.Process.Managed to restart
-serviceRestart :: Service -> Int -> NodeProcessT ()
+serviceRestart :: MonadProcessBase m => Service -> Int -> NodeT m ()
 serviceRestart service delay = case service of
   TestMessaging -> do
-    selfPid <- liftBase getSelfPid
-    service' <- liftBase $ whereis $ show service
+    selfPid <- liftP getSelfPid
+    service' <- liftP $ whereis $ show service
     case service' of
       Nothing -> Log.warning $ mconcat
         ["No service with name ", show service ," exists on this node."]
@@ -316,7 +321,7 @@ serviceRestart service delay = case service of
         | selfPid == pid -> Log.warning "Cannot restart self"
         | otherwise -> do
             let exitCmd = exit pid ("Restarting..." :: ByteString)
-            catch (liftBase exitCmd) $ \(_ :: SomeException) -> do
+            catch (liftP exitCmd) $ \(_ :: SomeException) -> do
               liftIO $ threadDelay delay
               -- XXX Restart process for real...
               Log.info "Successfully restarted process"

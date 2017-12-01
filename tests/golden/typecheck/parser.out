@@ -21,17 +21,23 @@ Script
       , GlobalDefNull TDateTime Name { unName = "dt" }
       ]
   , scriptTransitions =
-      [ Arrow Initial (Step (Label "setup"))
-      , Arrow (Step (Label "setup")) (Step (Label "confirmation"))
-      , Arrow (Step (Label "confirmation")) (Step (Label "settlement"))
-      , Arrow Initial (Step (Label "getX"))
-      , Arrow (Step (Label "setX")) (Step (Label "getX"))
-      , Arrow (Step (Label "getX")) (Step (Label "setX"))
-      , Arrow (Step (Label "settlement")) Terminal
+      [ Arrow Initial (Step Label { unLabel = "setup" })
+      , Arrow
+          (Step Label { unLabel = "setup" })
+          (Step Label { unLabel = "confirmation" })
+      , Arrow
+          (Step Label { unLabel = "confirmation" })
+          (Step Label { unLabel = "settlement" })
+      , Arrow Initial (Step Label { unLabel = "getX" })
+      , Arrow
+          (Step Label { unLabel = "setX" }) (Step Label { unLabel = "getX" })
+      , Arrow
+          (Step Label { unLabel = "getX" }) (Step Label { unLabel = "setX" })
+      , Arrow (Step Label { unLabel = "settlement" }) Terminal
       ]
   , scriptMethods =
       [ Method
-          { methodTag = Main (Label "setDate")
+          { methodTag = Main Label { unLabel = "setDate" }
           , methodName = Name { unName = "setDate" }
           , methodArgs = []
           , methodBody =
@@ -54,15 +60,16 @@ Script
                         }))
           }
       , Method
-          { methodTag = Main (Label "initial")
+          { methodTag = Main Label { unLabel = "initial" }
           , methodName = Name { unName = "initialize" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" } [ ELit (LState (Label "getX")) ]
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "getX" }) ]
           }
       , Method
-          { methodTag = Main (Label "setX")
+          { methodTag = Main Label { unLabel = "setX" }
           , methodName = Name { unName = "setX" }
           , methodArgs =
               [ Arg { argType = TInt , argName = Name { unName = "j" } }
@@ -97,11 +104,12 @@ Script
                                (EVar Name { unName = "x" })))
                          (ESeq
                             (ECall
-                               Name { unName = "transitionTo" } [ ELit (LState (Label "getX")) ])
+                               Name { unName = "transitionTo" }
+                               [ ELit (LState Label { unLabel = "getX" }) ])
                             (ERet (EVar Name { unName = "x" }))))))
           }
       , Method
-          { methodTag = Main (Label "getX")
+          { methodTag = Main Label { unLabel = "getX" }
           , methodName = Name { unName = "getX" }
           , methodArgs = []
           , methodBody =
@@ -146,11 +154,12 @@ Script
                                      [ EVar Name { unName = "x" } ])))
                             (ESeq
                                (ECall
-                                  Name { unName = "transitionTo" } [ ELit (LState (Label "setX")) ])
+                                  Name { unName = "transitionTo" }
+                                  [ ELit (LState Label { unLabel = "setX" }) ])
                                (ERet (EVar Name { unName = "q" })))))))
           }
       , Method
-          { methodTag = Main (Label "f")
+          { methodTag = Main Label { unLabel = "f" }
           , methodName = Name { unName = "f" }
           , methodArgs =
               [ Arg { argType = TInt , argName = Name { unName = "j" } }
@@ -163,7 +172,7 @@ Script
                 (ERet (ELit (LInt (-1))))
           }
       , Method
-          { methodTag = Main (Label "g")
+          { methodTag = Main Label { unLabel = "g" }
           , methodName = Name { unName = "g" }
           , methodArgs =
               [ Arg { argType = TAsset , argName = Name { unName = "f" } }

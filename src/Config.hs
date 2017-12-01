@@ -16,11 +16,13 @@ There are three different configurations that are avaiable on a node.
 
 module Config (
   -- ** Types
+  StorageBackend(..),
   Config(..),
   readConfig,
   handleConfig,
   verifyConfig,
   defaultConfig,
+  getStorageBackend,
 
   -- ** Errors
   KeyError(..),
@@ -39,16 +41,21 @@ module Config (
 ) where
 
 import Protolude
+import Data.List (elemIndex)
 import Address (Address)
 import qualified Utils
 import qualified Network.Utils as NU
 import qualified Data.Configurator as C
+
 import Data.Configurator.Types (KeyError(..))
 import qualified Data.Configurator.Types as C (Config)
-
+import Network.URI (URIAuth, parseURI, uriScheme, uriPath, uriAuthority, uriUserInfo, uriPort, uriRegName)
 import System.FilePath
 import System.Directory
 import System.Posix.Files
+
+import DB
+import Database.PostgreSQL.Simple
 
 import Network.BSD (getHostName)
 
@@ -68,13 +75,13 @@ data Config = Config
   , maxPeers     :: Int           -- ^ Maximum peer count
   , minPeers     :: Int           -- ^ Minimum peer count
   , closed       :: Bool          -- ^ Closed network
-  , dbpath       :: FilePath      -- ^ Data directory
-  , overwrite    :: Bool          -- ^ Overwrite existing database
+  , storageBackend :: StorageBackend
   , nonetwork    :: Bool          -- ^ Disable networking
   , configFile   :: FilePath      -- ^ Config file
   , chainConfigFile :: FilePath   -- ^ Chain configuration file
-  , nAuths       :: Int           -- ^ Number of authority accounts to create
+  , nodeDataDir  :: FilePath      -- ^ Directory where local files node data files (keys, etc) are stored
   , rpcReadOnly  :: Bool          -- ^ Can RPC cmds change state of ledger
+  , preallocated :: FilePath      -- ^ Pre-allocated accounts directory
   , testMode     :: Bool          -- ^ Is node in "test" mode
   } deriving (Eq, Show)
 
@@ -99,7 +106,6 @@ data ChainSettings = ChainSettings
   , poaBlockLimit    :: Int        -- ^ Proof of authority consecutive gen block limit
   , poaSignLimit     :: Int        -- ^ Proof of authority consecutive sign block limit
 
-  , allocate :: [(Address, Bool)]  -- Preallocated accounts
   } deriving (Eq, Show)
 
 -------------------------------------------------------------------------------
@@ -154,7 +160,7 @@ handleConfig silent cfgFile = do
 -- | Read configuration file from a directory
 readConfig :: Bool -> FilePath -> IO Config
 readConfig silent cfgFile = errorHandler $ do
-  when (not silent) $
+  unless silent $
     Utils.putGreen ("Using configuration: " <> toS cfgFile)
 
   cfg          <- C.load [C.Required cfgFile]
@@ -162,8 +168,10 @@ readConfig silent cfgFile = errorHandler $ do
   loglevel     <- C.require cfg "logging.loglevel"
   logfile      <- C.require cfg "logging.logfile"
 
-  dbpath       <- C.require cfg "storage.dbpath"
-  overwrite    <- C.require cfg "storage.overwrite"
+
+  backend      <- getStorageBackend =<<
+                    C.require cfg "storage.backend"
+  nodeDataDir  <- C.require cfg "storage.directory"
 
   rpcPort      <- C.require cfg "rpc.port"
   rpcSsl       <- C.require cfg "rpc.ssl"
@@ -177,9 +185,10 @@ readConfig silent cfgFile = errorHandler $ do
   closed       <- C.require cfg "network.closed"
   minPeers     <- C.require cfg "network.min-peers"
   maxPeers     <- C.require cfg "network.max-peers"
-  authorities  <- C.require cfg "network.authorities" -- ???
 
-  return $ Config {
+  preallocated <- C.require cfg "network.preallocated"
+
+  return Config {
     verbose      = verbose
   , loggingLevel = loglevel
   , logfile      = logfile
@@ -193,13 +202,13 @@ readConfig silent cfgFile = errorHandler $ do
   , minPeers     = minPeers
   , maxPeers     = maxPeers
   , closed       = closed
-  , dbpath       = dbpath
-  , overwrite    = overwrite
+  , storageBackend = backend
   , nonetwork    = nonetwork
   , configFile   = cfgFile
   , chainConfigFile = defaultChain
-  , nAuths       = authorities
+  , nodeDataDir  = nodeDataDir
   , rpcReadOnly  = False
+  , preallocated = preallocated
   , testMode     = False
   }
 
@@ -209,6 +218,56 @@ getHostname cfg = do
   case mHostname of
     Nothing -> NU.resolveHostname =<< getHostName
     Just hn -> NU.resolveHostname hn
+
+getStorageBackend :: [Char] -> IO StorageBackend
+getStorageBackend cs =
+  case parseURI cs of
+    Nothing -> die $ "Invalid storage backend uri: " <> toS cs
+    (Just uri) -> do
+      let scheme   = uriScheme uri
+          path = drop 1 $ uriPath uri
+
+      case scheme of
+        "leveldb:" -> return $ LevelDB $ if null path then ".uplink" else path
+        "postgresql:" -> case uriAuthority uri of
+            Nothing -> die $ "invalid uri auth given: " <> toS cs
+
+            (Just as) -> do
+              let host = if null (uriRegName as)
+                            then Nothing
+                            else Just $ uriRegName as
+
+              let port = if null (uriPort as)
+                            then Nothing
+                            else (readMaybe (drop 1 $ uriPort as) :: Maybe Word16)
+
+              let (user, password) = parseAuthInfo as
+
+              return $ PostgreSQL ConnectInfo {
+                connectHost = host `fallback` connectHost defaultConnectInfo
+              , connectPort = port `fallback` connectPort defaultConnectInfo
+              , connectUser = user `fallback` connectUser defaultConnectInfo
+              , connectPassword = password `fallback` connectPassword defaultConnectInfo
+              , connectDatabase = if null path then "uplink" else path
+              }
+        _ -> die $ "Invalid uri scheme given: " <> toS cs
+  where
+    parseAuthInfo :: URIAuth -> (Maybe [Char], Maybe [Char])
+    parseAuthInfo as =
+      case elemIndex ':' $ uriUserInfo as of
+        Nothing ->
+          let user = dropLast $ uriUserInfo as in
+            if null user then (Nothing, Nothing) else (Just user, Nothing)
+        (Just i) ->
+          case splitAt i $ uriUserInfo as of
+            (user, ':' : password) -> (Just user, Just $ dropLast password)
+            _ -> (Nothing, Nothing)
+
+    fallback = flip fromMaybe
+
+    dropLast "" = ""
+    dropLast [_] = ""
+    dropLast (x : xs) = x : dropLast xs
 
 -------------------------------------------------------------------------------
 -- Chain Configuration
@@ -247,7 +306,7 @@ readChain silent cfgFile = do
   contractSize  <- C.require cfg "contracts.max-size"
 
   -- XXX: hardcoded
-  return $ ChainSettings {
+  return ChainSettings {
     minTxs            = 1
   , maxTxs            = 100
   , maxAccts          = 100
@@ -263,7 +322,6 @@ readChain silent cfgFile = do
   , poaSignLimit      = blockSignLimit
   , poaThreshold      = threshold
   , contractSize      = contractSize
-  , allocate          = []
   }
 
 -- | Verify the integrity of a configuration set.
@@ -281,7 +339,7 @@ verifyConfig Config {..} = do
       , (>= -1) maxPeers
       , minPeers < maxPeers
       ]
-  doesDirectoryExist dbpath
+  {-doesDirectoryExist dbpath-}
   pure (and $ exists <> ports <> conds)
 
 

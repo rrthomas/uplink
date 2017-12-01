@@ -31,7 +31,8 @@ import Protolude hiding (newChan)
 
 import Control.Monad.Base
 
-import Control.Distributed.Process
+import Control.Distributed.Process.Lifted
+import Control.Distributed.Process.Lifted.Class
 import Control.Distributed.Process.Serializable (Serializable)
 
 import qualified Data.Set as Set
@@ -47,38 +48,37 @@ import qualified Logging as Log
 -------------------------------------------------------------------------------
 
 -- | A P2P controller service process.
-peerController :: [NodeId] -> NodeProcessT ()
+peerController
+  :: MonadProcessBase m
+  => [NodeId]
+  -> NodeT m ()
 peerController seeds = do
-  selfPid <- liftBase getSelfPid
-  selfAddr <- lift NodeState.askSelfAddress
+  selfPid  <- getSelfPid
+  selfAddr <- NodeState.askSelfAddress
 
   -- Add self to list of peers
   setPeers $ Set.singleton $ Peer selfPid selfAddr
-  liftBase $ register (show PeerController) selfPid
+  register (show PeerController) selfPid
 
   -- Discover boot nodes
-  liftBase $ mapM_ doDiscover seeds
-
-  nodeConfig <- lift ask
-  nodeState <- get
-  let runNodeT' = runNodeT nodeConfig nodeState
+  mapM_ doDiscover seeds
 
   Log.info "P2P controller started."
-  liftBase $ forever $ receiveWait
-    [ matchIf isPeerDiscover $ \reply ->
-        runNodeT' $ onDiscover reply
-    , match $ \mref ->
-        runNodeT' $ onMonitor mref
-    , match $ \peerReq ->
-        runNodeT' $ onPeerRequest peerReq
-    , match $ \peerQuery ->
-        runNodeT' $ onPeerQuery peerQuery
-    , match $ \peerConfQuery ->
-        runNodeT' $ onPeerConfigQuery peerConfQuery
-    , match onPeerCapable
-    ]
+  controlP $ \runInBase ->
+    forever $ receiveWait
+      [ matchIf isPeerDiscover $ runInBase . onDiscover
+      , match $ runInBase . onMonitor
+      , match $ runInBase . onPeerRequest
+      , match $ runInBase . onPeerQuery
+      , match $ runInBase . onPeerConfigQuery
+      , match $ runInBase . liftP . onPeerCapable
+      ]
 
-waitController :: Int -> Process a -> Process a
+waitController
+  :: MonadProcessBase m
+  => Int
+  -> NodeT m a
+  -> NodeT m a
 waitController timeout prc = do
   res <- whereis (show PeerController)
   case res of
@@ -94,16 +94,12 @@ waitController timeout prc = do
 -- Discovery
 -------------------------------------------------------------------------------
 
--- XXX
--- XXX Convert all `Process a` to `NodeProcessT a`
--- XXX
-
-doDiscover :: NodeId -> Process ()
+doDiscover :: MonadProcessBase m => NodeId -> m ()
 doDiscover node = do
   Log.info $ "Examining node: " <> show node
   whereisRemoteAsync node (show PeerController)
 
-doRegister :: Peer -> NodeProcessT ()
+doRegister :: MonadProcessBase m => Peer -> NodeT m ()
 doRegister peer@(Peer pid addr) = do
   isNewPeer <- modifyPeers $ \peers ->
     if Set.member peer peers
@@ -111,14 +107,18 @@ doRegister peer@(Peer pid addr) = do
       else (Set.insert peer peers, True)
   when isNewPeer $ do
     Log.info $ "Registering peer: " <> show peer
-    liftBase $ monitor pid
+    monitor pid
     Log.info $ "New node with Pid: " <> show (peerPid peer)
-    liftBase $ doDiscover $ processNodeId pid
+    doDiscover $ processNodeId pid
 
-doUnregister :: Maybe MonitorRef -> ProcessId -> NodeProcessT ()
+doUnregister
+  :: MonadProcessBase m
+  => Maybe MonitorRef
+  -> ProcessId
+  -> NodeT m ()
 doUnregister mref pid = do
   Log.info $ "Unregistering peer: " <> show pid
-  maybe (return ()) (liftBase . unmonitor) mref
+  maybe (return ()) (liftP . unmonitor) mref
   modifyPeers_ $ \peers ->
     flip Set.filter peers $ \peer ->
       peerPid peer /= pid
@@ -127,21 +127,21 @@ isPeerDiscover :: WhereIsReply -> Bool
 isPeerDiscover (WhereIsReply service pid) =
     service == (show PeerController) && isJust pid
 
-onDiscover :: WhereIsReply -> NodeProcessT ()
+onDiscover :: MonadProcessBase m => WhereIsReply -> NodeT m ()
 onDiscover (WhereIsReply _ Nothing) = return ()
 onDiscover (WhereIsReply _ (Just seedPid)) = do
   Log.info $ "Peer discovered: " <> show seedPid
-  selfPid <- liftBase getSelfPid
-  selfPeer <- Peer selfPid <$> lift NodeState.askSelfAddress
+  selfPid <- liftP getSelfPid
+  selfPeer <- Peer selfPid <$> NodeState.askSelfAddress
   when (selfPid /= seedPid) $ do
     -- Checks whether peer is in test mode and
     -- if the hash of the genesis block matches
     validPeerConfig <- isPeerConfigValid $ processNodeId seedPid
     when validPeerConfig $ do
-      (sp, rp) <- liftBase newChan
-      liftBase $ send seedPid (selfPeer, sp :: SendPort Peers)
+      (sp, rp) <- liftP newChan
+      liftP $ send seedPid (selfPeer, sp :: SendPort Peers)
       Log.info $ "Waiting for peers from " <> show seedPid
-      recPeers <- liftBase $ receiveChanTimeout 3000000 rp
+      recPeers <- liftP $ receiveChanTimeout 3000000 rp
       case recPeers of
         Nothing -> Log.info "Failed to find peer."
         Just peers -> do
@@ -151,9 +151,9 @@ onDiscover (WhereIsReply _ (Just seedPid)) = do
             Log.info $ "Registering peers..."
             mapM_ doRegister $ newPeers
             let allPeers = Set.union newPeers known
-            lift $ cachePeers allPeers
+            cachePeers allPeers
 
-onPeerRequest :: (Peer, SendPort Peers) -> NodeProcessT ()
+onPeerRequest :: MonadProcessBase m => (Peer, SendPort Peers) -> NodeT m ()
 onPeerRequest (peer, replyTo) = do
   Log.info $ "Peer exchange with " <> show (peerPid peer)
   isNewPeer <- modifyPeers $ \peers ->
@@ -161,21 +161,24 @@ onPeerRequest (peer, replyTo) = do
       then (peers, False)
       else (Set.insert peer peers, True)
   when isNewPeer $ void $
-    liftBase $ monitor $ peerPid peer
-  liftBase . sendChan replyTo =<< getPeers
+    liftP $ monitor $ peerPid peer
+  liftP . sendChan replyTo =<< getPeers
 
-onPeerQuery :: SendPort Peers -> NodeProcessT ()
+onPeerQuery :: MonadProcessBase m => SendPort Peers -> NodeT m ()
 onPeerQuery replyTo = do
   Log.info $ "Local peer query."
   p2pPeers <- getPeers
-  liftBase $ sendChan replyTo p2pPeers
+  liftP $ sendChan replyTo p2pPeers
 
-onPeerConfigQuery :: SendPort (Bool, ByteString) -> NodeProcessT ()
+onPeerConfigQuery
+  :: MonadProcessBase m
+  => SendPort (Bool, ByteString)
+  -> NodeT m ()
 onPeerConfigQuery replyTo = do
   Log.info $ "Peer config query received."
-  testMode <- lift NodeState.isTestNode
-  genesisBlock <- lift NodeState.askGenesisBlock
-  liftBase $ sendChan replyTo (testMode, Block.hashBlock genesisBlock)
+  testMode <- NodeState.isTestNode
+  genesisBlock <- NodeState.askGenesisBlock
+  sendChan replyTo (testMode, Block.hashBlock genesisBlock)
 
 onPeerCapable :: ([Char], SendPort ProcessId) -> Process ()
 onPeerCapable (service, replyTo) = do
@@ -187,7 +190,10 @@ onPeerCapable (service, replyTo) = do
         Log.info "I can!"
         sendChan replyTo pid
 
-onMonitor :: ProcessMonitorNotification -> NodeProcessT ()
+onMonitor
+  :: MonadProcessBase m
+  => ProcessMonitorNotification
+  -> NodeT m ()
 onMonitor (ProcessMonitorNotification mref pid DiedDisconnect) = do
   Log.info $ "Dead node:" <> (show pid)
   doUnregister (Just mref) pid
@@ -202,12 +208,22 @@ onMonitor (ProcessMonitorNotification mref pid reason) = do
 -------------------------------------------------------------------------------
 
 -- | Send a message to a specific peer process
-nsendPeer :: Serializable a => Service -> NodeId -> a -> Process ()
-nsendPeer service peer = nsendRemote peer (show service)
+nsendPeer
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> NodeId
+  -> a
+  -> m ()
+nsendPeer service peer =
+  nsendRemote peer (show service)
 
 -- | Broadcast a message to a specific service on all peers.
 -- Blocks on `queryAllPeers` (waits for P2P:Controller to respond)
-nsendPeers :: Serializable a => Service -> a -> Process ()
+nsendPeers
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> a
+  -> m ()
 nsendPeers service msg = do
   peers <- queryAllPeers
   Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
@@ -217,7 +233,11 @@ nsendPeers service msg = do
 
 -- | Broadcast multiple messages to a specific service on all peers.
 -- Blocks on `queryAllPeers` (waits for P2P:Controller to respond)
-nsendPeersMany :: Serializable a => Service -> [a] -> Process ()
+nsendPeersMany
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> [a]
+  -> m ()
 nsendPeersMany service msgs = do
   peers <- queryAllPeers
   Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
@@ -226,11 +246,19 @@ nsendPeersMany service msgs = do
     mapM_ (nsendPeer service peer) msgs
 
 -- | Asynchronous nsendPeers
-nsendPeersAsync :: Serializable a => Service -> a -> Process ()
+nsendPeersAsync
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> a
+  -> m ()
 nsendPeersAsync service = void . spawnLocal . nsendPeers service
 
 -- | Broadcast a message to a service of on nodes currently running it.
-nsendCapable :: Serializable a => Service -> a -> Process ()
+nsendCapable
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> a
+  -> m ()
 nsendCapable service msg = do
   peers <- queryCapablePeers service
   Log.info $ "nsendCapable: Sending msg to " <> show (length peers) <> " peers."
@@ -239,34 +267,69 @@ nsendCapable service msg = do
     nsendPeer service peer msg
 
 -- | Asynchronous nsendCapable
-nsendCapableAsync :: Serializable a => Service -> a -> Process ()
+nsendCapableAsync
+  :: (MonadProcessBase m, Serializable a)
+  => Service
+  -> a
+  -> m ()
 nsendCapableAsync service = void . spawnLocal . nsendCapable service
 
 -------------------------------------------------------------------------------
 
 -- | Like nsendPeer but serialize with Data.Serialize instead of Data.Binary
-nsendPeer' :: S.Serialize a => Service -> NodeId -> a -> Process ()
-nsendPeer' s p = nsendPeer s p . S.encode
+nsendPeer'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> NodeId
+  -> a
+  -> m ()
+nsendPeer' s p =
+  nsendPeer s p . S.encode
 
 -- | Like nsendPeers but serialize with Data.Serialize instead of Data.Binary
-nsendPeers' :: S.Serialize a => Service -> a -> Process ()
-nsendPeers' s = nsendPeers s . S.encode
+nsendPeers'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> a
+  -> m ()
+nsendPeers' s =
+  nsendPeers s . S.encode
 
 -- | Like nsendPeersMany but serialize with Data.Serialize instead of Data.Binary
-nsendPeersMany' :: S.Serialize a => Service -> [a] -> Process ()
-nsendPeersMany' s msgs = nsendPeersMany s $ (map S.encode msgs)
+nsendPeersMany'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> [a]
+  -> m ()
+nsendPeersMany' s msgs =
+  nsendPeersMany s $ (map S.encode msgs)
 
 -- | Like nsendPeersAsync but serialize with Data.Serialize instead of Data.Binary
-nsendPeersAsync' :: S.Serialize a => Service -> a -> Process ()
-nsendPeersAsync' s = nsendPeersAsync s . S.encode
+nsendPeersAsync'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> a
+  -> m ()
+nsendPeersAsync' s =
+  nsendPeersAsync s . S.encode
 
 -- | Like nsendCapable but serialize with Data.Serialize instead of Data.Binary
-nsendCapable' :: S.Serialize a => Service -> a -> Process ()
-nsendCapable' s = nsendCapable s . S.encode
+nsendCapable'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> a
+  -> m ()
+nsendCapable' s =
+  nsendCapable s . S.encode
 
 -- | Like nsendCapable but serialize with Data.Serialize instead of Data.Binary
-nsendCapableAsync' :: S.Serialize a => Service -> a -> Process ()
-nsendCapableAsync' s = nsendPeersAsync s . S.encode
+nsendCapableAsync'
+  :: (MonadProcessBase m, S.Serialize a)
+  => Service
+  -> a
+  -> m ()
+nsendCapableAsync' s =
+  nsendPeersAsync s . S.encode
 
 -------------------------------------------------------------------------------
 -- P2P Discovery Utils
@@ -274,7 +337,7 @@ nsendCapableAsync' s = nsendPeersAsync s . S.encode
 
 -- | Get a list of currently available peer
 -- nodes from local P2P:Controller Process
-queryAllPeers :: Process [NodeId]
+queryAllPeers :: MonadProcessBase m => m [NodeId]
 queryAllPeers = do
   Log.info "Requesting peer list from local controller..."
   (sp, rp) <- newChan
@@ -282,7 +345,7 @@ queryAllPeers = do
   peersToNodeIds <$> receiveChan rp
 
 -- | Poll a network for a list of specific service providers.
-queryCapablePeers :: Service -> Process [NodeId]
+queryCapablePeers :: MonadProcessBase m => Service -> m [NodeId]
 queryCapablePeers service = do
     (sp, rp) <- newChan
     nsendPeers PeerController (service, sp)
@@ -300,18 +363,18 @@ queryCapablePeers service = do
           return acc
 
 -- | Check if peer has valid config
-queryValidPeerConfig :: NodeId -> Process (Maybe (Bool, ByteString))
+queryValidPeerConfig :: MonadProcessBase m => NodeId -> m (Maybe (Bool, ByteString))
 queryValidPeerConfig nodeId = do
   (sp, rp) <- newChan
   nsendPeer PeerController nodeId sp
   receiveChanTimeout 3000000 rp
 
 -- | Check to see if peer should join network based on genesis block and test mode
-isPeerConfigValid :: NodeId -> NodeProcessT Bool
+isPeerConfigValid :: MonadProcessBase m => NodeId -> NodeT m Bool
 isPeerConfigValid nodeId = do
-  isTestNode <- lift NodeState.isTestNode
-  genesisBlockHash <- Block.hashBlock <$> lift NodeState.askGenesisBlock
-  mConf <- liftBase $ queryValidPeerConfig nodeId
+  isTestNode <- NodeState.isTestNode
+  genesisBlockHash <- Block.hashBlock <$> NodeState.askGenesisBlock
+  mConf <- liftP $ queryValidPeerConfig nodeId
   case mConf of
     Nothing -> return False
     Just (isPeerTestNode, peerGenBlockHash) -> return $
@@ -319,14 +382,21 @@ isPeerConfigValid nodeId = do
           , genesisBlockHash == peerGenBlockHash
           ]
 
-listPeers :: Process ()
+listPeers :: MonadProcessBase m => m ()
 listPeers = queryAllPeers >>= (liftIO . print)
 
-cachePeers :: MonadIO m => Peers -> NodeReaderT m ()
-cachePeers peers = do
-  Log.info "Caching peers..."
-  dbRoot <- askDBPath
-  liftIO $ savePeers dbRoot peers
+-- XXX --------------------------------------------
+-- XXX Rewrite these functions using the general
+-- XXX save/loadPeers functions in NodeState
+-- XXX --------------------------------------------
 
-getCachedPeers :: MonadIO m => NodeT m Peers
-getCachedPeers = liftIO . loadPeers =<< lift askDBPath
+cachePeers :: MonadBase IO m => Peers -> NodeT m ()
+cachePeers peers = do
+  nodeDataDir <- NodeState.askNodeDataDir
+  Log.info "Caching peers..."
+  liftBase $ savePeers nodeDataDir peers
+
+getCachedPeers :: MonadBase IO m => NodeT m Peers
+getCachedPeers = do
+  nodeDataDir <- NodeState.askNodeDataDir
+  liftBase $ loadPeers "peers"

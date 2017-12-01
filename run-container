@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+MATRIX=$1
+P2PPORT=$2
+RPCPORT=$3
+EXTRA=$4
+
+if [ -n "$MATRIX" ] && [ -n "$P2PPORT" ] && [ -n "$RPCPORT" ]; then
+    stack image container
+    docker run --name uplink$MATRIX --net=host -p $P2PPORT:$P2PPORT -p $RPCPORT:$RPCPORT -it uplink uplink chain init --port $P2PPORT --rpc-port $RPCPORT -d node$MATRIX -c config/node.config.local -v $EXTRA
+else 
+    echo "Please supply three args: <db dir suffix> <p2pPort> <rpcPort>"
+    echo "Examples: $ ./run-container 1 8001 8545"
+    echo "          $ ./run-container 2 8002 8546" 
+fi

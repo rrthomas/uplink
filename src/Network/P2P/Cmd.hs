@@ -8,12 +8,13 @@ interfaces.
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.P2P.Cmd (
   Cmd(..),
   CmdResult(..),
   handleCmd,
-  
+
   TestCmd(..),
   handleTestCmd,
 
@@ -21,19 +22,27 @@ module Network.P2P.Cmd (
   nsendTransaction,
 ) where
 
-import Protolude
+import Protolude hiding (put, get)
 
+import Control.Monad (fail)
 import Control.Monad.Base
-import Control.Distributed.Process
+
+import Control.Distributed.Process.Lifted
+import Control.Distributed.Process.Lifted.Class
 
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
+
 import Data.Binary
+import qualified Data.Text as Text
+import qualified Data.Serialize as S
+
 import NodeState
 import SafeString
 import qualified Account
 import qualified Address
 import qualified Asset
+import qualified Config
 import qualified DB
 import qualified Ledger
 import qualified Contract
@@ -68,29 +77,41 @@ data Cmd
   | Reconnect
   | ListPeers
   | AddPeer Text
-  | Ping 
+  | Ping
   | PingPeer Text
   deriving (Eq, Show, Generic, Binary)
 
 -- | A datatype defining Cmds that should only be able to be
 -- executed when the node is booted in a test state with '--test'
 data TestCmd
+
+  -- ^ Cmd to saturate the network with 'nTxs' transactions spaced 'nSecs' apart
   = SaturateNetwork
     { nTxs :: Int   -- ^ Number of transactions to be created
     , nSecs :: Int  -- ^ Over this many seconds
     }
+
+  -- ^ Cmd to restart a process after a given delay
   | ServiceRestartController
     { ctrlService :: Service -- ^ Service to restart
     , ctrlDelay   :: Int     -- ^ Time to delay restart in microseconds
     }
-  | ResetMemPools   -- ^ Cmd to reset mempool of entire network.
+
+  -- ^ Cmd to reset mempool of entire network.
+  | ResetMemPools
+
+  -- ^ Cmd to reset node DB
+  | ResetDB
+    { address   :: Address.Address -- ^ Address of pubkey used to sign this tx
+    , signature :: ByteString      -- ^ Signature of address to prove possesion of priv key
+    }
   deriving (Eq, Show, Generic, Binary)
 
-data CmdResult 
-  = CmdResult Text 
-  | Accounts [Account.Account] 
-  | Assets [Asset.Asset] 
-  | Contracts [Contract.Contract] 
+data CmdResult
+  = CmdResult Text
+  | Accounts [Account.Account]
+  | Assets [Asset.Asset]
+  | Contracts [Contract.Contract]
   | PeerList NodeState.Peers
   deriving (Show, Generic, Binary)-- XXX
 
@@ -105,10 +126,11 @@ cmdSuccess = CmdResult "Success"
 -- | This function handles Cmd messages originating from either the shell
 -- or the RPC interface which translates RPCCmds into Cmds
 handleCmd
-  :: Service
+  :: (MonadProcessBase m, DB.MonadReadWriteDB m)
+  => Service
   -> Cmd
-  -> NodeProcessT CmdResult
-handleCmd service cmd = 
+  -> NodeT m CmdResult
+handleCmd service cmd =
   case cmd of
     ListAccounts -> do
       world <- NodeState.getLedger
@@ -120,48 +142,49 @@ handleCmd service cmd =
       world <- NodeState.getLedger
       return $ Contracts $ Map.elems $ Ledger.contracts world
     Transaction tx -> do
-      liftBase $ nsendTransaction service tx
+      nsendTransaction service tx
       return cmdSuccess
     Test testCmd   -> do
-      testNode <- lift NodeState.isTestNode
+      testNode <- NodeState.isTestNode
       if testNode
         then handleTestCmd testCmd
         else Log.warning "Node is not in test mode. Command ignored."
       return cmdSuccess
     Discover -> do
       peers <-  getPeerNodeIds
-      liftBase $ mapM_ doDiscover peers
+      liftP $ mapM_ doDiscover peers
       return cmdSuccess
     Reconnect -> do
-      pid <- liftBase getSelfPid
-      liftBase $ reconnect pid
+      pid <- getSelfPid
+      reconnect pid
       return cmdSuccess
     Ping -> do
-      peers <- liftBase queryAllPeers
-      nodeId <- liftBase extractNodeId
+      peers <- queryAllPeers
+      nodeId <- liftP extractNodeId
       forM_ peers $ \peer -> do
         let msg = SafeString.fromBytes' (toS nodeId)
-        liftBase $ nsendPeer' service peer $ Message.Ping msg
+        nsendPeer' service peer $ Message.Ping msg
       return cmdSuccess
-    (PingPeer host) -> do 
-      nodeId <- liftBase extractNodeId
+    (PingPeer host) -> do
+      nodeId <- extractNodeId
       let msg = SafeString.fromBytes' (toS nodeId)
       peer <- liftIO $ mkNodeId (toS host)
-      liftBase $ nsendPeer' service peer $ Message.Ping msg
-      
+      nsendPeer' service peer $ Message.Ping msg
+
       return cmdSuccess
     ListPeers -> do
-      peers <- NodeState.getPeers 
+      peers <- NodeState.getPeers
       return $ PeerList peers
     (AddPeer host) -> do
       peer <- liftIO $ mkNodeId (toS host)
-      liftBase $ doDiscover peer
+      liftP $ doDiscover peer
       return cmdSuccess
 
 
 handleTestCmd
-  :: TestCmd
-  -> NodeProcessT ()
+  :: (MonadProcessBase m, DB.MonadReadWriteDB m)
+  => TestCmd
+  -> NodeT m ()
 handleTestCmd testCmd =
   case testCmd of
 
@@ -176,49 +199,84 @@ handleTestCmd testCmd =
               pub = Key.unHexPub $ Key.hexPub $ Account.publicKey newAcc
           let txHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
 
-          liftIO $ Transaction.newTransaction (Account.address newAcc) Nothing (snd acctKeys) txHdr
+          liftIO $ Transaction.newTransaction (Account.address newAcc) (snd acctKeys) txHdr
 
       -- Submit txs
       case delay of
-        0 -> liftBase $ nsendTransactionMany TestMessaging txs
-        _ -> liftBase $
-          Utils.delayedReplicateM_ ntxs delay $
-            void $ spawnLocal $
-              forM_ txs $ nsendTransaction TestMessaging
+        0 -> nsendTransactionMany TestMessaging txs
+        _ -> Utils.delayedReplicateM_ ntxs delay $
+              void $ spawnLocal $
+                forM_ txs $ nsendTransaction TestMessaging
 
-        -- XXX Handle error cases better
+    -- XXX Handle error cases better
     ServiceRestartController service delay -> do
-      peers <- liftBase $ queryCapablePeers service
+      peers <- queryCapablePeers service
       randN <- liftIO $ randomRIO (0, length peers)
       case peers `atMay` randN of
         Nothing -> return ()
         Just nodeId -> do
           let serviceNmSafe = SafeString.fromBytes $ show service
           let msg = Message.ServiceRestart $ Message.ServiceRestartMsg service delay
-          liftBase $ nsendPeer' service nodeId (Message.Test msg)
+          nsendPeer' service nodeId (Message.Test msg)
 
     ResetMemPools -> do
       let resetMsg = Message.ResetMemPool Message.ResetMemPoolMsg
-      liftBase $ nsendPeers' TestMessaging (Message.Test resetMsg)
+      nsendPeers' TestMessaging (Message.Test resetMsg)
+
+    ResetDB addr sig' -> do
+      case Key.decodeSig sig' of
+        Left err -> Log.warning $ show err
+        Right sig -> do
+
+          let addrBS = Address.rawAddr addr
+          backend  <- Config.storageBackend <$> NodeState.askConfig
+          nodeAcc  <- NodeState.askAccount
+          nodeKeys <- NodeState.askKeyPair
+
+          if not (Key.verify (fst nodeKeys) sig addrBS)
+            then do
+              let errMsg = Text.intercalate "\n    "
+                    [ "Error resetting DB:"
+                    , "Could not verify the signature of the address sent in ResetDB TestCmd."
+                    , "Please sign the address associated with the uplink node account using the uplinks node's private key"
+                    ]
+              Log.warning errMsg
+            else do
+              -- Wipe DB entirely, keeping Node Keys and Node Acc
+              eRes <- lift DB.resetDB
+              case eRes of
+                Left err -> Log.critical $
+                  "Failed to reset Databases on ResetDB TestCmd: " <> err
+                Right _ ->
+                  -- Wipe entire node state except for peers (fresh world contains
+                  -- preallocated accounts specified in config)
+                  NodeState.resetNodeState
 
 -------------------------------------------------------------------------------
 -- Helpers
 -------------------------------------------------------------------------------
 
-nsendTransaction :: Service -> Transaction.Transaction -> Process ()
+nsendTransaction
+  :: MonadProcessBase m
+  => Service
+  -> Transaction.Transaction
+  -> m ()
 nsendTransaction service tx = do
   let message = Message.SendTx (Message.SendTransactionMsg tx)
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
   nsendPeersAsync' service message
 
-nsendTransactionMany :: Service -> [Transaction.Transaction] -> Process ()
+nsendTransactionMany
+  :: MonadProcessBase m
+  => Service
+  -> [Transaction.Transaction]
+  -> m ()
 nsendTransactionMany service txs = do
   let messages = [Message.SendTx (Message.SendTransactionMsg tx) | tx <- txs]
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
   nsendPeersMany' service messages
-
 
 -- | Creates new transaction using current node account and private key
 newTransaction
@@ -226,12 +284,9 @@ newTransaction
   => Transaction.TransactionHeader
   -> NodeT m Transaction.Transaction
 newTransaction txHeader = do
-  privKey <- lift askPrivateKey
-  accAddr <- lift askSelfAddress
-  liftIO $ Transaction.newTransaction accAddr Nothing privKey txHeader
+  privKey <- askPrivateKey
+  accAddr <- askSelfAddress
+  liftIO $ Transaction.newTransaction accAddr privKey txHeader
 
 getTransaction :: Transaction.Transaction -> Process ()
 getTransaction tx = putText "Writing transaction"
-
-
-

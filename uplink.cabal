@@ -3,15 +3,19 @@
 -- see: https://github.com/sol/hpack
 
 name:           uplink
-version:        0.1.0
+version:        0.1.1
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
 bug-reports:    https://github.com/adjoint-io/uplink/issues
 maintainer:     Stephen Diehl (stephen@adjoint.io)
 license:        Apache
+license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
+
+extra-source-files:
+    README.md
 
 source-repository head
   type: git
@@ -53,7 +57,11 @@ library
     , datetimes
     , hourglass
     , mtl >= 2.2
+    , transformers
     , transformers-base
+    , monad-control
+    , lifted-base
+    , distributed-process-lifted
     , containers
     , hashable ==1.2.4.0
     , unordered-containers
@@ -92,10 +100,15 @@ library
     , network-transport-tcp
     , network-transport-inmemory
     , distributed-process
+    , wai
     , wai-logger
     , warp
     , warp-tls
+    , network-uri
     , leveldb-haskell
+    , postgresql-simple
+    , resource-pool
+    , file-embed
     , repline
     , haskeline
     , scotty
@@ -136,6 +149,16 @@ library
       Commit
       Encoding
       DB
+      DB.Class
+      DB.LevelDB
+      DB.PostgreSQL
+      DB.PostgreSQL.Account
+      DB.PostgreSQL.Asset
+      DB.PostgreSQL.Contract
+      DB.PostgreSQL.Block
+      DB.PostgreSQL.Transaction
+      DB.PostgreSQL.InvalidTransaction
+      DB.PostgreSQL.Tmp
       TxLog
       XML
       RPC
@@ -151,7 +174,8 @@ library
       Network.P2P.Service
       Consensus
       Consensus.Authority
-      Consensus.Authority.Types
+      Consensus.Authority.Params
+      Consensus.Authority.State
       Authority
       Validate
       Script
@@ -201,7 +225,11 @@ executable uplink
     , datetimes
     , hourglass
     , mtl >= 2.2
+    , transformers
     , transformers-base
+    , monad-control
+    , lifted-base
+    , distributed-process-lifted
     , containers
     , hashable ==1.2.4.0
     , unordered-containers
@@ -240,10 +268,15 @@ executable uplink
     , network-transport-tcp
     , network-transport-inmemory
     , distributed-process
+    , wai
     , wai-logger
     , warp
     , warp-tls
+    , network-uri
     , leveldb-haskell
+    , postgresql-simple
+    , resource-pool
+    , file-embed
     , repline
     , haskeline
     , scotty
@@ -286,7 +319,11 @@ test-suite uplink-test
     , datetimes
     , hourglass
     , mtl >= 2.2
+    , transformers
     , transformers-base
+    , monad-control
+    , lifted-base
+    , distributed-process-lifted
     , containers
     , hashable ==1.2.4.0
     , unordered-containers
@@ -325,10 +362,15 @@ test-suite uplink-test
     , network-transport-tcp
     , network-transport-inmemory
     , distributed-process
+    , wai
     , wai-logger
     , warp
     , warp-tls
+    , network-uri
     , leveldb-haskell
+    , postgresql-simple
+    , resource-pool
+    , file-embed
     , repline
     , haskeline
     , scotty
@@ -352,6 +394,7 @@ test-suite uplink-test
       TestDB
       TestJson
       TestPaillier
+      TestPostgres
       TestScript
       TestStorage
       TestTx
@@ -386,7 +429,11 @@ benchmark uplink-benchmarks
     , datetimes
     , hourglass
     , mtl >= 2.2
+    , transformers
     , transformers-base
+    , monad-control
+    , lifted-base
+    , distributed-process-lifted
     , containers
     , hashable ==1.2.4.0
     , unordered-containers
@@ -425,10 +472,15 @@ benchmark uplink-benchmarks
     , network-transport-tcp
     , network-transport-inmemory
     , distributed-process
+    , wai
     , wai-logger
     , warp
     , warp-tls
+    , network-uri
     , leveldb-haskell
+    , postgresql-simple
+    , resource-pool
+    , file-embed
     , repline
     , haskeline
     , scotty

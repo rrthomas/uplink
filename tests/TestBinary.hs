@@ -27,7 +27,7 @@ import qualified Address
 import qualified Script
 import qualified Time
 import qualified Consensus.Authority as CA
-import qualified Consensus.Authority.Types as CAT
+import qualified Consensus.Authority.Params as CAP
 
 import Network.P2P.Consensus as NPC
 import qualified Reference as Ref
@@ -56,7 +56,7 @@ binaryTests =
     [ testCase "Block Serialization" $ do
         let testGenBlockSeed = "83bc234a"
         genBlock <- Block.genesisBlock testGenBlockSeed Ref.testTimestamp Ref.testPoA
-        binaryTest Block.encodeBlock Block.decodeBlock (Ref.testBlock genBlock)
+        binaryTest Block.encodeBlock Block.decodeBlock (Ref.testBlock genBlock [])
 
     , testCase "Address Serialization" $ do
         binaryTest S.encode S.decode (pure Ref.testAddr)
@@ -64,11 +64,11 @@ binaryTests =
     , testCase "Transaction binary roundtrip (uses Serialize instance)" $ do
         let tx = Ref.testTx Ref.testCall
         binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure tx)
-    , testCase "Account binary roundtrip (uses Serialize instance)" $ 
+    , testCase "Account binary roundtrip (uses Serialize instance)" $
         binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAccount)
-    , testCase "Asset binary roundtrip (uses Serialize instance)" $ 
+    , testCase "Asset binary roundtrip (uses Serialize instance)" $
         binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAsset1)
-    , testCase "Contract binary roundtrip (uses Serialize instance)" $ 
+    , testCase "Contract binary roundtrip (uses Serialize instance)" $
         binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure $ Ref.testContract Ref.testTimestamp)
 
     , testCase "Account Serialization" $ do

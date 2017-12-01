@@ -9,6 +9,9 @@ module TxLog (
   TxLog,
   TxLogElem,
 
+  -- ** Global transaction log
+  txLogFile,
+
   -- ** Delta logging
   writeDeltas,
   writeDeltasJSON,
@@ -32,6 +35,9 @@ import System.Posix.Files
 
 type TxLogElem = (Int64, Address, Delta)
 type TxLog = [TxLogElem]
+
+txLogFile :: FilePath -> FilePath
+txLogFile root = root </> "txlog"
 
 -- | Write delta
 writeDelta :: Int64 -> Address -> Delta -> FilePath -> IO ()

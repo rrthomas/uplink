@@ -75,6 +75,11 @@ import qualified Data.Binary as B
 import qualified Data.Serialize as S
 import qualified Data.ByteString as BS
 
+import Database.PostgreSQL.Simple.FromRow   (FromRow)
+import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
+import Database.PostgreSQL.Simple.ToField   (ToField(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
 import Crypto.Number.Serialize (i2osp)
 
 -------------------------------------------------------------------------------
@@ -104,6 +109,9 @@ instance FromJSON Address where
           False -> fail "String is malformed address."
           True  -> pure (Address (encodeUtf8 v))
   parseJSON _ = fail "Cannot parse address from non-string."
+
+instance FromJSONKey Address where
+  fromJSONKey = Address . encodeUtf8 <$> fromJSONKey
 
 instance Serialize Address where
   put (Address bs) = case unb58 bs of
@@ -242,3 +250,22 @@ newTriple = Key.new >>= \(pub, priv) -> pure (priv, pub, deriveAddress pub)
 -- | Generate a set of new addresses
 newAddrs :: Int -> IO [Address]
 newAddrs n = replicateM n newAddr
+
+-------------------------------------------------------------------------------
+-- Postgres DB
+-------------------------------------------------------------------------------
+
+-- XXX Maybe this is wrong (trying to convert it to `Text` before toField).
+instance ToField Address where
+  toField = toField . decodeUtf8 . rawAddr
+
+instance FromField Address where
+  fromField f mdata =
+    case mdata of
+      Nothing   -> returnError UnexpectedNull f ""
+      Just addr
+        | validateAddress (fromRaw addr) -> return $ fromRaw addr
+        | otherwise -> returnError ConversionFailed f "Invalid Address read from DB"
+
+instance ToRow Address
+instance FromRow Address

@@ -6,10 +6,12 @@ Contract datatypes, signing and operations.
 
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Contract (
   -- ** Types
   Contract(..),
+  LocalStorageVars(..),
 
   callableMethods,
 
@@ -49,9 +51,23 @@ import qualified Data.Set as Set
 import Data.Aeson (object, (.=))
 import qualified Data.Aeson as A
 
+import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
 -------------------------------------------------------------------------------
 -- Contracts
 -------------------------------------------------------------------------------
+
+type LocalStorages = Map.Map Address.Address LocalStorage
+
+newtype LocalStorageVars = LocalStorageVars
+  { unLocalStorageVars :: Set.Set Name
+  } deriving (Eq, Show, Generic, NFData, Serialize, Hash.Hashable)
+
+instance Monoid LocalStorageVars where
+  mempty = LocalStorageVars mempty
+  (LocalStorageVars lsvars1) `mappend` (LocalStorageVars lsvars2) =
+    LocalStorageVars (lsvars1 `mappend` lsvars2)
 
 -- | A contract is a 4-tuple of the address of publisher, timestamp of
 -- deployment time, script source, and it's initial storage hash.
@@ -59,8 +75,8 @@ data Contract = Contract
   { timestamp        :: Timestamp        -- ^ Timestamp of issuance
   , script           :: Script           -- ^ Underlying contract logic
   , globalStorage    :: GlobalStorage    -- ^ Initial state of the contract
-  , localStorage     :: Map.Map Address.Address LocalStorage     -- ^ Initial state of the contract
-  , localStorageVars :: Set.Set Name
+  , localStorage     :: LocalStorages    -- ^ Initial state of the contract
+  , localStorageVars :: LocalStorageVars -- ^ Names of all local variables
   , methods          :: [Script.Name]    -- ^ Public methods
   , state            :: Graph.GraphState -- ^ State of Contract
   , owner            :: Address          -- ^ Creator of the contract
@@ -124,3 +140,14 @@ instance Binary.Binary Contract where
     case decode bs of
       (Right tx) -> return tx
       (Left err) -> fail err
+
+instance ToField LocalStorageVars where
+  toField = EscapeByteA . Data.Serialize.encode
+
+instance FromField LocalStorageVars where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case Data.Serialize.decode <$> bs of
+      Nothing              -> returnError UnexpectedNull f ""
+      Just (Left err)      -> returnError ConversionFailed f err
+      Just (Right lvarnms) -> return lvarnms

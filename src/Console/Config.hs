@@ -4,7 +4,6 @@ module Console.Config (
   ConsoleConfig(..),
   ConsoleCtx(..),
   Console,
-  {-runNodeT'-}
 ) where
 
 import Protolude hiding (StateT, evalStateT, Prefix)
@@ -21,7 +20,6 @@ import Data.String as String
 import Account
 import Key
 
-
 import qualified Network.P2P.Cmd as Cmd
 
 data ConsoleConfig = ConsoleConfig {
@@ -36,4 +34,3 @@ data ConsoleCtx = ConsoleCtx {
   } deriving (Show)
 
 type Console a = HaskelineT (ReaderT ConsoleConfig (StateT ConsoleCtx IO)) a
-

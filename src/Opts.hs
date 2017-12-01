@@ -73,34 +73,36 @@ data ChainCommand
 
 -- | Command line options.
 data Opts = Opts
-  { _rpcPort     :: Maybe Int
-  , _port        :: Maybe Int
-  , _dbpath      :: Maybe FilePath
-  , _nonetwork   :: Maybe Bool
-  , _chainConfig :: Maybe FilePath
-  , _config      :: Maybe FilePath
-  , _verbose     :: Maybe Bool
-  , _hostname    :: Maybe [Char]
-  , _bootnodes   :: Maybe [ByteString]
-  , _command     :: Command
-  , _rpcReadOnly :: Maybe Bool
-  , _testMode    :: Maybe Bool
-  , _privKey     :: Maybe FilePath
+  { _rpcPort        :: Maybe Int
+  , _port           :: Maybe Int
+  , _nonetwork      :: Maybe Bool
+  , _chainConfig    :: Maybe FilePath
+  , _config         :: Maybe FilePath
+  , _verbose        :: Maybe Bool
+  , _hostname       :: Maybe [Char]
+  , _bootnodes      :: Maybe [ByteString]
+  , _storageBackend :: Maybe [Char]
+  , _command        :: Command
+  , _rpcReadOnly    :: Maybe Bool
+  , _testMode       :: Maybe Bool
+  , _privKey        :: Maybe FilePath
+  , _nodeDir        :: Maybe FilePath
   } deriving (Show)
 
 defaultOpts :: Opts
 defaultOpts = Opts
-  { _rpcPort     = Just 8545
-  , _port        = Just 8001
-  , _dbpath      = Just ".uplink"
-  , _nonetwork   = Just False
-  , _chainConfig = Just "chain.config"
-  , _config      = Just Config.defaultConfig
-  , _verbose     = Just False
-  , _hostname    = Nothing
-  , _bootnodes   = Nothing
-  , _command     = Chain Run
-  , _rpcReadOnly = Just False
-  , _testMode    = Just False
-  , _privKey     = Nothing
+  { _rpcPort        = Nothing
+  , _port           = Nothing
+  , _nonetwork      = Just False
+  , _chainConfig    = Just "chain.config"
+  , _config         = Just Config.defaultConfig
+  , _verbose        = Just False
+  , _hostname       = Nothing
+  , _bootnodes      = Nothing
+  , _storageBackend = Nothing
+  , _command        = Chain Run
+  , _rpcReadOnly    = Just False
+  , _testMode       = Just False
+  , _privKey        = Nothing
+  , _nodeDir        = Just ".uplink"
   }

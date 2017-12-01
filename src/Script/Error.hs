@@ -13,31 +13,36 @@ module Script.Error (
 ) where
 
 import Protolude hiding (Overflow, Underflow, DivideByZero)
+
+import Data.Serialize (Serialize)
+
 import Script (Name)
 import Script.Graph (GraphState(..), Label)
 
 -- | Scripts either run to completion or fail with a named error.
 data EvalFail
-  = AssetIntegrity Text           -- ^ Asset does not support operation over it
-  | AddressIntegrity Text         -- ^ Address does not exist
-  | ContractIntegrity Text        -- ^ Contract does not exist
-  | AccountIntegrity Text         -- ^ Account does not exist
-  | NoSuchMethod Name             -- ^ Name lookup failure
-  | SignFailure Text              -- ^ Failed to sign message
-  | DateFailure Text              -- ^ Datetime failure
-  | TerminalState                 -- ^ Execution is in terminal state.
-  | MethodArityError Text Int Int -- ^ Call a function with the wrong # of args
-  | Overflow                      -- ^ Overflow
-  | Underflow                     -- ^ Underflow
-  | DivideByZero                  -- ^ Division by zero
-  | HomomorphicFail Text          -- ^ Error when performing homomorphic ops on SafeInteger
-  | InvalidState Label GraphState -- ^ Invalid graph state entry
-  | SubgraphLock                  -- ^ Subraph lock is held
-  | LocalVarNotFound Text         -- ^ Variable lookup failed
-  | Impossible Text               -- ^ Internal error
-  | HugeInteger Text              -- ^ SafeInteger bounds exceeded
-  | HugeString Text               -- ^ SafeString bounds exceeded
-  deriving (Eq, Ord, Show, Generic, NFData)
+  = AssetIntegrity ByteString           -- ^ Asset does not support operation over it
+  | AddressIntegrity ByteString         -- ^ Address does not exist
+  | ContractIntegrity ByteString        -- ^ Contract does not exist
+  | AccountIntegrity ByteString         -- ^ Account does not exist
+  | NoSuchMethod Name                   -- ^ Name lookup failure
+  | SignFailure ByteString              -- ^ Failed to sign message
+  | DateFailure ByteString              -- ^ Datetime failure
+  | TerminalState                       -- ^ Execution is in terminal state.
+  | MethodArityError Name Int Int       -- ^ Call a function with the wrong # of args
+  | Overflow                            -- ^ Overflow
+  | Underflow                           -- ^ Underflow
+  | DivideByZero                        -- ^ Division by zero
+  | HomomorphicFail ByteString          -- ^ Error when performing homomorphic ops on SafeInteger
+  | InvalidState Label GraphState       -- ^ Invalid graph state entry
+  | SubgraphLock                        -- ^ Subraph lock is held
+  | LocalVarNotFound Name               -- ^ Variable lookup failed
+  | Impossible ByteString               -- ^ Internal error
+  | HugeInteger ByteString              -- ^ SafeInteger bounds exceeded
+  | HugeString ByteString               -- ^ SafeString bounds exceeded
+  deriving (Eq, Ord, Show, Generic, Serialize, NFData)
+
+
 
 errorCode :: EvalFail -> Int
 errorCode = \case

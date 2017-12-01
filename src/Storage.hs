@@ -191,7 +191,13 @@ instance FromJSON Value where
         "VAccount"  -> VAccount  <$> o .: "contents"
         "VAsset"    -> VAsset    <$> o .: "contents"
         "VContract" -> VContract <$> o .: "contents"
-        "VAddress " -> VAddress  <$> o .: "contents"
+        "VAddress" -> VAddress  <$> o .: "contents"
+        "VDateTime"-> do
+            c <- parseDatetime <$> (o .: "contents")
+            case c of
+              (Just dt) -> pure $ VDateTime $ DateTime dt
+              Nothing -> typeMismatch "Invalid date format, expecting ISO8601, given:" v
+        "VTimeDelta" -> VTimeDelta  <$> o .: "contents"
         "VSig"      -> VSig      <$> o .: "contents"
         "VCrypto"   -> VCrypto   <$> o .: "contents"
         "VFixed"    -> VFixed    <$> o .: "contents"

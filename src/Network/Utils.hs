@@ -9,7 +9,8 @@ module Network.Utils (
 
 import Protolude
 
-import Control.Distributed.Process
+import Control.Distributed.Process.Lifted
+import Control.Distributed.Process.Lifted.Class
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.List as List
 
@@ -21,10 +22,10 @@ import Network.Socket (inet_ntoa)
 import Network.BSD (HostName)
 import Network.Transport (EndPointAddress(..))
 
-extractNodeId :: Process ByteString
+extractNodeId :: MonadProcessBase m => m ByteString
 extractNodeId = do
   -- nodeId is of "nid://ip:port:x"
-  nodeId <- liftA show getSelfNode :: Process ByteString
+  nodeId <- liftA show getSelfNode
   let len = length ("nid://" :: [Char])
   let nodeId' = BSC.drop len nodeId
   -- ip = "ip", rest = ":port:x"

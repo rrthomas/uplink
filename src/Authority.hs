@@ -44,7 +44,7 @@ import qualified Encoding
 -- | Create account data for
 authorityDir :: FilePath -> IO ()
 authorityDir dbpath = do
-  let meta = Map.fromList [("validator", "true")]
+  let meta = Account.Metadata $ Map.fromList [("validator", "true")]
   (account, acctKeys) <- Account.newAccount "GMT" meta
 
   Utils.putGreen "Writing account"

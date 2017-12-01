@@ -5,6 +5,7 @@ Test fixtures.
 -}
 
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 
@@ -22,6 +23,7 @@ module Reference (
 
   -- ** Transaction Headers
   testTransfer,
+  testCirculate,
   testCreateAccount,
   testCreateAsset,
   testCreateContract,
@@ -32,6 +34,7 @@ module Reference (
 
   -- ** Transaction
   testTx,
+  testTxs,
 
   -- ** Block
   testGenesis,
@@ -44,8 +47,8 @@ module Reference (
   testAsset1,
   testAsset2,
   testAsset3,
-  testAsset4,
-  testAsset4Addr,
+  testAsset3',
+  testAssets,
   testHoldings,
 
   -- ** Account
@@ -69,11 +72,6 @@ module Reference (
   transX,
   testScript,
   testCode,
-
-
-  -- ** DB
-  defaultTxDb,
-  testDb,
 
   -- ** Network.P2P.Message
   txMsg,
@@ -165,6 +163,7 @@ import qualified Script
 import qualified Address
 import qualified Account
 import qualified SafeString
+import qualified Derivation
 import qualified Transaction
 import qualified Data.Map as Map
 import qualified Network.P2P.Consensus as NPC
@@ -172,7 +171,7 @@ import qualified Network.P2P.Message as NPM
 import qualified Network.P2P.Service as Service
 import qualified Script.Graph as Graph
 
-import Consensus.Authority.Types as CAT
+import Consensus.Authority.Params as CAP
 
 import System.FilePath
 
@@ -210,6 +209,8 @@ testShowAddr = showAddr (undefined :: AContract, testAddr)
 -- Transaction Header Fixtures
 -------------------------------------------------------------------------------
 
+-- XXX Make test tx headers for all tx header types
+
 assetAddr_, toAddr_ :: Address.Address
 assetAddr_ = Address.parseAddress "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB"
 toAddr_ = Address.parseAddress "7mR5d7s6cKB4qjuX1kiwwNtygfURhFQ9TKvEd9kmq6QL"
@@ -226,6 +227,13 @@ testArgs = [
   , VUndefined
   ]
 
+testCirculate :: TransactionHeader
+testCirculate = TxAsset Transfer {
+    assetAddr = Reference.assetAddr_
+  , toAddr    = Reference.toAddr_
+  , balance   = 1
+  }
+
 testTransfer :: TransactionHeader
 testTransfer = TxAsset Transfer {
     assetAddr = Reference.assetAddr_
@@ -237,12 +245,13 @@ testCreateAccount :: TransactionHeader
 testCreateAccount = TxAccount CreateAccount {
     pubKey   = Key.unHexPub (Key.hexPub testPub)
   , timezone = "GMT"
-  , metadata = Map.fromList []
+  , metadata = mempty
   }
 
 testCreateAsset :: TransactionHeader
 testCreateAsset = TxAsset CreateAsset {
-    assetName = "test"
+    assetAddr = testAddr
+  , assetName = "test"
   , supply    = 1000
   , reference = Just Asset.Token
   , assetType = Asset.Discrete
@@ -270,7 +279,8 @@ testBind :: TransactionHeader
 testBind = TxAsset Bind {
     assetAddr    = Reference.assetAddr_
   , contractAddr = Reference.toAddr_
-  , bindProof    = Key.getSignatureRS testSig
+  , bindProof    = bimap SI.toSafeInteger' SI.toSafeInteger' $
+                     Key.getSignatureRS testSig
   }
 
 testSyncLocal :: TransactionHeader
@@ -288,10 +298,21 @@ testTx hdr = tx
     tx = Transaction {
       header    = hdr
     , origin    = testAddr
-    , to        = Nothing
     , signature = Key.encodeSig sig
     , timestamp = testTimestamp
     }
+
+testTxs :: [Transaction]
+testTxs = map testTx
+  [ testCreateAccount
+  , testCreateAsset
+  , testTransfer
+  , testCreateContract
+  , testRevokeAccount
+  , testCall
+  , testBind
+  , testSyncLocal
+  ]
 
 -------------------------------------------------------------------------------
 -- Block Fixtures
@@ -325,15 +346,13 @@ testGenesis = do
   , transactions = txs
   }
 
--- XXX: not deterministic
 -- | Test block signed with test key
-testBlock :: Block -> IO Block
-testBlock lastBlock = do
-  -- Test transactions
+testBlock :: Block -> [Transaction] -> IO Block
+testBlock lastBlock txs = do
   newBlock
     testAddr
     (hashBlock lastBlock)
-    []
+    txs
     (Block.index lastBlock + 1)
     testPriv
     testPoA
@@ -342,9 +361,9 @@ testBlock lastBlock = do
 testChain :: IO [Block]
 testChain = do
   block0 <- genesisBlock "83cb2aef3" testTimestamp testPoA
-  block1 <- testBlock block0
-  block2 <- testBlock block1
-  block3 <- testBlock block2
+  block1 <- testBlock block0 []
+  block2 <- testBlock block1 []
+  block3 <- testBlock block2 []
   return [block0, block1, block2, block3]
 
 testBlockHash :: IO ByteString
@@ -359,47 +378,61 @@ testBlockHash = do
 testBalance :: Text
 testBalance = displayType (Fractional 6) 42
 
+mkTestAsset :: ByteString -> Asset.Balance -> Asset.Ref -> Asset.AssetType -> Asset
+mkTestAsset name supply ref typ = Asset{..}
+  where
+    issuedOn = testTimestamp
+    issuer = testAddr
+    holdings = mempty
+    assetType = typ
+    reference = Just ref
+
+    address =
+      Derivation.addrAsset
+        name
+        issuer
+        supply
+        reference
+        assetType
+        issuedOn
+
 testAsset1 :: Asset
-testAsset1 = Asset
-  { name = "hamburgers"
-  , issuedOn = testTimestamp
-  , issuer = testAddr
-  , supply = 100000
-  , holdings = mempty
-  , assetType = Discrete
-  , reference = Just Security
-  }
+testAsset1 =
+    mkTestAsset name supply reference assetType
+  where
+    name = "hamburgers"
+    supply = 100000
+    assetType = Discrete
+    reference = Security
 
 testAsset2 :: Asset
-testAsset2 = Asset
-  { name = "usd"
-  , issuer = testAddr
-  , issuedOn = testTimestamp
-  , supply = 100
-  , holdings = mempty
-  , assetType = Fractional 2
-  , reference = Just USD
-  }
+testAsset2 =
+    mkTestAsset name supply reference assetType
+  where
+    name = "usd"
+    supply = 100
+    assetType = Fractional 2
+    reference = USD
 
+-- | A test asset with holdings!
 testAsset3 :: Asset
-testAsset3 = Asset
-  { name = "rights"
-  , issuer = testAddr
-  , issuedOn = testTimestamp
-  , supply = 50
-  , holdings = mempty
-  , assetType = Binary
-  , reference = Just Token
-  }
+testAsset3 =
+    mkTestAsset name supply reference assetType
+  where
+    name = "rights"
+    supply = 50
+    assetType = Binary
+    reference = Token
 
-testAsset4 :: Asset
-testAsset4 =
-  let holdings = Map.fromList [(testAddr, 10000),
-                               (testAddr2, 10000)]
-  in testAsset2 {holdings = holdings, supply = 10000000}
+testAsset3' :: Asset
+testAsset3' =
+  let holdings = Holdings $
+        Map.fromList [(testAddr, 10000),(testAddr2, 10000)]
+  in testAsset3 {holdings = holdings, supply = 10000000}
 
-testAsset4Addr :: Address
-testAsset4Addr = Address.fromRaw "H5ixx7TRYT1paYYAkqMDAiLBvwqb1m6ZoTbZsGDBBfL7" -- generate with testPriv to generate sig on testAsset4
+testAssets :: [Asset]
+testAssets =
+  [testAsset1, testAsset2, testAsset3]
 
 testHoldings :: IO (Either AssetError Asset)
 testHoldings = do
@@ -408,7 +441,7 @@ testHoldings = do
 
   let x = testAsset1
   let transaction = pure testAsset1 >>=
-        adjustHolding a1 1000 >>= adjustHolding a2 1000
+        circulateSupply a1 1000 >>= circulateSupply a2 1000
   return transaction
 
 -------------------------------------------------------------------------------
@@ -422,22 +455,18 @@ testAccount :: Account
 testAccount = Account
   { publicKey   = testPub
   , address     = Address.deriveAddress testPub
-  , nodeKey     = 0x1
   , timezone    = "America/New_York"
-  , metadata    = Map.fromList [
-        ("Company", "Adjoint Inc.")
-      ]
+  , metadata    = Metadata $
+      Map.fromList [ ("Company", "Adjoint Inc.") ]
   }
 
 testAccount2 :: Account
 testAccount2 = Account
   { publicKey   = testPub2
   , address     = Address.deriveAddress testPub2
-  , nodeKey     = 0x1
   , timezone    = "America/Boston"
-  , metadata    = Map.fromList [
-        ("Company", "Adjoint Inc.")
-      ]
+  , metadata    = Metadata $
+      Map.fromList [ ("Company", "Adjoint Inc.") ]
   }
 
 -------------------------------------------------------------------------------
@@ -450,7 +479,7 @@ testContract now = Contract {
   , script        = testScript
   , globalStorage = testGlobalStorage
   , localStorage  = Map.singleton testAddr testLocalStorage
-  , localStorageVars =  Set.empty
+  , localStorageVars = mempty
   , methods       = Script.methodNames testScript
   , state         = Graph.GraphInitial
   , address       = testAddr
@@ -544,45 +573,6 @@ testCode =
   \     return void; \
   \   };\
   \ }"
-
--------------------------------------------------------------------------------
--- DB Fixtures
--------------------------------------------------------------------------------
-
--- | Cursor for transactions database
-defaultTxDb :: IO DB
-defaultTxDb = create (".uplink" </> "transactions")
-
-testDb :: IO ()
-testDb = do
-  let root = ".uplink"
-  rc <- setupExistingDB root
-  case rc of
-
-    Left err -> do
-      putText "Testing existing database."
-      testDB root
-      return ()
-
-    Right _  -> do
-      blockDB <- BlockDB <$> DB.create (blockDir root)
-
-      blocks <- testChain
-      writeBlocks blockDB blocks
-
-      res <- lookupBlock blockDB 0
-      print res
-
-      Right chain <- allBlocks blockDB
-      print chain
-      vchain <- Block.validateChain chain
-
-      putText "Chain verified:"
-      print vchain
-      putText "Chain matches input:"
-      print ((Block.sortBlocks blocks) == (Block.sortBlocks chain))
-
-      close $ DB.unDB blockDB
 
 -------------------------------------------------------------------------------
 -- Network.P2P.Message Fixtures (Payloads) -- XXX Remove IO from all of these
@@ -789,8 +779,8 @@ testPriv2 =
 -- Consensus
 -------------------------------------------------------------------------------
 
-testPoA :: CAT.PoA
-testPoA = CAT.PoA
+testPoA :: CAP.PoA
+testPoA = CAP.PoA
   { validatorSet  = mempty
   , blockPeriod   = 1
   , blockGenLimit = 1
@@ -807,4 +797,4 @@ testTxLog :: IO ()
 testTxLog = do
   let dt1 = Delta.ModifyGlobal "a" (VFloat 3.14)
   let dt2 = Delta.ModifyGlobal "b" (VInt 3)
-  TxLog.writeDeltas 0 (DB.txLogFile "node1") testAddr [dt1, dt2]
+  TxLog.writeDeltas 0 (TxLog.txLogFile "node1") testAddr [dt1, dt2]

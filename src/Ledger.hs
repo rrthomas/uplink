@@ -17,19 +17,23 @@ module Ledger (
   ContractError(..),
   Transition,
   genesisWorld,
+  mkWorld,
 
   -- ** Accounts
   lookupAccount,
   accountExists,
   addAccount,
+  addAccounts,
   removeAccount,
 
   -- ** Assets
   lookupAsset,
   assetExists,
   addAsset,
+  removeAsset,
   updateAsset,
   transferAsset,
+  circulateAsset,
 
   -- ** Contracts
   lookupContract,
@@ -42,8 +46,9 @@ module Ledger (
 import Protolude hiding (from, to, get, put)
 
 import Control.Monad.State
+import Control.Arrow ((&&&))
 
-import Data.Serialize (encode)
+import Data.Serialize (Serialize, encode)
 import qualified Data.Map as Map
 
 import Asset (Asset)
@@ -55,6 +60,7 @@ import Storage (LocalStorage(..))
 import qualified Key
 import qualified Asset
 import qualified Account
+import qualified Contract
 import qualified Address
 import qualified Storage
 
@@ -90,23 +96,32 @@ data World = World
   , accounts  :: Map.Map Address Account.Account
   } deriving (Show, Eq, Generic, NFData)
 
+instance Monoid World where
+  mempty = genesisWorld
+  w1 `mappend` w2 = World
+    (contracts w1 `mappend` contracts w2)
+    (assets w1    `mappend` assets w2)
+    (accounts w1  `mappend` accounts w2)
+
 data ContractError
   = ContractDoesNotExist Address
   | ContractExists Address
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, Serialize)
 
 data AssetError
   = AssetDoesNotExist Address
   | AssetExists Address
   | AssetError Asset.AssetError
+  | CirculatorIsNotIssuer Address Asset
   | SenderDoesNotExist Address
   | ReceiverDoesNotExist Address
-  deriving (Show, Eq)
+  | RevokerIsNotIssuer Address Asset
+  deriving (Show, Eq, Generic, Serialize)
 
 data AccountError
   = AccountDoesNotExist Address
   | AccountExists Address
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, Serialize)
 
 -- | A change in the world state.
 type Transition = World -> World
@@ -114,6 +129,17 @@ type Transition = World -> World
 -- | Empty world state
 genesisWorld :: World
 genesisWorld = World mempty mempty mempty
+
+mkWorld :: [Asset] -> [Account] -> [Contract] -> World
+mkWorld assets accounts contracts =
+    World contractsMap assetsMap accountsMap
+  where
+    keyValF f = f &&& identity
+    valToKeyValMap f = Map.fromList . map (keyValF f)
+
+    assetsMap    = valToKeyValMap Asset.address assets
+    accountsMap  = valToKeyValMap Account.address accounts
+    contractsMap = valToKeyValMap Contract.address contracts
 
 -------------------------------------------------------------------------------
 -- Polymorphic Funcs
@@ -146,13 +172,16 @@ addAccount acct world =
       in world { accounts = accounts' }
     Right _ -> Left $ AccountExists (Account.address acct)
 
+addAccounts :: [Account.Account] -> World -> Either AccountError World
+addAccounts accs world = foldM (flip Ledger.addAccount) world accs
+
 removeAccount :: Account.Account -> World -> Either AccountError World
 removeAccount acct world =
   case lookupAccount (Account.address acct) world of
     Left err -> Left err
-    Right _ -> Right $
+    Right _ ->
       let accounts' = Map.delete (Account.address acct) (accounts world)
-      in world { accounts = accounts' }
+      in Right $ world { accounts = accounts' }
 
 -------------------------------------------------------------------------------
 -- Assets
@@ -173,6 +202,15 @@ addAsset addr ass world =
   case lookupAsset addr world of
     Left _ -> Right $ updateAsset addr ass world
     Right _ -> Left $ AssetExists addr
+
+-- | Remove an asset from the world
+removeAsset :: Address -> World -> Either AssetError World
+removeAsset addr world =
+  case lookup assets addr world of
+    Nothing -> Left $ AssetDoesNotExist addr
+    Just asset ->
+      let assets' = Map.delete addr (assets world)
+      in Right $ world { assets = assets' }
 
 -- | Overwrites the asset at a given address
 updateAsset :: Address -> Asset -> World -> World
@@ -195,7 +233,7 @@ transferAsset assetAddr from to bal world = do
       Left err -> Left $ AssetDoesNotExist assetAddr
       Right asset -> do
         asset' <- first AssetError $
-          Asset.transferHolding from to bal asset
+          Asset.transferHoldings from to bal asset
         Right $ world { assets = Map.insert assetAddr asset' (assets world) }
   where
     validateTransferAddrs
@@ -216,6 +254,25 @@ transferAsset assetAddr from to bal world = do
           Left err -> second (const ()) $
             Ledger.lookupContract to world
           Right acc -> Right ()
+
+-- | Moves an amount of an asset's supply to the holdings of the asset issuer
+circulateAsset
+  :: Address        -- ^ Asset Address
+  -> Address        -- ^ Origin Address
+  -> Asset.Balance  -- ^ Amount to circulate
+  -> World          -- ^ World state
+  -> Either AssetError World
+circulateAsset assetAddr txOrigin amount world =
+  case lookupAsset assetAddr world of
+    Left err    -> Left $ AssetDoesNotExist assetAddr
+    Right asset -> do
+      let assetIssuer = Asset.issuer asset
+      if assetIssuer /= txOrigin
+        then Left $ CirculatorIsNotIssuer txOrigin asset
+        else do
+          asset' <- first AssetError $
+            Asset.circulateSupply assetIssuer amount asset
+          Right $ world { assets = Map.insert assetAddr asset' (assets world) }
 
 -------------------------------------------------------------------------------
 -- Contracts

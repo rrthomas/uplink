@@ -7,13 +7,7 @@ DLTs, consensus around the Ledger state and block chain is essential.
 In this model, each block in the chain stores the consensus algorithm in which to evaluate
 the validity of the next block, as well as the arguments to the consensus algorithm by
 which it should be validated. A block is not valid if it's consensus arguments do not provide
-the necessary values for which a block is valid. The two important types are:
-
-PoAState:
-  A value used by validating nodes during the signing of new blocks. If the new
-  block the node is being requested to sign has an index <= prevSignedBlockIdx, then
-  the node will not sign the block. After the node signs a new block, this field is
-  updated to reflect the latest block signed.
+the necessary values for which a block is valid.
 
 PoA:
   A record representing the M-of-N multisig PoA consensus algorithm parameters. These
@@ -21,29 +15,15 @@ PoA:
   which to validate and accept a block when a node receives a new block from a
   signing/generating node.
 
----------
-
-Note:
-  This module contains all the types related to Uplink Consensus.
-  The reason that these types are not in the same files as the logic
-  associated with their respectful consensus algorithms is because of
-  cyclical module imports. Several modules necessary for consensus logic
-  also need to import the types found in this module. If the types were found
-  in the same module as the consensus logic, the other modules would not be
-  able to import the types they need without forming an import cycle.
-
 -}
 
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 
-module Consensus.Authority.Types (
+module Consensus.Authority.Params (
 
   PoA(..),
   mkGenesisPoA,
-
-  PoAState(..),
-  defPoAState,
 
   ValidatorSet(..),
   isValidatorAddr,
@@ -60,23 +40,16 @@ import qualified Data.Set as Set
 import qualified Data.Serialize as S
 
 import Address (Address)
-import qualified Config
 import qualified Address
 import qualified Hash
 import qualified Key
 
+import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
 -------------------------------------------------------------------------------
 -- Proof of Authority (Federated Consensus, M-of-N Multi-signature)
 -------------------------------------------------------------------------------
-
--- | State of validating/generating node with respect to ConsensusAlg
-data PoAState = PoAState
-  { prevSignedBlockIdx :: Int
-  , prevGenBlockIdx    :: Int
-  } deriving (Show, Eq, Generic, S.Serialize, Hash.Hashable)
-
-defPoAState :: PoAState
-defPoAState = PoAState 0 0
 
 -- | Set of validating nodes that sign blocks
 newtype ValidatorSet = ValidatorSet
@@ -101,22 +74,29 @@ data PoA = PoA
   , signerLimit   :: Int          -- ^ # of consecutive blocks of which the validator can sign one block
   } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
 
-mkGenesisPoA :: Config.ChainSettings -> Either PoAValidationError PoA
-mkGenesisPoA Config.ChainSettings{..} =
+mkGenesisPoA
+  :: [Text]
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> Either PoAValidationError PoA
+mkGenesisPoA validators blkPeriod blkLimit sgnLimit thresh mintxs =
     case validatePoA poa of
       Nothing  -> Right poa
       Just err -> Left err
   where
     validatorSet = ValidatorSet $ Set.fromList $
-      map (Address.parseAddress . toS) poaValidators
+      map (Address.parseAddress . toS) validators
 
     poa = PoA
       { validatorSet  = validatorSet
-      , blockPeriod   = fromIntegral poaBlockPeriod
-      , blockGenLimit = poaBlockLimit
-      , signerLimit   = poaSignLimit
-      , threshold     = poaThreshold
-      , minTxs        = poaTransactions
+      , blockPeriod   = fromIntegral blkPeriod
+      , blockGenLimit = blkLimit
+      , signerLimit   = sgnLimit
+      , threshold     = thresh
+      , minTxs        = mintxs
       }
 
 data PoAValidationError
@@ -156,3 +136,20 @@ data PoAError
   | ValidationError Text               -- Constructor to absorb other validation error types
   | PoAErrors [PoAError]               -- Turn a list of errors into a single error
   deriving (Show, Eq)
+
+-------------------------------------------------------------------------------
+-- Serialization
+-------------------------------------------------------------------------------
+
+-- Necessary instances because Data.Serialize.encode/decode does not play well
+-- with postgresql-simple's ByteString-to-bytea serializer
+instance ToField PoA where
+  toField = EscapeByteA . S.encode
+
+instance FromField PoA where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case S.decode <$> bs of
+      Nothing          -> returnError UnexpectedNull f ""
+      Just (Left err)  -> returnError ConversionFailed f err
+      Just (Right poa) -> return poa

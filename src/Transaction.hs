@@ -14,6 +14,7 @@ Transaction data structures and serialization.
 module Transaction (
   -- ** Types
   Transaction(..),
+  Status(..),
   TxAsset(..),
   TxContract(..),
   TxAccount(..),
@@ -25,22 +26,28 @@ module Transaction (
 
   -- ** Hashing
   hashTransaction,
+  base16HashTransaction,
 
   -- ** Serialization
   encodeTransaction,
   decodeTransaction,
 
-  -- ** Validation / Verification
-  verifyTransaction,
-  validateTransaction,
-
+  -- ** Invalid Transactions
   InvalidTransaction(..),
+  hashInvalidTx,
+  base16HashInvalidTx,
+
   InvalidTxHeader(..),
   InvalidTxAccount(..),
   InvalidTxAsset(..),
   InvalidTxContract(..),
   TxValidationError(..),
   InvalidTxField(..),
+
+  -- ** Validation / Verification
+  verifyTransaction,
+  validateTransaction,
+  validateTransactionNoTs,
 
 ) where
 
@@ -55,10 +62,15 @@ import Data.Serialize.Put
 import qualified Data.Binary as Binary
 import Data.Maybe (fromJust)
 import Control.Monad (fail)
-import Datetime.Types
-import Asset (Asset, Balance, putAssetType, getAssetType, putRef, getRef)
-import Address (Address)
 import Utils (toInt, toWord16)
+
+import SafeString (SafeString)
+import SafeInteger (SafeInteger, fromSafeInteger)
+
+import Asset (Asset, Balance, putAssetType, getAssetType, putRef, getRef)
+import Address (Address, putAddress, getAddress)
+import Account (Metadata(..))
+import Datetime.Types
 import qualified Key
 import qualified Time
 import qualified Hash
@@ -70,16 +82,22 @@ import qualified Storage
 import qualified SafeString
 import qualified SafeInteger
 import qualified Script
+
 import Script (Value(..))
 import qualified Script.Init
 import qualified Script.Eval
 import qualified Script.Typecheck
+
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map.Strict as Map
+
 import Text.XML.Expat.Pickle
 import Text.XML.Expat.Tree
+
+import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
 
 -------------------------------------------------------------------------------
 -- Transaction
@@ -90,7 +108,6 @@ data Transaction = Transaction
   { header    :: TransactionHeader
   , signature :: ByteString
   , origin    :: Address
-  , to        :: Maybe Address
   , timestamp :: Time.Timestamp
   } deriving (Show, Eq, Generic, NFData, Serialize, Hash.Hashable)
 
@@ -100,6 +117,12 @@ data TransactionHeader
   | TxAsset TxAsset        -- ^ Asset transactions
   | TxAccount TxAccount    -- ^ Account transactions
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+
+data Status
+  = Pending
+  | Rejected
+  | Accepted
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, ToJSON, FromJSON)
 
 -------------------------------------------------------------------------------
 -- Transaction Types
@@ -129,7 +152,8 @@ data SyncLocalOp
 
 data TxAsset
   = CreateAsset {
-      assetName :: SafeString.SafeString      -- ^ Asset name
+      assetAddr :: Address                    -- ^ Address of asset
+    , assetName :: SafeString.SafeString      -- ^ Asset name
     , supply    :: Int64                      -- ^ Asset supply
     , reference :: Maybe Asset.Ref            -- ^ Asset reference
     , assetType :: Asset.AssetType            -- ^ Asset type
@@ -141,10 +165,19 @@ data TxAsset
     , balance   :: Balance                    -- ^ Amount to transfer
   }
 
+  | Circulate {
+      assetAddr :: Address                    -- ^ Address of asset
+    , amount    :: Balance                    -- ^ Amount to transfer
+  }
+
   | Bind {
-      assetAddr    :: Address                 -- ^ Asset address
-    , contractAddr :: Address                 -- ^ Account address
-    , bindProof    :: (Integer, Integer)      -- ^ Bind proof
+      assetAddr    :: Address                    -- ^ Asset address
+    , contractAddr :: Address                    -- ^ Account address
+    , bindProof    :: (SafeInteger, SafeInteger) -- ^ Bind proof
+  }
+
+  | RevokeAsset {
+      address :: Address                      -- ^ Address of asset to revoke
   }
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
@@ -152,7 +185,7 @@ data TxAccount
   = CreateAccount {
       pubKey   :: ByteString                  -- ^ Public key associated with the account
     , timezone :: ByteString                  -- ^ Time zone
-    , metadata :: Map ByteString ByteString   -- ^ Arbitrary additional metadata
+    , metadata :: Metadata                    -- ^ Arbitrary additional metadata
   }
   | RevokeAccount {
       address   :: Address                    -- ^ Issue a revocation of an account
@@ -162,6 +195,29 @@ data TxAccount
 -------------------------------------------------------------------------------
 -- Serialization
 -------------------------------------------------------------------------------
+
+{- XXX
+
+Currently every time a new transaction is added:
+
+  1) The programmer must manually change the Serialization instance for Transaction
+     header, juggling the binary encoding flag denoting which constructor/transaction
+     header.
+
+  2) get<TxHeaderType> functions must be changed, incorporating the binary encoding
+     flag shift that is necessary in this encoding model.
+
+  3) put<TxHeaderType> functions must be changed, for the same reason listed in the
+     description of changes for get<TxHeaderType>
+
+XXX
+Suggestion: Serialization of Transaction headers should be rewritten to take advantage
+of types; We can use Data.Typeable `typeRep` to get the number of constructors and pass
+that to helper functions that assign binary encoding flags to each constructor (for Put).
+For get, we could use the typerep to see what constructor the flag corresponds to.
+XXX
+
+-}
 
 instance Binary.Binary Transaction where
   put tx = Binary.put $ encode tx
@@ -182,97 +238,117 @@ instance Serialize TransactionHeader where
   get = do
     code <- getWord16be
     let code' = fromInteger $ toInteger code
-    if | code == 1000 || code == 1001 || code == 1002 ->
+    if | code `elem` [1000, 1001, 1002] ->
           getTxContract code'
 
-       | code == 1003 || code == 1004 || code == 1005 ->
+       | code `elem` [1003, 1004, 1005, 1006, 1007] ->
           getTxAsset code'
 
-       | code == 1006 || code == 1007 ->
+       | code `elem` [1008, 1009] ->
           getTxAccount code'
 
-       | otherwise -> fail $ "Unknown code: " <> show code
+       | otherwise -> fail $
+           "Invalid TxHeaderType flag: " <> show code
 
 
 getTxContract :: Int -> Get TransactionHeader
 getTxContract 1000 = do
-  addr     <- Address.getAddress
+  addr     <- getAddress
   contract <- get
-  pure $ TxContract $ CreateContract addr contract
-
+  pure $ TxContract $
+    CreateContract addr contract
+getTxContract 1001 = do
+  addr <- getAddress
+  op   <- get
+  pure $ TxContract $
+    SyncLocal addr op
 getTxContract 1002 = do
-  address <- Address.getAddress
+  address <- getAddress
   method  <- get
   args    <- get
-  pure $ TxContract $ Call address method args
+  pure $ TxContract $
+    Call address method args
 getTxContract n = fail $ "getTxContract " <> show n
 
 getTxAsset :: Int -> Get TransactionHeader
 getTxAsset 1003 = do
-  name <- SafeString.getSafeString
+  addr   <- getAddress
+  name   <- SafeString.getSafeString
   supply <- getInt64be
-  ref <- getWord16be
+  ref    <- getWord16be
   mRef <- do
     if | ref == 0 -> return Nothing
        | ref == 1 -> Just <$> getRef
-       | True     -> fail $ show ref <> " not a valid CreateAsset reference prefix."
-
+       | True     -> fail $ show ref <>
+           " is not a valid CreateAsset reference prefix."
   assetType <- getAssetType
-
-  pure $ TxAsset $ CreateAsset name supply mRef assetType
-
+  pure $ TxAsset $
+    CreateAsset addr name supply mRef assetType
 getTxAsset 1004 = do
-  asset <- Address.getAddress
-  to    <- Address.getAddress
+  asset <- getAddress
+  to    <- getAddress
   bal   <- getInt64be
-  pure $ TxAsset $ Transfer asset to bal
-
+  pure $ TxAsset $
+    Transfer asset to bal
+getTxAsset 1005 = do
+  assetAddr <- getAddress
+  amount    <- getInt64be
+  pure $ TxAsset $
+    Circulate assetAddr amount
+getTxAsset 1006 = do
+  assetAddr    <- getAddress
+  contractAddr <- getAddress
+  bindProof    <- get :: Get (SafeInteger, SafeInteger)
+  pure $ TxAsset $
+    Bind assetAddr contractAddr bindProof
+getTxAsset 1007 = do
+  addr <- getAddress
+  pure $ TxAsset $
+    RevokeAsset addr
 getTxAsset n = fail $ "getTxAsset " <> show n
 
-
 getTxAccount :: Int -> Get TransactionHeader
-getTxAccount 1006 = do
+getTxAccount 1008 = do
   pubKeyLen <- getWord16be
   pubKey <- getBytes $ (toInt pubKeyLen :: Int)
   tzLen <- getWord16be
   tz <- getBytes $ toInt tzLen
-  md <- getMap
-
+  md <- get
   pure $ TxAccount $ CreateAccount pubKey tz md
-getTxAccount 1007 = do
-  addr <- Address.getAddress
-  pure $ TxAccount $ RevokeAccount addr
+getTxAccount 1009 = do
+  addr <- getAddress
+  pure $ TxAccount $
+    RevokeAccount addr
 getTxAccount n = fail $ "getTxAccount " <> show n
 
 instance Serialize TxContract where
   put txc = case txc of
     CreateContract addr contract -> do
       putWord16be 1000
-      Address.putAddress addr
+      putAddress addr
       put contract
 
     SyncLocal addr op -> do
       putWord16be 1001
-      Address.putAddress addr
+      putAddress addr
       put op
-
-
 
     Call address method args -> do
       putWord16be 1002
-      Address.putAddress address
+      putAddress address
       put method
       put args
 
 instance Serialize TxAsset where
   put txa = case txa of
-    CreateAsset name supply mRef assetType -> do
+    CreateAsset addr name supply mRef assetType -> do
       putWord16be 1003
+      putAddress addr
       SafeString.putSafeString name
       putInt64be supply
+
       case mRef of
         Nothing -> putWord16be 0
-
         Just ref -> do
           putWord16be 1
           putRef ref
@@ -281,72 +357,48 @@ instance Serialize TxAsset where
 
     Transfer asset to bal -> do
       putWord16be 1004
-      Address.putAddress asset
-      Address.putAddress to
+      putAddress asset
+      putAddress to
       putInt64be bal
 
-    Bind asset act (r,s) -> do
+    Circulate asset amount -> do
       putWord16be 1005
-      Address.putAddress asset
-      Address.putAddress act
-      Key.putSignature (Key.mkSignatureRS (r,s))
+      putAddress asset
+      putInt64be amount
+
+    Bind asset act sig -> do
+      putWord16be 1006
+      putAddress asset
+      putAddress act
+      put sig
+
+    RevokeAsset addr -> do
+      putWord16be 1007
+      putAddress addr
 
 instance Serialize TxAccount where
   put txa = case txa of
     CreateAccount pubKey tz md -> do
-      putWord16be 1006
+      putWord16be 1008
       putWord16be $ toWord16 $ BS.length pubKey
       putByteString pubKey
       putWord16be $ toWord16 $ BS.length tz
       putByteString tz
-      putMap md
+      put md
 
     RevokeAccount addr -> do
-      putWord16be 1007
-      Address.putAddress addr
+      putWord16be 1009
+      putAddress addr
 
+-- XXX incomplete, only deserialized InitialCommit
 instance Serialize SyncLocalOp where
   put op = case op of
-        (InitialCommit (a, b)) -> do
-          put a
-          put b
+        (InitialCommit sig) -> put sig
         _ -> undefined
+  get = InitialCommit <$> get
 
 txCall :: Address -> ByteString -> [Storage.Value] -> TxContract
 txCall = Call
-
--------------------------------------------------------------------------------
--- Map Serialization
--------------------------------------------------------------------------------
-
-getMap :: Get (Map ByteString ByteString)
-getMap = do
-  len <- getWord16be
-  go [] 0 len
-  where
-    go acc i len
-      | i == len = return $ Map.fromList acc
-      | otherwise = do
-        keyLen <- getWord16be
-        key    <- getBytes $ toInt keyLen
-        valLen <- getWord16be
-        val    <- getBytes $ toInt valLen
-        go ((key, val) : acc) (i+1) len
-
-putMap :: Map ByteString ByteString -> PutM ()
-putMap m = do
-  let len = Map.size m
-  putWord16be $ toWord16 len
-  go $ sortBy (\a b -> compare (fst a) (fst b)) $ Map.toList m
-
-  where
-    go [] = return ()
-    go ((k,v):xs) = do
-      putWord16be $ toWord16 $ BS.length k
-      putByteString k
-      putWord16be $ toWord16 $ BS.length v
-      putByteString v
-      go xs
 
 -------------------------------------------------------------------------------
 -- JSON Serialization of Transactions
@@ -359,7 +411,6 @@ instance ToJSON Transaction where
         , "signature" .= decodeUtf8 (signature t)
         , "timestamp" .= timestamp t
         , "origin"    .= origin t
-        , "to"        .= to t
         ]
 
 instance FromJSON Transaction where
@@ -367,13 +418,11 @@ instance FromJSON Transaction where
     hd     <- v .: "header"
     sig    <- v .: "signature"
     origin <- v .: "origin"
-    to     <- v .:? "to"
     ts     <- v .: "timestamp"
     pure $ Transaction
       { header    = hd
       , signature = encodeUtf8 sig
       , origin    = origin
-      , to        = to
       , timestamp = ts
       }
 
@@ -419,7 +468,7 @@ instance ToJSON TxContract where
     ]
   toJSON (SyncLocal contractAddr op) = object
     [ "tag"      .= ("SyncLocal" :: Text)
-    ,  "address"  .= contractAddr
+    , "address"  .= contractAddr
     , "contents" .= contents
     ]
     where
@@ -442,22 +491,15 @@ instance ToJSON TxContract where
     ]
 
 instance ToJSON TxAsset where
-  toJSON (CreateAsset name supply ref assetType) = object -- XXX
+  toJSON (CreateAsset addr name supply ref assetType) = object
     [ "tag"      .= ("CreateAsset" :: Text)
     , "contents" .= object
-        [ "assetName" .= (toS $ SafeString.toBytes name :: [Char])
+        [ "assetAddr" .= addr
+        , "assetName" .= (toS $ SafeString.toBytes name :: [Char])
         , "supply"    .= supply
         , "reference" .= ref
-        , "assetType" .= Asset.jsonType assetType
+        , "assetType" .= assetType
         ]
-    ]
-  toJSON (Bind asset con sig) = object
-    [ "tag"      .= ("Bind" :: Text)
-    , "contents" .= object
-      [ "asset"    .= asset
-      , "contract" .= con
-      , "proof"    .= (toS (Key.hexRS sig) :: Text)
-      ]
     ]
   toJSON (Transfer asset to bal) = object
     [ "tag"      .= ("Transfer" :: Text)
@@ -467,16 +509,38 @@ instance ToJSON TxAsset where
         , "balance"   .= bal
         ]
     ]
+  toJSON (Circulate asset amount) = object
+    [ "tag"      .= ("Circulate" :: Text)
+    , "contents" .= object
+        [ "assetAddr" .= asset
+        , "amount"    .= amount
+        ]
+    ]
+  toJSON (Bind asset con sig) = object
+    [ "tag"      .= ("Bind" :: Text)
+    , "contents" .= object
+      [ "asset"    .= asset
+      , "contract" .= con
+      , "proof"    .= (toS (Key.hexRS $ bimap fromSafeInteger fromSafeInteger sig) :: Text)
+      ]
+    ]
+  toJSON (RevokeAsset addr) = object
+    [ "tag"      .= ("RevokeAsset" :: Text)
+    , "contents" .= object
+      [ "address" .= addr ]
+    ]
 
 instance FromJSON TxAsset where
   parseJSON (Object v) = do
     tagV <- v .: "tag" :: Parser [Char]
     if | tagV == "CreateAsset" -> do
           c <- v .: "contents"
-          CreateAsset <$> c .: "assetName"
-                      <*> c .: "supply"
-                      <*> c .:? "reference"
-                      <*> c .: "assetType"
+          CreateAsset
+            <$> c .: "assetAddr"
+            <*> c .: "assetName"
+            <*> c .: "supply"
+            <*> c .:? "reference"
+            <*> c .: "assetType"
 
        | tagV == "Bind" -> do
           c <- v .: "contents"
@@ -487,6 +551,15 @@ instance FromJSON TxAsset where
           Transfer <$> c .: "assetAddr"
                    <*> c .: "toAddr"
                    <*> c .: "balance"
+
+       | tagV == "Circulate" -> do
+           c <- v .: "contents"
+           Circulate <$> c .: "assetAddr"
+                     <*> c .: "amount"
+
+       | tagV == "RevokeAsset" -> do
+           c <- v .: "contents"
+           RevokeAsset <$> c .: "address"
 
        | otherwise -> fail $ "Uknown tag in TxAsset: " <> tagV
 
@@ -522,7 +595,7 @@ instance ToJSON TxAccount where
     , "contents" .= object
       [ "pubKey"     .= decodeUtf8 pk
       , "timezone"   .= decodeUtf8 tz
-      , "metadata"   .= (Map.fromList $ map (\(k,v) -> (decodeUtf8 k , decodeUtf8 v)) $ Map.toList md)
+      , "metadata"   .= md
       ]
     ]
 
@@ -543,14 +616,26 @@ instance FromJSON TxAccount where
         pk <- contents .: "pubKey"
         tz <- contents .: "timezone"
         md <- contents .: "metadata"
-        let md' = Map.fromList $ map (\(k, v) -> (encodeUtf8 k, encodeUtf8 v)) $ Map.toList md
-            pk' = encodeUtf8 pk
+        let pk' = encodeUtf8 pk
             tz' = encodeUtf8 tz
-        pure $ CreateAccount pk' tz' md'
+        pure $ CreateAccount pk' tz' md
       "RevokeAccount" -> RevokeAccount <$> contents .: "address"
       _ -> fail $ "Unknown tag in TxAccount: " <> tagV
 
   parseJSON invalid = typeMismatch "TxAccount" invalid
+
+-- Necessary instances because Data.Serialize.encode/decode does not play well
+-- with postgresql-simple's ByteString-to-bytea serializer
+instance ToField TransactionHeader where
+  toField = EscapeByteA . S.encode
+
+instance FromField TransactionHeader where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case S.decode <$> bs of
+      Nothing            -> returnError UnexpectedNull f ""
+      Just (Left err)    -> returnError ConversionFailed f err
+      Just (Right txHdr) -> return txHdr
 
 -- | Serialize transaction
 encodeTransaction :: Transaction -> ByteString
@@ -560,13 +645,12 @@ encodeTransaction = encode
 decodeTransaction :: ByteString -> Either [Char] Transaction
 decodeTransaction = decode
 
--- | Hash transaction header
-hashTransaction :: Transaction -> ByteString
-hashTransaction = hashTransactionHeader . header
+-- | Hash transaction
+hashTransaction :: Transaction -> Hash.Hash ByteString
+hashTransaction = Hash.toHash
 
--- | Hash transaction header
-hashTransactionHeader :: TransactionHeader -> ByteString
-hashTransactionHeader = Encoding.base16 . Hash.getHash . Hash.toHash
+base16HashTransaction :: Transaction -> ByteString
+base16HashTransaction = Encoding.base16 . Hash.getHash . hashTransaction
 
 -------------------------------------------------------------------------------
 -- Creation
@@ -575,17 +659,15 @@ hashTransactionHeader = Encoding.base16 . Hash.getHash . Hash.toHash
 -- | Create a new transaction.
 newTransaction
   :: Address            -- ^ Origin Account Address
-  -> Maybe Address      -- ^ Computed Target Address
   -> Key.PrivateKey     -- ^ Private Key
   -> TransactionHeader  -- ^ Transaction payload
   -> IO Transaction
-newTransaction origin to privKey header = do
+newTransaction origin privKey header = do
   ts     <- Time.now
   sig    <- Key.sign privKey $ S.encode header
   pure $ Transaction {
     header    = header
   , origin    = origin
-  , to        = to
   , signature = Key.encodeSig sig
   , timestamp = ts
   }
@@ -596,19 +678,6 @@ signTransaction
   -> Transaction
   -> IO Key.Signature
 signTransaction key = Key.sign key . S.encode . header
-
--- | Verify a transaction with a public key
-verifyTransaction
-  :: Key.PubKey
-  -> Transaction
-  -> Either Key.InvalidSignature ()
-verifyTransaction key t = do
-  let encodedHeader = S.encode (header t)
-  case Key.decodeSig (signature t) of
-    Left err -> Left err
-    Right sig
-      | Key.verify key sig encodedHeader -> Right ()
-      | otherwise -> Left $ Key.InvalidSignature sig encodedHeader
 
 -------------------------------------------------------------------------------
 -- Validation / Verification
@@ -623,66 +692,119 @@ Validates a transaction without respect to a Ledger State
 
 -}
 
+data InvalidTransaction = InvalidTransaction
+  { transaction :: Transaction
+  , reason      :: TxValidationError
+  } deriving (Show, Eq, Generic, S.Serialize)
+
+instance ToJSON InvalidTransaction where
+  toJSON (InvalidTransaction tx inv) = object
+    [ "transaction" .= tx
+    , "reason"      .= (show inv :: Text)
+    ]
+
+hashInvalidTx :: InvalidTransaction -> Hash.Hash ByteString
+hashInvalidTx (InvalidTransaction tx err) = hashTransaction tx
+
+base16HashInvalidTx :: InvalidTransaction -> ByteString
+base16HashInvalidTx = Encoding.base16 . Hash.getHash . hashInvalidTx
+
 data InvalidTxField
   = InvalidTxTimestamp Time.Timestamp
   | InvalidTxSignature Key.InvalidSignature
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxAccount
-  = InvalidPubKeyByteString Text
+  = InvalidPubKeyByteString ByteString
   | RevokeValidatorError Address
   | AccountError Ledger.AccountError
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxAsset
   = MissingAssetAddress
+  | DerivedAddressesDontMatch Address Address
   | AssetError Ledger.AssetError
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxContract
-  = InvalidContract Text
+  = InvalidContract [Char]
   | ContractError Ledger.ContractError
-  | MethodDoesNotExist Text
+  | MethodDoesNotExist Script.Name
   | InvalidCallArgType Script.Typecheck.TypeErrInfo
   | EvalFail Script.Eval.EvalFail
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxHeader
   = InvalidTxAccount InvalidTxAccount
   | InvalidTxAsset InvalidTxAsset
   | InvalidTxContract InvalidTxContract
-  | NotImplemented Text
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
 data TxValidationError
   = NoSuchOriginAccount Address
   | InvalidTxField InvalidTxField
   | InvalidTxHeader InvalidTxHeader
   | InvalidPubKey
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, S.Serialize)
 
-data InvalidTransaction
-  = InvalidTransaction Transaction TxValidationError
-  deriving (Show, Eq)
+-- | Verify a transaction with a public key
+verifyTransaction
+  :: Key.PubKey
+  -> Transaction
+  -> Either Key.InvalidSignature ()
+verifyTransaction key t = do
+  let encodedHeader = S.encode (header t)
+  case Key.decodeSig (signature t) of
+    Left err -> Left err
+    Right sig
+      | Key.verify key sig encodedHeader -> Right ()
+      | otherwise -> Left $ Key.InvalidSignature sig encodedHeader
 
 -- | Validate a transaction without looking up the origin account
 -- by using cryptography magic (public key recovery from signature)
 validateTransaction :: Transaction -> IO (Either InvalidTransaction ())
 validateTransaction tx@Transaction{..} = do
     isTimeValid <- Time.validateTimestamp timestamp
+    -- Validate transaction timestamp
     return $ do
-      -- Validate transaction timestamp
       unless isTimeValid $
         Left $ mkInvalidTx $ InvalidTxTimestamp timestamp
-      -- Validate transaction signature
-      first (mkInvalidTx . InvalidTxSignature) $
-        let headerBS = S.encode header in
-        case Address.recoverAddress signature headerBS of
-          Left err -> Left err
-          Right (addr1, addr2)
-            | origin == addr1 || origin == addr2 -> Right ()
-            | otherwise -> case Key.decodeSig signature of
-                Left err -> Left err
-                Right sig -> Left $ Key.InvalidSignature sig headerBS
+      validateTransactionNoTs tx
   where
     mkInvalidTx = InvalidTransaction tx . InvalidTxField
+
+-- | Validate a transaction without looking up the origin account
+-- by using cryptography magic (public key recovery from signature).
+-- This function does no timestamp validation, and used when validating
+-- transactions from the database.
+validateTransactionNoTs :: Transaction -> Either InvalidTransaction ()
+validateTransactionNoTs tx@Transaction{..} = do
+    -- Validate transaction signature
+    first (mkInvalidTx . InvalidTxSignature) $
+      let headerBS = S.encode header in
+      case Address.recoverAddress signature headerBS of
+        Left err -> Left err
+        Right (addr1, addr2)
+          | origin == addr1 || origin == addr2 -> Right ()
+          | otherwise -> case Key.decodeSig signature of
+              Left err -> Left err
+              Right sig -> Left $ Key.InvalidSignature sig headerBS
+  where
+    mkInvalidTx = InvalidTransaction tx . InvalidTxField
+
+-------------------------------------------------------------------------------
+-- Serialization (InvalidTransaction)
+-------------------------------------------------------------------------------
+
+-- Necessary instances because Data.Serialize.encode/decode does not play well
+-- with postgresql-simple's ByteString-to-bytea serializer
+instance ToField TxValidationError where
+  toField = EscapeByteA . S.encode
+
+instance FromField TxValidationError where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case S.decode <$> bs of
+      Nothing            -> returnError UnexpectedNull f ""
+      Just (Left err)    -> returnError ConversionFailed f err
+      Just (Right txErr) -> return txErr

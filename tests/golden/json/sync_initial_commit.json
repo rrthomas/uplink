@@ -1,7 +1,6 @@
 {
     "signature": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE0yMzMyMzM1MTAwODM2OTA0MTEzNzQ0NjU0MTYwMTkzMDYxMDM1OTk0MTI2Nzg4MDQ5NDA1MzEwNTIzMTI0MjEwMjIxMTU2NjA0NTI0NA==",
     "origin": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
-    "to": null,
     "header": {
         "tag": "TxContract",
         "contents": {

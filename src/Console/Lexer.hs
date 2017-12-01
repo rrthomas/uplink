@@ -13,14 +13,15 @@ module Console.Lexer (
   , pingPeer
   , addPeer
 
-  , listAccounts 
+  , listAccounts
   , listAssets
-  , listContracts 
+  , listContracts
 
   , createAccount
   , createAsset
   , createContract
   , transferAsset
+  , circulateAsset
   , callContract
   , transaction
 
@@ -28,6 +29,7 @@ module Console.Lexer (
   , help
   , quit
 ) where
+
 import Protolude hiding ((<|>))
 import qualified Text.Parsec.Token as Tok
 import qualified Text.Parsec.Language as Lang
@@ -89,6 +91,7 @@ createAccount = "createAccount"
 createAsset = "createAsset"
 createContract = "createContract"
 transferAsset = "transferAsset"
+circulateAsset = "circulateAsset"
 callContract = "callContract"
 transaction = "transaction"
 
@@ -104,15 +107,16 @@ reservedNames = [
   , ping
   , pingPeer
   , addPeer
-  
-  , listAccounts 
+
+  , listAccounts
   , listAssets
-  , listContracts 
+  , listContracts
 
   , createAccount
   , createAsset
   , createContract
   , transferAsset
+  , circulateAsset
   , callContract
   , transaction
   , help

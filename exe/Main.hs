@@ -72,16 +72,17 @@ chainParser = runChainParser
     optsParser = do
       _rpcPort   <- rpcPort
       _port      <- port
-      _dbpath    <- dbpath
       _nonetwork <- nonetwork
       _chainConfig <- chainConfig
       _config    <- config
       _hostname  <- hostname
       _bootnodes <- bootnodes
+      _storageBackend <- storageBackend
       _verbose   <- verbose
       _rpcReadOnly <- rpcReadOnly
       _testMode  <- testMode
       _privKey   <- privKey
+      _nodeDir   <- nodeDir
 
       pure Opts {..}
 
@@ -309,8 +310,9 @@ consoleParser = consoleParser'
 
 
 -------------------------------------------------------------------------------
-  -- Parser Utils
+-- Parser Utils
 -------------------------------------------------------------------------------
+
 fileParser :: Parser [Char]
 fileParser = strArgument (metavar "FILE")
 
@@ -347,12 +349,12 @@ chainConfig = optional $ strOption $
   <> metavar "PATH"
   <> help "Specify the chain (genesis block & consensus) configuration to initialize chain"
 
-dbpath :: Parser (Maybe FilePath)
-dbpath = optional $ strOption $
-     long "db-path"
-  <> short 'd'
-  <> metavar "PATH"
-  <> help "Specify the database & configuration directory path"
+storageBackend :: Parser (Maybe [Char])
+storageBackend = optional $ strOption $
+     long "backend"
+  <> short 'b'
+  <> metavar "URI"
+  <> help "Specify the storage backend uri"
 
 genesis :: Parser (Maybe FilePath)
 genesis = optional $ strOption $
@@ -401,6 +403,13 @@ privKey = optional $ strOption $
   <> metavar "PATH"
   <> help "Private key"
 
+nodeDir :: Parser (Maybe FilePath)
+nodeDir = optional $ strOption $
+     long "datadir"
+  <> short 'd'
+  <> metavar "PATH"
+  <> help "Specify the node data directory path"
+
 -------------------------------------------------------------------------------
 -- Toplevel
 -------------------------------------------------------------------------------
@@ -444,19 +453,21 @@ handleOpts o@Opts {..} = do
   c@Config.Config {} <- Config.errorHandler $
     Config.handleConfig silent (maybe Config.defaultConfig identity _config)
 
+  backend <- mapM Config.getStorageBackend _storageBackend
   -- Load config falling back to defaults.
   let config @ Config.Config {..} = c {
     Config.configFile  = _config      `fallback` Config.defaultConfig
-  , Config.dbpath      = _dbpath      `fallback` (Config.dbpath c)
   , Config.nonetwork   = _nonetwork   `fallback` (Config.nonetwork c)
   , Config.port        = _port        `fallback` (Config.port c)
   , Config.rpcPort     = _rpcPort     `fallback` (Config.rpcPort c)
   , Config.chainConfigFile = _chainConfig   `fallback` (Config.chainConfigFile c)
   , Config.hostname    = _hostname    `fallback` (Config.hostname c)
   , Config.bootnodes   = fromMaybe [] _bootnodes ++ Config.bootnodes c
+  , Config.storageBackend = backend   `fallback` (Config.storageBackend c)
   , Config.verbose     = _verbose     `fallback` (Config.verbose c)
   , Config.rpcReadOnly = _rpcReadOnly `fallback` (Config.rpcReadOnly c)
   , Config.testMode    = _testMode    `fallback` (Config.testMode c)
+  , Config.nodeDataDir = _nodeDir     `fallback` (Config.nodeDataDir c)
   }
 
   Driver.driver (Opts._command o) o config

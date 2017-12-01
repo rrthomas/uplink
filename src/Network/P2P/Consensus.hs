@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.P2P.Consensus (
   consensusProc,
@@ -14,7 +15,8 @@ import Protolude hiding (newChan)
 
 import Control.Monad (fail)
 import Control.Monad.Base (liftBase)
-import Control.Distributed.Process
+import Control.Distributed.Process.Lifted
+import Control.Distributed.Process.Lifted.Class
 
 import qualified Data.Set as Set
 import qualified Data.Binary as B
@@ -23,6 +25,7 @@ import qualified Data.Binary.Put as B
 import qualified Data.Serialize as S
 import qualified Data.ByteString.Char8 as BSC
 
+import DB
 import NodeState
 import qualified Key
 import qualified Utils
@@ -38,7 +41,7 @@ import qualified Network.P2P.Controller as P2P
 import qualified Network.P2P.Service as Service
 
 import qualified Consensus as C
-import qualified Consensus.Authority.Types as CAT
+import qualified Consensus.Authority.Params as CAP
 
 import System.Random (randomRIO)
 
@@ -47,8 +50,8 @@ import System.Random (randomRIO)
 -------------------------------------------------------------------------------
 
 -- | A Message asking a node to sign a block
-newtype SignBlockMsg = SignBlockMsg Block.Block
-  deriving (Show, Eq, Generic, Typeable, S.Serialize)
+data SignBlockMsg = SignBlockMsg Block.Block
+  deriving (Show, Eq, Generic, Typeable)
 
 -- | A block signature from a signing node to a generating node
 newtype BlockSigMsg = BlockSigMsg Block.BlockSignature
@@ -57,81 +60,83 @@ newtype BlockSigMsg = BlockSigMsg Block.BlockSignature
 -- | The consensus process is made up of two sub-processes,
 -- one for handling SignBlock messages, and another for generating
 -- a block given the parameters of the current PoA Consensus alg.
-consensusProc :: Service -> NodeProcessT ()
+consensusProc
+  :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
+  => Service
+  -> NodeT m ()
 consensusProc msgService = do
-  Log.info "Consensus process started."
+    Log.info "Consensus process started."
 
-  nodeConfig <- lift ask
-  nodeState <- get
-
-  liftBase $ spawnLocal $
-    runNodeT nodeConfig nodeState $
-      blockGenProc msgService
-
-  signBlockProc
-
--- | Process that signs block when receiving SignBlock messages,
--- or other messages to be exchanged between consensus processes
-signBlockProc :: NodeProcessT ()
-signBlockProc = do
-
-  nodeConfig <- lift ask
-  nodeState <- get
-
-  liftBase $ do
-    selfPid <- getSelfPid
-    forever $ receiveWait
-      [ matchIf (isPeer selfPid) $ \signBlkMsg ->
-          runNodeT nodeConfig nodeState $
-            onSignBlockMsg signBlkMsg
-      ]
+    spawnLocal blockGenProc
+    consensusProc'
   where
-    -- Predicate for responding to message
-    isPeer :: ProcessId -> (a, SendPort b) -> Bool
-    isPeer selfPid (_,sendPort) =
-      sendPortProcessId (sendPortId sendPort) /= selfPid
+    -- Process that handles Consensus messages
+    consensusProc' :: NodeT m ()
+    consensusProc' = do
+      controlP $ \runInBase ->
+        forever $ do
+          receiveWait
+            [ match $ runInBase . onSignBlockMsg
+            , match $ runInBase . onBlockSigMsg
+            ]
 
     -- SignBlockMsg handler
-    onSignBlockMsg
-      :: (SignBlockMsg, SendPort BlockSigMsg)
-      -> NodeProcessT ()
+    onSignBlockMsg :: (SignBlockMsg, ProcessId) -> NodeT m ()
     onSignBlockMsg (SignBlockMsg block, replyTo) = do
+
+      let blockOrigin = Block.origin $ Block.header block
+      Log.info $ "Received SignBlockMsg from " <> show blockOrigin
+
       -- Validate block with respect to ledger state
       ledgerValid <-
         NodeState.withApplyCtx $ \applyCtx ->
           NodeState.withLedgerState $ \world ->
             liftIO $ V.validateBlock applyCtx world block
+
       case ledgerValid of
-        Left err -> Log.warning $ "[Ledger] Block invalid:\n    " <> show err
+        Left err ->
+          Log.warning $
+            "[Ledger] Block invalid:\n    " <> show err
         Right _ -> do
           eBlockSig <- C.signBlock block
           case eBlockSig of
-            Left err -> Log.warning $
-              "[Consensus] Block invalid:\n    " <> show err
+            Left err ->
+              Log.warning $
+                "[Consensus] Block invalid:\n    " <> show err
             Right blockSig' -> do
 
               -- Construct BlockSig message
-              selfAddr <- lift askSelfAddress
+              selfAddr <- askSelfAddress
               let blockSig = Block.BlockSignature blockSig' selfAddr
               let blockSigMsg = BlockSigMsg blockSig
 
-              -- Reply to Node asking to sign it
-              liftBase $ sendChan replyTo blockSigMsg
+              -- Reply to Node who asked me to sign the block
+              P2P.nsendPeer Service.Consensus (processNodeId replyTo) blockSigMsg
 
+    -- BlockSigMsg handler
+    onBlockSigMsg :: BlockSigMsg -> NodeT m ()
+    onBlockSigMsg (BlockSigMsg blockSig) = do
+      Log.info $ "Received BlockSigMsg from " <> show (Block.signerAddr blockSig)
+      mBlock <- C.acceptBlockSig blockSig
+      case mBlock of
+        Nothing -> pure ()
+        Just newBlock -> do
+          -- If block has enough signatures, broadcast
+          blockMsg <- Msg.mkBlockMsg newBlock
+          P2P.nsendPeers' msgService blockMsg
 
 -- | Process that generates new blocks according to the current
 -- consensus algorithm parameters in the latest block on the chain
-blockGenProc :: Service -> NodeProcessT ()
-blockGenProc msgService =
+blockGenProc
+  :: forall m. (MonadWriteDB m, MonadProcessBase m)
+  => NodeT m ()
+blockGenProc =
     forever blockGenProc'
   where
-    loginfo :: MonadIO m => Text -> m ()
-    loginfo = Log.info . (<>) "[Consensus - blockGenProc] "
-
-    blockGenProc' :: NodeProcessT ()
+    blockGenProc' :: NodeT m ()
     blockGenProc' = do
-      latestBlock <- NodeState.getLatestBlock
-      loginfo $ "Latest block idx: " <> show (Block.index latestBlock)
+
+      lastBlock <- NodeState.getLastBlock
 
       -- Wait until time to generate next block
       -- Note: If a no valid transaction exist in the mempool, the time since the
@@ -139,27 +144,37 @@ blockGenProc msgService =
       -- cause this function to loop without waiting any time at all. A default
       -- wait of 3 seconds [arbitrary] is forced here.
       loginfo "Waiting to create next block..."
-      liftIO $ waitToGenNextBlock 3000000 latestBlock
+      liftIO $ waitToGenNextBlock 3000000 lastBlock
 
       -- Attempt to generate a new block
-      loginfo $ "Trying to create block " <> show (Block.index latestBlock + 1)
-      eBlock <- C.generateBlock sendSignBlockMsgs
+      loginfo $ "Trying to create block "
+        <> show (Block.index lastBlock + 1)
+      eBlock <- C.generateBlock
       case eBlock of
-        Left err -> Log.warning $ "[Consensus - blockGenProc] " <> show err
-        Right newBlock -> do
-          -- Send new block to network
-          blockMsg <- Msg.mkBlockMsg newBlock
-          liftBase $ P2P.nsendPeers' msgService blockMsg
+        Left err    -> logwarning $ show err
+        Right block -> do
+
+          loginfo $ "Successfully made block..."
+
+          -- Send SignBlock Msgs to all peers
+          selfPid <- getSelfPid
+          let signBlockMsg = (SignBlockMsg block, selfPid)
+          validatorPeers <- NodeState.getValidatorPeers
+
+          loginfo $ "Sending block to all validators to sign..."
+          forM_ validatorPeers $ \(Peer peerPid addr) -> do
+            let peerNodeId = processNodeId peerPid
+            P2P.nsendPeer Service.Consensus peerNodeId signBlockMsg
 
     -- Wait to generate next block dictated by previous blocks's blockPeriod
     waitToGenNextBlock :: Int64 -> Block.Block -> IO ()
-    waitToGenNextBlock nms latestBlock = do
-      let latestBlockTs = Block.timestamp $ Block.header latestBlock
-      let blockPeriod = CAT.blockPeriod $ Block.getConsensus latestBlock
-      let nextBlockTs = latestBlockTs + (secondsToMicroseconds blockPeriod) -- in microsecs
+    waitToGenNextBlock nms lastBlock = do
+      let lastBlockTs = Block.timestamp $ Block.header lastBlock
+      let blockPeriod = CAP.blockPeriod $ Block.getConsensus lastBlock
+      let nextBlockTs = lastBlockTs + (secondsToMicroseconds blockPeriod) -- in microsecs
 
       -- Wait just a bit longer to prevent all generating nodes from making blocks all at once
-      randMicroSecs <- secondsToMicroseconds <$> randomRIO (1, blockPeriod `div` 3)
+      randMicroSecs <- randomRIO (1000000, secondsToMicroseconds $ blockPeriod `div` 3)
       let timeToWaitUntil = nextBlockTs + randMicroSecs
 
       -- If timeToWaitUntil is earlier than "now", wait a default
@@ -169,40 +184,27 @@ blockGenProc msgService =
         then Utils.waitUntil $ currentTs + nms
         else Utils.waitUntil timeToWaitUntil
 
-    -- Send SignBlockMsg to all validator peers
-    sendSignBlockMsgs :: NodeState.Peers -> Block.Block -> Process [Block.BlockSignature]
-    sendSignBlockMsgs validatorPeers block = do
-      let validatorPeerList = Set.toList validatorPeers
-      fmap catMaybes $
-        forM validatorPeerList $ \vPeer -> do
-          (sp, rp) <- newChan
-          let blockMsg = SignBlockMsg block
-          P2P.nsendPeer Service.Consensus (processNodeId $ peerPid vPeer) (blockMsg, sp)
-          blockSigMsg <- receiveChanTimeout 3000000 rp
-          case blockSigMsg of
-            Nothing -> do
-              loginfo $ "No BlockSigMsg from " <> show vPeer
-              return Nothing
-            Just (BlockSigMsg blockSig) -> do
-              loginfo $ "Response BlockSigMsg from " <> show vPeer
-              return $ Just blockSig
-
     secondsToMicroseconds = (*) 1000000
+
+    logPref logf = logf . (<>) "[Consensus - blockGenProc] "
+
+    loginfo, logwarning :: Text -> NodeT m ()
+    loginfo    = liftIO . logPref Log.info
+    logwarning = liftIO . logPref Log.warning
+
 
 -------------------------------------------------------------------------------
 -- Serialization
 -------------------------------------------------------------------------------
 
--- Necessary because of synchronous block signing protocol
--- and cloud-haskell's use of Data.Binary for typed channels
 instance B.Binary SignBlockMsg where
-  put signBlockMsg =
-    B.put $ S.encode signBlockMsg
+  put (SignBlockMsg blk) = do
+    B.put $ S.encode blk
   get = do
-    bs <- B.get
-    case S.decode bs of
+    eBlk <- S.decode <$> B.get
+    case eBlk of
       Left err -> fail err
-      Right sbm -> pure sbm
+      Right blk -> pure $ SignBlockMsg blk
 
 instance B.Binary BlockSigMsg where
   put blockSigMsg =

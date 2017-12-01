@@ -30,7 +30,7 @@ import Console.Config
 import System.Console.Repline
 
 command :: [Char] -> Console ()
-command input = 
+command input =
   case parseConsoleCmd input of
     Left err -> do
       putText $ Pretty.prettyPrint err
@@ -39,12 +39,12 @@ command input =
       displayCmdHelp $ fromMaybe "" $ head $ T.words $ lineContents err
       displayActiveAccount
 
-      
+
     Right cmd -> handleConsoleCmd cmd
 
 runConsole :: ConsoleConfig -> IO ()
-runConsole cfg = 
-    flip evalStateT ctx 
+runConsole cfg =
+    flip evalStateT ctx
   . flip runReaderT cfg $
   evalRepl ">>> " command [] completion (return ())
   where

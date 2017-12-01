@@ -1,0 +1,239 @@
+defaults: &defaults
+  working_directory: ~/uplink
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+version: 2
+jobs:
+  build:
+    <<: *defaults
+    docker:
+      - image: haskell:8.0.2
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/uplink
+      - restore_cache:
+          keys:
+            - uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
+            - uplink
+          paths:
+            - ./.stack-work/
+            - ~/.stack/
+      - run:
+          name: Install system deps
+          command: |
+            apt-get update
+            apt-get install -y libleveldb-dev leveldb-doc openssh-client expat libexpat1-dev libpq-dev postgresql postgresql-contrib
+      - run:
+          name: Install haskell dependencies
+          command: |
+             stack install --no-docker --only-dependencies -j2 --system-ghc
+      - run:
+          name: Build uplink
+          command: |
+            stack build --no-docker --system-ghc --test --copy-bins
+      - run:
+          name: Copy uplink binary to local dir
+          command: |
+            cp `which uplink` .
+      - save_cache:
+          key: uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
+          paths:
+            - ./.stack-work/
+            - ~/.stack/
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .circleci/
+            - .git/
+            - uplink
+            - config/
+            - dist/
+            - docker-compose.yml
+            - docker-compose.integration-tests.yml
+            - docker-compose.testnet.yml
+
+
+  build-image-run-integration-tests:
+    <<: *defaults
+    docker:
+      - image: docker
+    steps:
+      - attach_workspace:
+          at: ~/uplink
+      - setup_remote_docker
+      - run:
+          name: Build docker image
+          command: |
+            docker build -t uplink -f .circleci/Dockerfile .
+            docker save uplink -o uplink.tar
+      - run:
+          name: Install Docker Compose
+          command: |
+            apk add --update python py-pip git openssh
+            pip install docker-compose
+      - run:
+          name: Clone sdks
+          command: |
+            ssh-keyscan github.com >> ~/.ssh/known_hosts
+            git clone git@github.com:adjoint-io/uplink-sdk-py.git
+      - run:
+          name: Run python sdk integration tests
+          command: docker-compose -f docker-compose.integration-tests.yml run integration-tests-sdk-py
+
+      - persist_to_workspace:
+          root: .
+          paths:
+            - uplink.tar
+            - .git/
+            - uplink
+            - dist/
+            - config/
+            - docker-compose.yml
+            - docker-compose.integration-tests.yml
+            - docker-compose.testnet.yml
+
+      - save_cache:
+          key: uplink-{{ .Branch }}
+          paths:
+            - uplink.tar
+
+  build-distro-packages:
+    <<: *defaults
+    docker:
+      - image: ruby
+    steps:
+      - attach_workspace:
+          at: ~/uplink
+      - run:
+          name: Install fpm + package tools
+          command: |
+            gem install fpm
+            apt-get update && apt-get install -y --no-install-recommends rpm bsdtar zip
+
+      - run:
+          name: Build packages
+          command: |
+            cd ~/uplink/dist
+            make
+
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .git/
+            - dist/
+
+  push-distro-packages:
+    <<: *defaults
+    docker:
+      - image: golang
+    steps:
+      - attach_workspace:
+          at: ~/uplink
+      - run:
+          name: Install ghr
+          command: go get github.com/tcnksm/ghr
+
+      - deploy:
+          name: Push distro packages to github releases
+          command: |
+            cd ~/uplink/dist
+            ghr -t $GITHUB_TOKEN -u $CIRCLE_PROJECT_USERNAME -r $CIRCLE_PROJECT_REPONAME --replace `git show -s --format=%h` .
+
+
+  deploy:
+    <<: *defaults
+    docker:
+      - image: google/cloud-sdk:alpine
+    environment:
+      PROJECT_NAME: uplink-test-cluster-174313
+      CLUSTER_NAME: test-cluster
+      CLOUDSDK_COMPUTE_ZONE: europe-west1-d
+      DEBIAN_FRONTEND: noninteractive
+      GOOGLE_APPLICATION_CREDENTIALS: account-auth.json
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/uplink
+      - setup_remote_docker
+      - run:
+          name: Extract gcloud credentials and activate service account
+          command: |
+            echo $ACCT_AUTH | base64 -d > account-auth.json
+            gcloud auth activate-service-account --key-file account-auth.json
+      - run:
+          name: Install additional google cloud dependencies
+          command: |
+            gcloud --quiet components update
+            gcloud --quiet components update kubectl
+            apk add --update docker
+
+      - run:
+          name: Set project, cluster, zone and get cluster credentials
+          command: |
+             gcloud config set project $PROJECT_NAME
+             gcloud --quiet config set container/cluster $CLUSTER_NAME
+             gcloud config set compute/zone ${CLOUDSDK_COMPUTE_ZONE}
+             gcloud --quiet container clusters get-credentials $CLUSTER_NAME
+      - run: gcloud docker -- load -i uplink.tar
+      - run:
+          name: Push Docker image
+          command: |
+            gcloud docker -- tag uplink eu.gcr.io/${PROJECT_NAME}/uplink:$CIRCLE_SHA1
+            gcloud docker -- tag eu.gcr.io/${PROJECT_NAME}/uplink:$CIRCLE_SHA1 eu.gcr.io/${PROJECT_NAME}/uplink:latest
+            gcloud docker -- push eu.gcr.io/${PROJECT_NAME}/uplink
+      - run:
+          name: Install and run Kompose
+          command: |
+            curl -L https://github.com/kubernetes/kompose/releases/download/v1.0.0/kompose-linux-amd64 -o kompose
+            chmod +x kompose
+            mv ./kompose /usr/local/bin/kompose
+            cd gcloud
+            #kompose convert -f docker-compose.kubernetes.yml
+      - run:
+          name: Deploy!
+          command: |
+            kubectl set image deploy/bootnode  bootnode=eu.gcr.io/${PROJECT_NAME}/uplink:$CIRCLE_SHA1
+            sleep 5
+            kubectl set image deploy/uplink  uplink=eu.gcr.io/${PROJECT_NAME}/uplink:$CIRCLE_SHA1
+      - run:
+          name: Run fixtures
+          command: |
+            cd gcloud
+            #kubectl replace --force -f fixtures-pod.yaml
+
+workflows:
+  version: 2
+  build-and-deploy-test-cluster:
+    jobs:
+      - build
+      - build-image-run-integration-tests:
+          requires:
+            - build
+
+      - build-distro-packages:
+          requires:
+            - build-image-run-integration-tests
+          filters:
+            branches:
+              only: master
+            tags:
+              only: /(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/
+
+      - push-distro-packages:
+          requires:
+            -  build-distro-packages
+          filters:
+            branches:
+              only: master
+            tags:
+              only: /(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/
+
+
+      - deploy:
+          requires:
+            - build-image-run-integration-tests
+          filters:
+            branches:
+              only: master
