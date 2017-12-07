@@ -28,6 +28,16 @@ offered commercially.
 Install
 -------
 
+**Video Tutorial**
+
+1. [Installing Uplink](https://www.youtube.com/watch?v=N1I_jd89Lr4&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=1)
+2. [Setting up a Network](https://www.youtube.com/watch?v=k6RA8sLPRW0&index=2&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt)
+3. [Using the Uplink Console](https://www.youtube.com/watch?v=-e-S_NnXkP4&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=3)
+4. [Installing Uplink Explorer](https://www.youtube.com/watch?v=VeWkuNf83Kw&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=4)
+5. [Importing Keys into Explorer](https://www.youtube.com/watch?v=5e9qpNu_ayU&index=5&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt)
+
+**Install Directions**
+
 Install the ledger either through Docker or your system package manager.
 
 * [Docker](https://www.adjoint.io/pages/downloads.html#docker) (recommended)
