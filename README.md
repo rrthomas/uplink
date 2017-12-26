@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="http://www.adjoint.io"><img src="packages/uplink.png" width="250"/></a>
+  <a href="http://www.adjoint.io"><img src="https://www.adjoint.io/uplink.png"/></a>
 </p>
 <h3 align="center">Community Edition</h3>
 
