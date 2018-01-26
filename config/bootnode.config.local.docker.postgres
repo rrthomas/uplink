@@ -1,16 +1,14 @@
+
 # Default node settings
 
 network
 {
   # Networking port
   port = 8001
-  hostname = "127.0.0.1"
+  # hostname = "bootnode"
 
   # Bootnodes ( ip:port )
-  bootnodes = [
-      "10.132.0.2:8001"
-    , "10.132.0.4:8001"
-    ]
+  bootnodes = [ "bootnode:8001" ]
 
   # Peers
   max-peers = 200  # -1 for unbounded
@@ -25,16 +23,16 @@ network
   # Proxy settings
 
   # Preallocated accounts directory on the network (existing)
-  preallocated = "config/validators"
+  preallocated = "config/validators" 
 }
 
 storage
 {
-  backend   = "leveldb:///uplink"
-  cacheSize = 4000  # Data packed per block.
-  blockSize = 16    # Number of keys between restart points for delta encoding of keys.
+  backend   = "postgresql://postgres"
+  cacheSize = 4000       # Data packed per block.
+  blockSize = 16         # Number of keys between restart points for delta encoding of keys.
   directory = ".uplink"  # Directory to store uplink node specific files
-} 
+}
 
 logging
 {

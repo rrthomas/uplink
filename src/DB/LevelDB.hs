@@ -10,6 +10,7 @@ LevelDB backend for ledger state on disk.
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unused-type-patterns #-}
 
@@ -96,6 +97,8 @@ import qualified Database.LevelDB.Base as LevelDB
 import qualified Database.LevelDB.Internal as DBInternal (unsafeClose)
 import qualified Data.Serialize as S
 
+import System.IO.Error
+
 newtype LevelDBT m a = LevelDBT
   { unLevelDBT :: ReaderT Database m a
   } deriving (Functor, Applicative, Monad, MonadIO, MonadTrans, MonadReader Database)
@@ -136,7 +139,8 @@ instance MonadProcessBase m => MonadProcessBase (LevelDBT m) where
 --------------------------------------------------------------------------------
 
 instance MonadBase IO m => MonadDB (LevelDBT m) where
-  type Conn (LevelDBT m) = Database
+  type DBConn (LevelDBT m) = Database
+  type DBError (LevelDBT m) = LevelDBError
   withConn f = do
     dbs <- ask
     liftBase $ f dbs
@@ -180,20 +184,12 @@ instance (MonadBase IO m) => MonadWriteDB (LevelDBT m) where
   writeInvalidTxs itxs = withConn (flip writeManyDB itxs . invalidTxDB)
 
   resetDB              = withConn resetDB
-  syncWorld world      = withConn (fmap Right . flip syncWorld world)
+  syncWorld world      = withConn (flip syncWorld world)
 
 {-
 
 .uplink/
   HEAD          -- World HEAD hash
-
-  XXX Backend agnostic
-  account       -- Node Account
-  key           -- Node Account private key
-  key.pub       -- Node Account public key
-  peers         -- Node Peers
-  txlog         -- Transaction log
-  XXX
 
   contracts/    -- Contracts and local/global state
     contract0
@@ -289,7 +285,7 @@ instance HasDB Block.Block BlockDB where
   encodeValue = S.encode
   decodeValue = first toS . S.decode
   getKey      = Block.index
-  validate = pure . Block.validBlockDB
+  validate = Block.validateBlockDB
 
 instance HasDB Contract.Contract ContractDB where
   type Key Contract = Address
@@ -305,7 +301,7 @@ instance HasDB Tx.InvalidTransaction InvalidTxDB where
   getKey      = Tx.base16HashInvalidTx
   validate (Tx.InvalidTransaction tx err) =
     either (const False) (const False) <$>
-      Tx.validateTransaction tx
+      Tx.validateTransaction Tx.TxInvalid tx
 
 -- | Database cursor references
 data Database = Database
@@ -318,55 +314,114 @@ data Database = Database
   }
 
 -------------------------------------------------------------------------------
+-- LevelDB Errors
+-------------------------------------------------------------------------------
+
+data LevelDBError
+  = ReadFail Text
+  | WriteFail Text
+  | IterError Text
+  | InvalidValueAtKey (Text,Text)
+  | MalformedValueAtKey Text Text
+  | MalformedDatabase Text
+  | DBDoesNotExist Text
+  | LevelDBError Text
+  deriving (Show, Eq, Ord)
+
+instance Exception LevelDBError
+
+toWriteFailErr :: Show a => Either a b -> Either LevelDBError b
+toWriteFailErr = first (WriteFail . show)
+
+
+
+-------------------------------------------------------------------------------
 -- Generic Database functions
 -------------------------------------------------------------------------------
 
-lookupDB :: (HasDB a db) => db -> Key a -> IO (Either Text a)
+tryDB :: IO a -> IO (Either IOError a)
+tryDB action = try action
+
+lookupDB
+  :: (Show a, HasDB a db)
+  => db
+  -> Key a
+  -> IO (Either LevelDBError a)
 lookupDB db key = do
   mValBS <- lookup (unDB db) $ show key
   case mValBS of
-    Nothing -> pure $ Left $
-      "lookupDB: No value with key " <> show key <> " found."
+    Nothing -> pure $ Left $ ReadFail $ show key
     Just valBS -> case decodeValue valBS of
-      Left err -> pure $ Left err
+      Left err -> pure $ Left $
+        MalformedValueAtKey (show key) err
       Right val -> do
         isValid <- validate val
         if isValid then
           pure $ Right val
         else pure $ Left $
-          "lookupDB: Value with key " <> show key <> " malformed."
+          InvalidValueAtKey (show key,show val)
 
-writeDB :: (HasDB a db) => db -> a -> IO ()
+writeDB :: (HasDB a db) => db -> a -> IO (Either LevelDBError ())
 writeDB db val =
-  LevelDB.put
-    (unDB db)
-    LevelDB.defaultWriteOptions
-    (show $ getKey val)
-    (encodeValue val)
+  fmap toWriteFailErr $
+    tryDB $
+      LevelDB.put
+        (unDB db)
+        LevelDB.defaultWriteOptions
+        (show $ getKey val)
+        (encodeValue val)
 
-writeManyDB :: (HasDB a db) => db -> [a] -> IO ()
-writeManyDB db = mapM_ (writeDB db)
+-- | Writes values in a batch operation (transaction). If this function fails,
+-- no values will be written to the database.
+writeManyDB :: (HasDB a db) => db -> [a] -> IO (Either LevelDBError ())
+writeManyDB db vals =
+    fmap toWriteFailErr $
+      tryDB $
+        LevelDB.write
+          (unDB db)
+          LevelDB.defaultWriteOptions
+          batchOps
+  where
+    keyBS       = show . getKey
+    valBS       = encodeValue
+    keysAndVals = map (keyBS &&& valBS) vals
 
+    batchOps    = map (uncurry LevelDB.Put) keysAndVals
+
+-- | Parses all key/value pairs of ByteStrings into Haskell values
 parseAllValues
-  :: (ByteString -> Either Text a)
-  -> [(ByteString,ByteString)]
-  -> Either Text [a]
-parseAllValues f = sequence . fmap (f . snd)
+  :: (HasDB a db)
+  => [(ByteString,ByteString)]
+  -> Either LevelDBError [a]
+parseAllValues = sequence . map parseValue
+  where
+    parseValue (k,v) =
+      first (MalformedValueAtKey $ show k) $
+        decodeValue v
 
 -- | Generic version
-selectAll :: (HasDB a b) => b -> IO (Either Text [a])
-selectAll = fmap parseAllValues' . selectAllBS
-  where parseAllValues' = sequence . fmap (decodeValue . snd)
+selectAll
+  :: (HasDB a db)
+  => db
+  -> IO (Either LevelDBError [a])
+selectAll db = do
+  eAllBSs <- selectAllBS db
+  pure $ parseAllValues =<< eAllBSs
 
--- | XXX: this doesn't handle failure gracefully
-selectAllBS :: LevelDB a => a -> IO [(ByteString, ByteString)]
-selectAllBS db = do
-    iter <- LevelDB.createIter (unDB db) $ LevelDB.ReadOptions False True Nothing
-    LevelDB.iterFirst iter
-    vals <- go iter True []
-    LevelDB.releaseIter iter
-    return vals
+selectAllBS
+  :: LevelDB db
+  => db
+  -> IO (Either LevelDBError [(ByteString, ByteString)])
+selectAllBS db =
+    fmap toIterErr $ tryDB $ do
+      iter <- LevelDB.createIter (unDB db) $ LevelDB.ReadOptions False True Nothing
+      LevelDB.iterFirst iter
+      vals <- go iter True []
+      LevelDB.releaseIter iter
+      return vals
   where
+    toIterErr = first (IterError . show)
+
     go iter valid !acc = do
       val   <- LevelDB.iterEntry iter
       valid <- LevelDB.iterValid iter
@@ -428,10 +483,10 @@ closeDBs (Database _ accDB assDB blkDB ctrDB itxDB) = do
 -------------------------------------------------------------------------------
 
 -- | Query Block height
-blockHeight :: BlockDB -> IO (Either Text Int)
+blockHeight :: BlockDB -> IO (Either LevelDBError Int)
 blockHeight = fmap (fmap length) . allBlocks
 
-lastBlock :: BlockDB -> IO (Either Text Block.Block)
+lastBlock :: BlockDB -> IO (Either LevelDBError Block.Block)
 lastBlock db = do
   eIdx <- blockHeight db
   case eIdx of
@@ -440,13 +495,14 @@ lastBlock db = do
 
 -- | Query the last n blocks, may return < n blocks if
 -- chain contains fewer blocks than n
-lastNBlocks :: BlockDB -> Int -> IO (Either Text [Block.Block])
+lastNBlocks :: BlockDB -> Int -> IO (Either LevelDBError [Block.Block])
 lastNBlocks db n
-  | n < 0     = pure $ Left "lastNBlocks: n must be a positive number."
+  | n < 0     = pure $ Left $
+      LevelDBError "lastNBlocks: n must be a positive number."
   | otherwise = fmap (take n . reverse) <$> allBlocks db
 
 -- | Read all blocks (sorted)
-allBlocks :: BlockDB -> IO (Either Text [Block.Block])
+allBlocks :: BlockDB -> IO (Either LevelDBError [Block.Block])
 allBlocks = fmap (fmap Block.sortBlocks) . selectAll
 
 -------------------------------------------------------------------------------
@@ -457,31 +513,34 @@ newtype TaggedBatchOps a = TaggedBatchOps { unTaggedBatchOps :: [LevelDB.BatchOp
   deriving (Monoid)
 
 -- | Sync world state to database, atomically*.
-syncWorld :: Database -> Ledger.World -> IO ()
-syncWorld db world = do
-  deletes <- deleteBatchOps db
-  writes  <- writeBatchOps world
-  let (syncAccs, syncAssets, syncContracts) = deletes <> writes
-  -- Atomically updates each DB with new
-  write (unDB $ accountDB db) $ unTaggedBatchOps syncAccs
-  write (unDB $ assetDB db) $ unTaggedBatchOps syncAssets
-  write (unDB $ contractDB db) $ unTaggedBatchOps syncContracts
+syncWorld :: Database -> Ledger.World -> IO (Either LevelDBError ())
+syncWorld db world =
+    fmap toWriteErr $ tryDB $ do
+      deletes <- mkDeleteBatchOps db
+      writes  <- mkWriteBatchOps world
+      let (syncAccs, syncAssets, syncContracts) = deletes <> writes
+      -- Atomically updates each DB with new
+      write (unDB $ accountDB db) $ unTaggedBatchOps syncAccs
+      write (unDB $ assetDB db) $ unTaggedBatchOps syncAssets
+      write (unDB $ contractDB db) $ unTaggedBatchOps syncContracts
+  where
+    toWriteErr = first (WriteFail . show)
 
 -- | Write world to database persistence layer.
 writeWorld :: Database -> Ledger.World -> IO ()
 writeWorld dbs world = do
-  (putAccs, putAssets, putContracts) <- writeBatchOps world
-  -- writeAccounts
-  write (unDB $ accountDB dbs) $ unTaggedBatchOps putAccs
-  -- writeAssets
-  write (unDB $ assetDB dbs) $ unTaggedBatchOps putAssets
-  -- writeContracts
-  write (unDB $ contractDB dbs) $ unTaggedBatchOps putContracts
+    (putAccs, putAssets, putContracts) <- mkWriteBatchOps world
+    write' (accountDB dbs)  putAccs
+    write' (assetDB dbs)    putAssets
+    write' (contractDB dbs) putContracts
+  where
+    write' db toDel =
+      LevelDB.write (unDB db) LevelDB.defaultWriteOptions (unTaggedBatchOps toDel)
 
-writeBatchOps
+mkWriteBatchOps
   :: Ledger.World
   -> IO (TaggedBatchOps Account, TaggedBatchOps Asset, TaggedBatchOps Contract)
-writeBatchOps world = do
+mkWriteBatchOps world = do
     let putAccs = keysToPuts $ Map.toList $ Ledger.accounts world
     let putAssets = keysToPuts $ Map.toList $ Ledger.assets world
     let putContracts = keysToPuts $ Map.toList $ Ledger.contracts world
@@ -491,30 +550,35 @@ writeBatchOps world = do
     keysToPuts = TaggedBatchOps . map (uncurry LevelDB.Put . bimap show encodeValue)
 
 -- | Load world state from database.
-readWorld :: Database -> IO (Either Text Ledger.World)
+readWorld :: Database -> IO (Either LevelDBError Ledger.World)
 readWorld Database{..} = do
   liftA3 Ledger.mkWorld
     <$> selectAll assetDB
     <*> selectAll accountDB
     <*> selectAll contractDB
 
+-- | Delete the entire world. This function cannot be batched,
+-- because BatchOps only operate over individual databases.
 deleteWorld :: Database -> IO ()
 deleteWorld dbs = do
-  (delAccs, delAssets, delContracts) <- deleteBatchOps dbs
-  LevelDB.write (unDB $ accountDB dbs) LevelDB.defaultWriteOptions $ unTaggedBatchOps delAccs
-  LevelDB.write (unDB $ assetDB dbs) LevelDB.defaultWriteOptions $ unTaggedBatchOps delAssets
-  LevelDB.write (unDB $ contractDB dbs) LevelDB.defaultWriteOptions $ unTaggedBatchOps delContracts
+    (delAccs, delAssets, delContracts) <- mkDeleteBatchOps dbs
+    write' (accountDB dbs)  delAccs
+    write' (assetDB dbs)    delAssets
+    write' (contractDB dbs) delContracts
+  where
+    write' db toDel =
+      LevelDB.write (unDB db) LevelDB.defaultWriteOptions (unTaggedBatchOps toDel)
 
-deleteBatchOps
+mkDeleteBatchOps
   :: Database
   -> IO (TaggedBatchOps Account, TaggedBatchOps Asset, TaggedBatchOps Contract)
-deleteBatchOps dbs = do
+mkDeleteBatchOps dbs = do
     -- Read current world
     eWorld <- readWorld dbs
     case eWorld of
       Left err -> do
-        Log.critical (toS err)
-        panic (toS err)
+        Log.critical (show err)
+        panic (show err)
       Right world -> do
         -- construct BatchOp Del operations
         let accountsDel  = keysToPut $ Ledger.accounts world
@@ -524,8 +588,7 @@ deleteBatchOps dbs = do
   where
     keysToPut = TaggedBatchOps . map (LevelDB.Del . show) . Map.keys
 
-
--------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------
 -- File System
 -------------------------------------------------------------------------------
 
@@ -592,7 +655,7 @@ newDB root = do
 -- Warning: Wipes current DB with no prompting and no exception handling
 resetDB
   :: Database
-  -> IO (Either Text ())
+  -> IO (Either LevelDBError ())
 resetDB db = do
   dbExists <- doesDirectoryExist $ root db
   if dbExists
@@ -603,8 +666,8 @@ resetDB db = do
       pure $ Right ()
     else do
       pure $ Left $
-        "resetDB: DB does not exist at " <> show (root db)
-  where
+        DBDoesNotExist $
+          show $ root db
 
 -- | Destroy all the databases and wipes the directory that was
 -- used as the database (used during resetDB).

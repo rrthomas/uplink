@@ -27,6 +27,7 @@ import qualified Data.ByteString.Char8 as BSC
 
 import DB
 import NodeState
+import Node.Peer
 import qualified Key
 import qualified Utils
 import qualified Block

@@ -37,15 +37,19 @@ import Crypto.Number.Basic (numBits, numBytes)
 import Data.Aeson as A
 import Data.Aeson.Types as A
 import Data.Hashable (Hashable)
-import Data.Serialize
+import Data.Serialize as S
   (Serialize(..), runPut, Get
   , getWord8, putWord8
   , getWord16be, putWord16be
+  , encode, decode
   )
 import Data.Text.Read (signed, decimal)
 
 import Script.Pretty
 import qualified Hash
+
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField
 
 maxBits :: Int
 maxBits = 4096
@@ -84,6 +88,23 @@ instance Show SafeInteger where
 
 instance Pretty SafeInteger where
   ppr (SafeInteger x) = ppr x
+
+instance ToField SafeInteger where
+  toField (SafeInteger si) = toField si
+
+instance FromField SafeInteger where
+  fromField f mdata = SafeInteger <$> fromField f mdata
+
+instance ToField (SafeInteger, SafeInteger) where
+  toField = EscapeByteA . S.encode
+
+instance FromField (SafeInteger, SafeInteger) where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case S.decode <$> bs of
+      Nothing             -> returnError UnexpectedNull f ""
+      Just (Left err)     -> returnError ConversionFailed f (toS err)
+      Just (Right twoSIs) -> return twoSIs
 
 -- | Must encode as String because JSON/Javascript only supports up to 64 bit
 -- integers.

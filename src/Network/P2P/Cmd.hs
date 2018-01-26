@@ -37,6 +37,7 @@ import Data.Binary
 import qualified Data.Text as Text
 import qualified Data.Serialize as S
 
+import Node.Peer
 import NodeState
 import SafeString
 import qualified Account
@@ -85,7 +86,7 @@ data Cmd
 -- executed when the node is booted in a test state with '--test'
 data TestCmd
 
-  -- ^ Cmd to saturate the network with 'nTxs' transactions spaced 'nSecs' apart
+  -- Cmd to saturate the network with 'nTxs' transactions spaced 'nSecs' apart
   = SaturateNetwork
     { nTxs :: Int   -- ^ Number of transactions to be created
     , nSecs :: Int  -- ^ Over this many seconds
@@ -112,7 +113,7 @@ data CmdResult
   | Accounts [Account.Account]
   | Assets [Asset.Asset]
   | Contracts [Contract.Contract]
-  | PeerList NodeState.Peers
+  | PeerList Peers
   deriving (Show, Generic, Binary)-- XXX
 
 cmdSuccess :: CmdResult
@@ -243,7 +244,7 @@ handleTestCmd testCmd =
               Log.warning errMsg
             else do
               -- Wipe DB entirely, keeping Node Keys and Node Acc
-              eRes <- lift DB.resetDB
+              eRes <- lift $ first show <$> DB.resetDB
               case eRes of
                 Left err -> Log.critical $
                   "Failed to reset Databases on ResetDB TestCmd: " <> err

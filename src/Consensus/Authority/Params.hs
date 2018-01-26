@@ -24,6 +24,7 @@ module Consensus.Authority.Params (
 
   PoA(..),
   mkGenesisPoA,
+  mkGenesisPoA',
 
   ValidatorSet(..),
   isValidatorAddr,
@@ -35,6 +36,7 @@ import Protolude hiding (put, get)
 
 import Control.Monad.Fail (fail)
 
+import Data.Aeson (ToJSON(..))
 import Data.Ord (compare)
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
@@ -61,6 +63,9 @@ instance Monoid ValidatorSet where
   v1 `mappend` v2 = ValidatorSet $
     unValidatorSet v1 `mappend` unValidatorSet v2
 
+instance ToJSON ValidatorSet where
+  toJSON (ValidatorSet vset) = toJSON vset
+
 isValidatorAddr :: Address -> ValidatorSet ->  Bool
 isValidatorAddr addr validators = addr `Set.member` unValidatorSet validators
 
@@ -72,7 +77,7 @@ data PoA = PoA
   , threshold     :: Int          -- ^ # of signatures/votes required for block approval
   , minTxs        :: Int          -- ^ Minimum # of transactions per block
   , signerLimit   :: Int          -- ^ # of consecutive blocks of which the validator can sign one block
-  } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
+  } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable, ToJSON)
 
 mkGenesisPoA
   :: [Text]
@@ -87,10 +92,25 @@ mkGenesisPoA validators blkPeriod blkLimit sgnLimit thresh mintxs =
       Nothing  -> Right poa
       Just err -> Left err
   where
-    validatorSet = ValidatorSet $ Set.fromList $
-      map (Address.parseAddress . toS) validators
+    poa =
+      mkGenesisPoA'
+        validators
+        blkPeriod
+        blkLimit
+        sgnLimit
+        thresh
+        mintxs
 
-    poa = PoA
+mkGenesisPoA'
+  :: [Text]
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> Int
+  -> PoA
+mkGenesisPoA' validators blkPeriod blkLimit sgnLimit thresh mintxs =
+    PoA
       { validatorSet  = validatorSet
       , blockPeriod   = fromIntegral blkPeriod
       , blockGenLimit = blkLimit
@@ -98,6 +118,9 @@ mkGenesisPoA validators blkPeriod blkLimit sgnLimit thresh mintxs =
       , threshold     = thresh
       , minTxs        = mintxs
       }
+  where
+    validatorSet = ValidatorSet $ Set.fromList $
+      map (Address.parseAddress . toS) validators
 
 data PoAValidationError
   = PoAValidationError Text

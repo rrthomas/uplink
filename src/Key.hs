@@ -121,6 +121,8 @@ import qualified Encoding
 import qualified SafeString as SS
 import qualified Utils
 
+import Data.Aeson (ToJSON(..), FromJSON(..), Value(String))
+import Data.Aeson.Types (typeMismatch)
 import Data.Proxy
 import Data.Serialize as S
 import Data.ByteArray as B
@@ -192,6 +194,15 @@ import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), ret
 newtype PubKey = PubKey ECDSA.PublicKey
   deriving (Show, Eq, Generic, NFData)
 
+instance ToJSON PubKey where
+   toJSON = String . decodeUtf8 . unHexPub . hexPub
+instance FromJSON PubKey where
+  parseJSON (String pk) =
+    case dehexPub (encodeUtf8 pk) of
+      Left err     -> fail $ "PubKey" <> err
+      Right pubKey -> pure pubKey
+  parseJSON invalid = typeMismatch "PubKey" invalid
+
 type ECDSAKeyPair = (PubKey, ECDSA.PrivateKey)
 
 instance NFData ECDSA.PublicKey where rnf !_ = ()
@@ -254,9 +265,8 @@ sign priv msg = do
     Nothing -> sign priv msg
 
     Just sig -> return sig
-
   where
-    n = 100000000000000000000 -- XXXX look at sign in cryptonite
+    n = ECC.ecc_n (ECC.common_curve sec_p256k1)
 
 -- Deterministic, uses explicit nonce.
 -- WARNING: Vulnerable to timing attacks.
@@ -560,9 +570,9 @@ importPub bs =
         else Left "Invalid key data. Is not elliptic curve point"
 
 -- | Export public/private keypair to PEM file
-exportPriv :: ECDSAKeyPair -> ByteString
-exportPriv (pub, priv) = do
-  let (x0, x1) = extractPoint pub
+exportPriv :: ECDSA.PrivateKey -> ByteString
+exportPriv priv = do
+  let (x0, x1) = extractPoint $ toPublic priv
   let asn1 = encodeDer $ compressPair (x0, x1) (ECDSA.private_d priv)
   pemPrivate asn1
 
@@ -743,7 +753,8 @@ pemPrivate asn1 = PEM.pemWriteBS pem
     pem =
       PEM.PEM
       { PEM.pemName = "EC PRIVATE KEY"
-      , PEM.pemHeader = encryptedHeader "BE261F2652B3D42D"
+      {-, PEM.pemHeader = encryptedHeader ""-}
+      , PEM.pemHeader = []
       , PEM.pemContent = asn1
       }
 

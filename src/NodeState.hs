@@ -20,14 +20,6 @@ module NodeState
   , initNodeState
   , resetNodeState
 
-  -- ** Node Peers
-  , Peers
-  , Peer(..)
-  , peersToPids
-  , peersToNodeIds
-  , peersToAddresses
-  , nodeIdToHostname
-
   -- ** Getters & Setters
   , askConfig
   , askStorageBackend
@@ -38,7 +30,8 @@ module NodeState
   , askAccountType
   , askSelfAddress
   , askGenesisBlock
-  , askNodeDataDir
+  , askNodeDataFilePaths
+  , askPeersFilePath
 
   -- ** World State
   , getLedger
@@ -69,7 +62,6 @@ module NodeState
 
   -- ** Query Ledger State
   , lookupAccount
-  , withAccount
   , withLedgerState
 
   -- ** World State
@@ -85,13 +77,8 @@ module NodeState
   , isValidatingNode
   , getValidatorPeers
 
-  -- ** Peer persistence
-  , loadPeers
-  , savePeers
-
   -- ** Preallocated Accounts
   , loadPreallocatedAccs
-  , loadPreallocatedAccs'
 
   , withApplyCtx
 
@@ -147,49 +134,13 @@ import qualified TxLog
 import qualified MemPool
 import qualified Hash
 import qualified Validate
+
+import Node.Peer
+import Node.Files
+
 import qualified Consensus.Authority.Params as CAP
 import qualified Consensus.Authority.State as CAS
 
--------------------------------------------------------------------------------
--- Network Peers
--------------------------------------------------------------------------------
-
-data Peer = Peer
-  { peerPid     :: ProcessId  -- ProcessId of Peer Controller Process
-  , peerAccAddr :: Address    -- Address of Peer node account
-  } deriving (Eq, Ord, Show, Generic)
-
-instance Binary.Binary Peer where
-  put (Peer pid addr) = do
-    Binary.put pid
-    Binary.put addr
-  get = Peer <$> Binary.get <*> Binary.get
-
-instance ToJSON Peer where
-  toJSON (Peer pid addr) = object
-    [ "tag" .= ("Peer" :: Text)
-    , "contents" .= object
-        [ "peerPid" .= decodeUtf8 (pidToNodeIdBS pid)
-        , "peerAccAddr" .= addr
-        ]
-    ]
-
-type Peers = Set.Set Peer
-
-peersToPids :: Peers -> [ProcessId]
-peersToPids = map peerPid . Set.toList
-
-peersToNodeIds :: Peers -> [NodeId]
-peersToNodeIds = map (processNodeId . peerPid) . Set.toList
-
-peersToAddresses :: Peers -> [Address]
-peersToAddresses = map peerAccAddr . Set.toList
-
-pidToNodeIdBS :: ProcessId -> ByteString
-pidToNodeIdBS = endPointAddressToByteString . nodeAddress . processNodeId
-
-nodeIdToHostname :: NodeId -> ByteString
-nodeIdToHostname = toS . takeWhile (/= ':') . toS . endPointAddressToByteString . nodeAddress
 
 -------------------------------------------------------------------------------
 -- NodeEnv (NodeState & NodeConfig)
@@ -208,9 +159,10 @@ data NodeAccType = New | Existing
 
 data NodeConfig = NodeConfig
   { account      :: Account.Account    -- ^ Active account
-  , nodePrivKey  :: Key.PrivateKey     -- ^ Active account's private key
+  , privKey      :: Key.PrivateKey     -- ^ Active account's private key
   , accountType  :: NodeAccType        -- ^ Is account new or existing
   , config       :: Config.Config      -- ^ Node configuration
+  , dataFilePaths :: NodeDataFilePaths -- ^ File paths to node data store on disk
   , genesisBlock :: Block.Block        -- ^ Network genesis block
   }
 
@@ -286,7 +238,7 @@ instance MonadProcessBase m => MonadProcessBase (NodeT m) where
   restoreMP = defaultRestoreMP
 
 -------------------------------------------------------------------------------
--- Getters & Setters
+-- NodeState Utils
 -------------------------------------------------------------------------------
 
 readMVar' :: MonadBase IO m => (a -> b) -> MVar a -> m b
@@ -330,7 +282,7 @@ askAccount :: Monad m => NodeT m Account.Account
 askAccount = account <$> askNodeConfig
 
 askPrivateKey :: Monad m => NodeT m Key.PrivateKey
-askPrivateKey = nodePrivKey <$> askNodeConfig
+askPrivateKey = privKey <$> askNodeConfig
 
 askKeyPair :: Monad m => NodeT m Key.ECDSAKeyPair
 askKeyPair = (Key.toPublic &&& identity) <$> NodeState.askPrivateKey
@@ -344,8 +296,14 @@ askSelfAddress = Account.address <$> askAccount
 askGenesisBlock :: Monad m => NodeT m Block.Block
 askGenesisBlock = genesisBlock <$> askNodeConfig
 
-askNodeDataDir :: Monad m => NodeT m FilePath
-askNodeDataDir = Config.nodeDataDir <$> askConfig
+askNodeDataFilePaths :: Monad m => NodeT m NodeDataFilePaths
+askNodeDataFilePaths = dataFilePaths <$> askNodeConfig
+
+askPeersFilePath :: Monad m => NodeT m FilePath
+askPeersFilePath = Node.Files.peersFile <$> askNodeDataFilePaths
+
+askTxLogFilePath :: Monad m => NodeT m FilePath
+askTxLogFilePath = Node.Files.txLogFile <$> askNodeDataFilePaths
 
 -------------------------------------------------------------------------------
 
@@ -420,7 +378,7 @@ getInvalidTxPool = liftBase . readMVar =<< getNodeState invalidTxPool
 appendInvalidTxPool
   :: (MonadBaseControl IO m, MonadWriteDB m)
   => [Tx.InvalidTransaction]
-  -> NodeT m (Either Text ())
+  -> NodeT m (Either (DBError m) ())
 appendInvalidTxPool itxs = do
   appendInvalidTxPool' itxs
   appendInvalidTxsDB itxs
@@ -433,16 +391,9 @@ appendInvalidTxPool' itxs = modifyNodeState_ invalidTxPool $ pure . MemPool.addI
 appendInvalidTxsDB
   :: (MonadBaseControl IO m, MonadWriteDB m)
   => [Tx.InvalidTransaction]
-  -> NodeT m (Either Text ())
+  -> NodeT m (Either (DBError m) ())
 appendInvalidTxsDB =
-    fmap (first show) .
-      lift . try' . DB.writeInvalidTxs
-  where
-    try'
-      :: MonadBaseControl IO m
-      => m ()
-      -> m (Either SomeException ())
-    try' = try
+  lift . DB.writeInvalidTxs
 
 elemInvalidTxPool :: MonadBase IO m => ByteString -> NodeT m Bool
 elemInvalidTxPool txHash = pure . MemPool.elemInvalidTxPool txHash =<< getInvalidTxPool
@@ -551,17 +502,6 @@ lookupAccount
   -> NodeT m (Either Ledger.AccountError Account.Account)
 lookupAccount = lookupInLedger . Ledger.lookupAccount
 
-withAccount
-  :: MonadBase IO m
-  => Address.Address
-  -> (Account.Account -> NodeT m a)
-  -> NodeT m (Either Ledger.AccountError a)
-withAccount addr f = do
-  eAcc <- lookupAccount addr
-  case eAcc of
-    Left err -> pure $ Left err
-    Right acc -> Right <$> f acc
-
 -------------------------------------------------------------------------------
 -- Sync Ledger State & DB
 -------------------------------------------------------------------------------
@@ -592,89 +532,30 @@ applyBlock block =
           let blockIdx = Block.index block
 
           -- Write the entire block's transacction list to TxLog in database
-          liftBase $ forM_ (Map.toList deltasMap) $ do
-            uncurry $ TxLog.writeDeltas (fromIntegral blockIdx) (TxLog.txLogFile ".")
-            uncurry $ TxLog.writeDeltasJSON (fromIntegral blockIdx) (TxLog.txLogFile ".")
+          txLogFile <- askTxLogFilePath
+          liftBase $ forM_ (Map.toList deltasMap) $ \(addr,deltas) ->
+            TxLog.writeDeltas txLogFile (fromIntegral blockIdx) addr deltas
 
 syncNodeStateWithDBs
   :: (MonadBaseControl IO m, MonadWriteDB m)
-  => NodeT m (Either Text ())
+  => NodeT m (Either (DBError m) ())
 syncNodeStateWithDBs = do
   eRes <- syncWorldWithDBs
   case eRes of
     Left err -> pure $ Left err
     Right _  -> syncLastBlockWithDBs
 
-syncWorldWithDBs :: MonadWriteDB m => NodeT m (Either Text ())
+syncWorldWithDBs :: MonadWriteDB m => NodeT m (Either (DBError m) ())
 syncWorldWithDBs = withLedgerState (lift . DB.syncWorld)
 
 -- | Since blocks are not stored in ledger(world) state, we
 -- must sync them to the DB separately
 syncLastBlockWithDBs
   :: (MonadBaseControl IO m, MonadWriteDB m)
-  => NodeT m (Either Text ())
-syncLastBlockWithDBs =
-    fmap (first show) $
-      tryWriteBlock =<< getLastBlock
-  where
-    try' :: MonadBaseControl IO m => m () -> m (Either SqlError ())
-    try' = try
-
-    tryWriteBlock = lift . try' . DB.writeBlock
-
--------------------------------------------------------------------------------
---
--- ** Node Data Persistance to FileSystem **
---
--- XXX Everything below this comment pertains (or should pertain) to reading and
--- writing of node specific data to the File System. Perhaps in the future some
--- of the data should be stored in whichever backend the uplink node is using,
--- but for now, the following code handles the "on disk" storage of:
---
---   * [Network Peers]
---     Serialization of all known peer process ids and their respective accound
---     addresses.
---
---   * [Node Account Data]
---     Data pertaining to an uplink node's account.
---     * Node account (JSON serialized)
---     * Node account public key (PEM)
---     * Node account private key (PEM)
---
---   * [TxLog]
---     A list of modifications to world state resulting from smart contract
---     function calls, i.e. TxCall transactions.
---
---   * [Preallocated Accounts]    XXX (Remove?)
---     A directory of accounts and their key pairs that bootstrap the network.
---     In the initial implementation of Uplink w/ it's Proof of Authority
---     consensus algorithm, these preallocate accounts correspond the the
---     initial validating nodes in the network. These files are created by
---     'uplink keys <validatorsDir> <n validators>'
---
--------------------------------------------------------------------------------
-
--------------------------------------------------------------------------------
--- Read/Write Peers
--------------------------------------------------------------------------------
-
-peersFile :: FilePath -> FilePath
-peersFile root = root </> "peers"
-
-loadPeers :: FilePath -> IO Peers
-loadPeers root = do
-   let peersFile' = peersFile root
-   peersFileExists <- doesFileExist peersFile'
-   if peersFileExists then
-     Binary.decode <$> BSL.readFile peersFile'
-   else pure Set.empty
-
-savePeers :: FilePath -> Peers -> IO ()
-savePeers root peers = do
-   let peersFile' = peersFile root
-   BSL.writeFile peersFile' $ Binary.encode peers
-   let mode = unionFileModes ownerReadMode ownerWriteMode
-   setFileMode peersFile' mode
+  => NodeT m (Either (DBError m) ())
+syncLastBlockWithDBs = do
+  lastBlock <- getLastBlock
+  lift $ DB.writeBlock lastBlock
 
 -------------------------------------------------------------------------------
 -- Load Preallocated Accounts
@@ -699,27 +580,4 @@ savePeers root peers = do
 loadPreallocatedAccs :: MonadBase IO m => NodeT m (Either Text [Account.Account])
 loadPreallocatedAccs = do
   dir <- Config.preallocated <$> askConfig
-  liftBase $ loadPreallocatedAccs' dir
-
-loadPreallocatedAccs'
-  :: MonadBase IO m
-  => FilePath
-  -> m (Either Text [Account.Account])
-loadPreallocatedAccs' dir = do
-  dirExists <- liftBase $ doesDirectoryExist dir
-  if not dirExists
-    then pure $ Left
-      "No preallocated accounts directory found."
-    else do
-      accDirs <- liftBase $ listDirectory dir
-      if (null accDirs)
-        then pure $ Left $
-          "No accounts found in preallocated accounts directory: " <> show dir
-        else fmap (Right . rights) $
-          forM accDirs $ \accDir -> do
-            eAcc <- liftBase $
-              Account.loadAccount $ dir </> accDir
-            case eAcc of
-              Left err -> Log.warning $ show err
-              Right _  -> pure ()
-            pure $ fst <$> eAcc
+  liftBase $ Account.readAccountsFromDir dir

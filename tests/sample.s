@@ -17,6 +17,9 @@ transition setX -> getX;
 transition getX -> setX;
 transition settlement -> terminal;
 
+transition initial -> circulated;
+transition circulated -> terminal;
+
 @setDate
 setDate() {
   dt = "2020-10-20T15:50:12+00:00";
@@ -66,3 +69,16 @@ g (asset f, account t) {
     return void; 
   };
 }
+
+@initial
+circulate(asset a, int amount) {
+  circulate(a,amount);
+  transitionTo(:circulated);
+}
+
+@circulated
+transfer(asset a, account from, account to, int amount) {
+  transferHoldings(from,a,amount,to);
+  terminate("finished transfer");
+}
+

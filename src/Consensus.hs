@@ -193,7 +193,7 @@ makeBlock prevBlock = do
         (validTxs,txErrs) <- NodeState.pruneTxMemPool
         -- Add invalid txs to invalidTxPool and DB
         eRes <- appendInvalidTxPool txErrs
-        either Log.warning pure eRes
+        either (Log.warning . show) pure eRes
 
         -- Log invalid transactions (Block creation still happens if invalid txs)
         let mkErr = (<>) "[makeBlock] Error:\n    " . show
@@ -247,9 +247,11 @@ acceptBlock block = do
 
   -- 1) Validate block w/ respect to chain rules
   validBlock <- do
-    medianTimestamp <- lift $
-      fmap (Block.medianTimestamp =<<) $
-        DB.readLastNBlocks (Block.index block)
+    medianTimestamp <- lift $ do
+      eNBlocks <- DB.readLastNBlocks (Block.index block)
+      case eNBlocks of
+        Left err      -> pure $ Left $ show err
+        Right nBlocks -> pure $ Block.medianTimestamp nBlocks
     case medianTimestamp of
       Left err -> pure $ Left $
         Block.InvalidMedianTimestamp $ toS err

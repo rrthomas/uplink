@@ -1,22 +1,31 @@
 {-# LANGUAGE MultiWayIf #-}
 module Console.Command (
   ConsoleCmd(..),
-  accountPrompt,
+
+  getCmd,
   handleConsoleCmd,
+
+  accountPrompt,
   displayCmdHelp,
   displayActiveAccount
 
 ) where
 
-import Protolude
+import Protolude hiding (newChan)
 
 import Control.Monad.Base
+
+import Control.Distributed.Process hiding (reconnect)
+
 import System.Console.Repline
 
-import qualified Data.String as String
-import qualified Data.Set as Set
 import Data.Aeson
 import Data.Aeson.Encode.Pretty
+import qualified Data.ByteString as BS
+import qualified Data.Map as Map
+import qualified Data.String as String
+import qualified Data.Serialize as S
+import qualified Data.Set as Set
 
 import Text.Parsec
 
@@ -32,9 +41,7 @@ import qualified Storage
 import qualified Address
 import qualified Asset
 import qualified Account
-import qualified Data.ByteString as BS
 import qualified Network.P2P.Cmd as Cmd
-import qualified Data.Map as Map
 import qualified Validate
 import qualified Utils
 import qualified SafeString
@@ -84,29 +91,23 @@ data ConsoleCmd =
 -- Command handling
 -------------------------------------------------------------------------------
 
-handleConsoleCmd :: ConsoleCmd -> Console ()
-handleConsoleCmd consoleCmd = do
-  chan <- lift $ asks chan
-  resultChan <- lift $ asks resultChan
+handleConsoleCmd :: ProcessId -> Cmd.Cmd -> Process ()
+handleConsoleCmd cmdProc cmd = do
+  -- Send cmd to remote node
+  (sp,rp) <- newChan
+  send cmdProc (cmd, sp)
+  -- Receive result from remote node
+  res <- receiveChan rp
+  case res of
+    (Cmd.CmdResult t) -> liftIO $ Utils.putGreen t
+    (Cmd.Accounts accs) -> putText $ toS $ encodePretty accs
+    (Cmd.Assets assets) -> putText $ toS $ encodePretty assets
+    (Cmd.Contracts contracts) -> putText $ toS $ encodePretty contracts
+    (Cmd.PeerList peers) -> putText $ show peers
 
-  rpcCmd <- getCmd consoleCmd
-  case rpcCmd of
-    (Just cmd) -> do
-      -- Send cmd to remote node
-      liftIO $ writeChan chan cmd
-      -- Receive result from remote node
-      res <- liftIO $ readChan resultChan
-      case res of
-        (Cmd.CmdResult t) -> liftIO $ Utils.putGreen t
-        (Cmd.Accounts accs) -> putText $ toS $ encodePretty accs
-        (Cmd.Assets assets) -> putText $ toS $ encodePretty assets
-        (Cmd.Contracts contracts) -> putText $ toS $ encodePretty contracts
-        (Cmd.PeerList peers) -> putText $ show peers
-    Nothing -> return ()
-
-getCmd :: ConsoleCmd -> Console (Maybe Cmd.Cmd)
+getCmd :: ConsoleCmd -> ConsoleM (Maybe Cmd.Cmd)
 getCmd c = do
-  ctx <- get
+  consoleState <- get
 
   case c of
     Discover -> return $ Just Cmd.Discover
@@ -152,7 +153,7 @@ getCmd c = do
                 assetAddr = addr
               , assetName = SafeString.fromBytes' $ toS name
               , supply    = fromInteger supply
-              , reference = Just Asset.Token
+              , reference = mref
               , assetType = Asset.Discrete
               }
       getCmd (TransactionRaw hdr $ Just hdrTs)
@@ -237,18 +238,18 @@ getCmd c = do
 
 createTx
   :: Transaction.TransactionHeader
-  -> Console (Either Text Transaction.Transaction)
+  -> ConsoleM (Either Text Transaction.Transaction)
 createTx hdr = createTx' hdr =<< liftIO Time.now
 
 createTx'
   :: Transaction.TransactionHeader
   -> Time.Timestamp
-  -> Console (Either Text Transaction.Transaction)
+  -> ConsoleM (Either Text Transaction.Transaction)
 createTx' hdr timestamp = do
-  ctx <- get
-  case (privKey ctx, account ctx) of
+  consoleState <- get
+  case (privKey consoleState, account consoleState) of
     (Just privKey, Just acc) -> do
-      sig <- liftIO $ Key.signS privKey hdr
+      sig <- liftIO $ Key.sign privKey $ S.encode hdr
       let issuer = Account.address acc
       return $ Right Transaction.Transaction {
           header    = hdr
@@ -262,20 +263,21 @@ createTx' hdr timestamp = do
       createTx hdr
 
 
-previewTx :: Transaction.Transaction -> Console ()
+previewTx :: Transaction.Transaction -> ConsoleM ()
 previewTx tx = putText $ toS $ encodePretty tx
 
-hoistErr :: Either Text a -> Console a
+hoistErr :: Either Text a -> ConsoleM a
 hoistErr (Right val) = return val
 hoistErr (Left err) = do
   liftIO $ Utils.putRed err
-  abort
+  ConsoleM abort
 
-accountPrompt :: Maybe FilePath -> Console Account
+accountPrompt :: Maybe FilePath -> ConsoleM Account
 accountPrompt (Just path) = do
-  eAccAndKeys <- liftIO $ Account.loadAccount $ toS path
+  eAccAndKeys <- liftIO $ Account.readAccountData $ toS path
   (acc, (_,privKey)) <- hoistErr eAccAndKeys
-  modify (\ctx -> ctx { account = Just acc, privKey = Just privKey })
+  modify $ \consoleState ->
+    consoleState { account = Just acc, privKey = Just privKey }
   displayActiveAccount
   pure acc
 accountPrompt Nothing = do
@@ -292,14 +294,14 @@ accountPrompt Nothing = do
       dir <- liftIO $ Account.createAccountDir path
       hoistErr dir
 
-      acc <- liftIO $ Account.setupAccount path Nothing Account.Prompt
+      acc <- liftIO $ Account.createAccPrompt path Nothing Account.Prompt
       accountPrompt (Just path)
 
 -------------------------------------------------------------------------------
 -- Parse args on Cmd line
 -------------------------------------------------------------------------------
 
-consoleParseAddr :: Text -> Console Address.Address
+consoleParseAddr :: Text -> ConsoleM Address.Address
 consoleParseAddr addr = hoistErr $
   case (Address.parseAddr $ encodeUtf8 addr) of
     Nothing   -> Left "Address given is invalid"
@@ -321,7 +323,7 @@ consoleCmdHelp c =
      | c == listAssets -> "print all assets"
      | c == listContracts -> "print all contracts"
      | c == createAccount -> "create account eg. createAccount key.priv"
-     | c == createAsset -> "create an asset eg. createAsset \"USD\" 1000 USD Discrete"
+     | c == createAsset -> "create an asset eg. createAsset USD 1000 USD Discrete"
      | c == createContract -> "create contract eg. createContract contracts/escrow.s"
      | c == transferAsset -> "transfer asset holdings"
      | c == circulateAsset -> "circulate asset holdings"
@@ -342,23 +344,23 @@ consoleCmdHelpUsage c =
      | c == createAsset -> " <name> <supply> <ref (optional)> <type>"
      | c == transferAsset -> " <asset address> <recipient address> <amount>"
      | c == circulateAsset -> " <address> <amount>"
-     | c == setAccount -> " <optional path to account dir to use"
+     | c == setAccount -> " <optional path to account dir>"
      | otherwise ->  ""
 
 -------------------------------------------------------------------------------
 -- Display Utils
 -------------------------------------------------------------------------------
 
-displayCmdHelp :: Text -> Console ()
+displayCmdHelp :: Text -> ConsoleM ()
 displayCmdHelp cmd = do
   when (cmd `elem` reservedNames) $ do
     liftIO $ Utils.putGreen $ cmd <> consoleCmdHelpUsage cmd <>  ":"
     putText $ "    " <> consoleCmdHelp cmd <> "\n"
 
-displayActiveAccount :: Console ()
+displayActiveAccount :: ConsoleM ()
 displayActiveAccount = do
-  ctx <- get
-  case (privKey ctx, account ctx) of
+  consoleState <- get
+  case (privKey consoleState, account consoleState) of
     (Just privKey, Just acc) -> do
       let address = Address.rawAddr $ Account.address acc
       liftIO $ Utils.putGreen $ "Active account: " <> decodeUtf8 address

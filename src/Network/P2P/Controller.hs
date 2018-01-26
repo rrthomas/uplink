@@ -39,6 +39,7 @@ import qualified Data.Set as Set
 import qualified Data.Serialize as S
 
 import NodeState
+import Node.Peer
 import Network.P2P.Service
 import qualified Block
 import qualified Logging as Log
@@ -392,11 +393,20 @@ listPeers = queryAllPeers >>= (liftIO . print)
 
 cachePeers :: MonadBase IO m => Peers -> NodeT m ()
 cachePeers peers = do
-  nodeDataDir <- NodeState.askNodeDataDir
   Log.info "Caching peers..."
-  liftBase $ savePeers nodeDataDir peers
+  peersFilePath <- NodeState.askPeersFilePath
+  liftBase $ writePeers' peersFilePath peers
 
 getCachedPeers :: MonadBase IO m => NodeT m Peers
 getCachedPeers = do
-  nodeDataDir <- NodeState.askNodeDataDir
-  liftBase $ loadPeers "peers"
+  ePeers <- getCachedPeers'
+  case ePeers of
+    Left err -> do
+      Log.warning $ "Failed to load cached peers: " <> err
+      pure Set.empty
+    Right peers -> pure peers
+
+getCachedPeers' :: MonadBase IO m => NodeT m (Either Text Peers)
+getCachedPeers' = do
+  peersFilePath <- NodeState.askPeersFilePath
+  liftBase $ readPeers' peersFilePath

@@ -236,10 +236,6 @@ updateState state = modify $ \s -> s { graphState = state }
 getState :: EvalM GraphState
 getState = gets graphState
 
--- | Get the evaluation context
-getEvalCtx :: EvalM EvalCtx
-getEvalCtx = ask
-
 -- | Emit a delta
 emitDelta :: Delta.Delta -> EvalM ()
 emitDelta delta = modify' $ \s -> s { deltas = deltas s ++ [delta] }
@@ -247,7 +243,7 @@ emitDelta delta = modify' $ \s -> s { deltas = deltas s ++ [delta] }
 -- | Lock main graph, switch to side graph
 sideInit :: Int64 -> EvalM ()
 sideInit timeout = do
-  now <- currentTimestamp <$> getEvalCtx
+  now <- currentTimestamp <$> ask
   modify' $ \s -> s { sideState = Just SideInit, sideLock = (True, Just (now, now+timeout)) }
 
 -- | Unlock side graph, switch to main graph
@@ -516,21 +512,21 @@ evalLExpr (Located _ e) = case e of
       Just prim -> evalPrim prim args
 
   EBefore dt e -> do
-    now <- currentTimestamp <$> getEvalCtx
+    now <- currentTimestamp <$> ask
     let noLoc = Located NoLoc
     let nowDtLLit  = noLoc $ LDateTime $ DateTime $ posixMicroSecsToDatetime now
     let predicate = EBinOp (noLoc LEqual) (noLoc $ ELit nowDtLLit) dt
     evalLExpr $ noLoc $ EIf (noLoc predicate) e (noLoc ENoOp)
 
   EAfter dt e -> do
-    now <- currentTimestamp <$> getEvalCtx
+    now <- currentTimestamp <$> ask
     let noLoc = Located NoLoc
     let nowDtLLit  = noLoc $ LDateTime $ DateTime $ posixMicroSecsToDatetime now
     let predicate = EBinOp (noLoc GEqual) (noLoc $ ELit nowDtLLit) dt
     evalLExpr $ noLoc $ EIf (noLoc predicate) e (noLoc ENoOp)
 
   EBetween startDte endDte e -> do
-    now <- currentTimestamp <$> getEvalCtx
+    now <- currentTimestamp <$> ask
     let noLoc = Located NoLoc
     let nowDtLExpr = noLoc $ ELit $ noLoc $
           LDateTime $ DateTime $ posixMicroSecsToDatetime now
@@ -575,14 +571,14 @@ handleArithError m = do
 evalPrim :: PrimOp -> [LExpr] -> EvalM Value
 evalPrim ex args = case ex of
   Now            -> do
-    currDatetime <- posixMicroSecsToDatetime . currentTimestamp <$> getEvalCtx
+    currDatetime <- posixMicroSecsToDatetime . currentTimestamp <$> ask
     pure $ VDateTime $ DateTime currDatetime
-  Block          -> VInt . currentBlock <$> getEvalCtx
-  Deployer       -> VAccount . currentDeployer <$> getEvalCtx
-  Sender         -> VAccount . currentTxIssuer <$> getEvalCtx
-  Created        -> VInt . currentCreated <$> getEvalCtx
-  Address        -> VContract . currentAddress <$> getEvalCtx
-  Validator      -> VAccount . currentValidator <$> getEvalCtx
+  Block          -> VInt . currentBlock <$> ask
+  Deployer       -> VAccount . currentDeployer <$> ask
+  Sender         -> VAccount . currentTxIssuer <$> ask
+  Created        -> VInt . currentCreated <$> ask
+  Address        -> VContract . currentAddress <$> ask
+  Validator      -> VAccount . currentValidator <$> ask
 
   Fixed1ToFloat  -> do
     let [eFixed] = args
@@ -644,7 +640,7 @@ evalPrim ex args = case ex of
   Sign           -> do
     let [msgExpr] = args
     (VMsg msg) <- evalLExpr msgExpr
-    privKey <- currentPrivKey <$> getEvalCtx -- XXX               V gen Random value?
+    privKey <- currentPrivKey <$> ask -- XXX               V gen Random value?
     sig <- liftIO $
       Key.getSignatureRS <$>
         Key.sign privKey (SS.toBytes msg)
@@ -683,8 +679,8 @@ evalPrim ex args = case ex of
   Prim.TransferTo  -> do
     let [assetExpr,holdingsExpr] = args
 
-    senderAddr <- currentTxIssuer <$> getEvalCtx
-    contractAddr <- currentAddress <$> getEvalCtx
+    senderAddr <- currentTxIssuer <$> ask
+    contractAddr <- currentAddress <$> ask
     assetAddr <- getAssetAddr assetExpr
     (VInt holdings) <- evalLExpr holdingsExpr
 
@@ -704,7 +700,7 @@ evalPrim ex args = case ex of
   Prim.TransferFrom  -> do
     let [assetExpr,holdingsExpr,accExpr] = args
 
-    contractAddr <- currentAddress <$> getEvalCtx
+    contractAddr <- currentAddress <$> ask
     assetAddr <- getAssetAddr assetExpr
     accAddr <- getAccountAddr accExpr
     (VInt holdings) <- evalLExpr holdingsExpr
@@ -718,6 +714,22 @@ evalPrim ex args = case ex of
     -- Emit the delta denoting the world state modification
     emitDelta $ Delta.ModifyAsset $
       Delta.TransferFrom assetAddr holdings accAddr contractAddr
+
+    noop
+
+  -- Circulate the supply of an Asset to the Asset issuer's holdings
+  CirculateSupply -> do
+    let [assetExpr, amountExpr] = args
+
+    assetAddr <- getAssetAddr assetExpr
+    VInt amount <- evalLExpr amountExpr
+
+    -- Perform the circulation
+    world <- gets worldState
+    txIssuer <- asks currentTxIssuer
+    case Ledger.circulateAsset assetAddr txIssuer amount world of
+      Left err -> throwError $ AssetIntegrity $ show err
+      Right newWorld -> setWorld newWorld
 
     noop
 
@@ -757,7 +769,7 @@ evalPrim ex args = case ex of
           Key.verify (publicKey acc) (Key.mkSignatureRS sig) $ SS.toBytes msg
 
   TxHash -> do
-    hash <- currentTransaction <$> getEvalCtx
+    hash <- currentTransaction <$> ask
     case SS.fromBytes hash of
       Left err -> throwError $ HugeString $ show err
       Right msg -> pure $ VMsg msg
@@ -856,7 +868,7 @@ checkSideGraph meth = do
   (locked, ~(Just (lockStart, delta))) <- gets sideLock
   case locked of
     True  -> do
-      now <- currentTimestamp <$> getEvalCtx
+      now <- currentTimestamp <$> ask
       -- lock timeout
       if now > (lockStart + delta)
         then sideUnlock
@@ -1007,7 +1019,7 @@ homoOp
 homoOp f a b = do
   let a' = Homo.CipherText $ fromSafeInteger a
   let b' = Homo.CipherText $ fromSafeInteger b
-  pubKey <- currentStorageKey <$> getEvalCtx
+  pubKey <- currentStorageKey <$> ask
 
   let ct = f pubKey a' b'
   convertToSafeInteger ct
@@ -1025,7 +1037,7 @@ homoMul :: SafeInteger -> Int64 -> EvalM SafeInteger -- XXX is this safe? Probab
 homoMul a b = do
   let a' = Homo.CipherText $ fromSafeInteger a
   let b' = toInteger b
-  pubKey <- currentStorageKey <$> getEvalCtx
+  pubKey <- currentStorageKey <$> ask
 
   let ct = Homo.cipherMul pubKey a' b'
   convertToSafeInteger ct

@@ -159,20 +159,32 @@ verifyBlock world block =
 -- | Verify a transaction signature & hash
 verifyTransaction :: World -> Transaction -> Either Tx.InvalidTransaction ()
 verifyTransaction world tx@Transaction{..} = do
-  let mkInvalidTx = Tx.InvalidTransaction tx
   case header of
+    -- In the strange case of a CreateAccount transaction...
     Tx.TxAccount (Tx.CreateAccount pub _ _) ->
-        case Key.tryDecodePub pub of
-          Left _ -> Left $ mkInvalidTx Tx.InvalidPubKey
-          Right pub' ->
-            first (mkInvalidTx . Tx.InvalidTxField . Tx.InvalidTxSignature) $
-              Tx.verifyTransaction pub' tx
-    otherwise ->
+      case Key.tryDecodePub pub of
+        Left _ -> Left $ mkInvalidTx Tx.InvalidPubKey
+        Right pub'
+          -- If self-signed, verify sig with pubkey in TxHeader
+          | Address.deriveAddress pub' == origin ->
+              verifyTxWithPubKey pub'
+          -- Otherwise the origin of the transaction must be an existing account
+          | otherwise -> verifyTxByAccLookup
+    -- Otherwise, Tx origin acc must exist and header must be signed w/ account privkey
+    otherwise -> verifyTxByAccLookup
+  where
+    mkInvalidTx = Tx.InvalidTransaction tx
+
+    verifyTxByAccLookup :: Either Tx.InvalidTransaction ()
+    verifyTxByAccLookup =
       case Ledger.lookupAccount origin world of
-        Left _ -> Left $ mkInvalidTx $ Tx.NoSuchOriginAccount origin
-        Right acc ->
-          first (mkInvalidTx . Tx.InvalidTxField . Tx.InvalidTxSignature) $
-            Tx.verifyTransaction (Account.publicKey acc) tx
+        Left _    -> Left $ mkInvalidTx $ Tx.NoSuchOriginAccount origin
+        Right acc -> verifyTxWithPubKey $ Account.publicKey acc
+
+    verifyTxWithPubKey :: Key.PubKey -> Either Tx.InvalidTransaction ()
+    verifyTxWithPubKey pubkey =
+      first (mkInvalidTx . Tx.InvalidTxField . Tx.InvalidTxSignature) $
+        Tx.verifyTransaction pubkey tx
 
 -------------------------------------------------------------------------------
 -- Apply Block Transactions to World State

@@ -43,7 +43,7 @@ module Script.Parser (
   ) where
 
 import Protolude hiding
-  ((<|>), (<>), bool, many, try, option, optional, sourceLine, sourceColumn)
+  ((<|>), (<>), bool, many, try, option, optional, sourceLine, sourceColumn, Type)
 
 import Text.Parsec
 import Text.Parsec.Pos

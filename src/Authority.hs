@@ -42,7 +42,7 @@ import qualified Encoding
 -------------------------------------------------------------------------------
 
 -- | Create account data for
-authorityDir :: FilePath -> IO ()
+authorityDir :: FilePath -> IO (Either Text ())
 authorityDir dbpath = do
   let meta = Account.Metadata $ Map.fromList [("validator", "true")]
   (account, acctKeys) <- Account.newAccount "GMT" meta
@@ -50,10 +50,10 @@ authorityDir dbpath = do
   Utils.putGreen "Writing account"
   putStrLn (Address.rawAddr (Account.address account))
 
-  Account.createAccountDir dbpath
-  Account.writeKeys dbpath acctKeys
-  Account.writeAccount dbpath account
-  pure ()
+  res <- Account.createAccountDir dbpath
+  case res of
+    Left err -> pure $ Left err
+    Right _  -> Account.writeAccountData dbpath account acctKeys
 
 -- | Create validator accounts for genesis block
 authorityDirs :: FilePath -> Int -> IO ()

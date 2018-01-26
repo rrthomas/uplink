@@ -5,6 +5,7 @@ Driver for command line option handling.
 -}
 
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Driver (
   Command(..),
@@ -39,7 +40,9 @@ import qualified Script
 import qualified Commit
 import qualified Account
 import qualified Console
+import qualified Console.Config
 import qualified NodeState
+import qualified Node.Files as NF
 import qualified Authority
 import qualified MemPool
 import qualified Contract
@@ -55,6 +58,7 @@ import qualified Script.Typecheck as Typecheck
 import System.Directory
 import qualified System.Exit
 
+import DB.Class
 import qualified DB
 import qualified DB.PostgreSQL
 import qualified DB.LevelDB
@@ -75,95 +79,6 @@ import qualified Text.XML.Expat.Pickle as XML
 import qualified Text.XML.Expat.Format as XML
 
 --------------------------------------------------------------------------------
--- DB Agnostic State intialization
--- XXX Move to DB modules or typeclass XXX
---------------------------------------------------------------------------------
-
--- | Load the initial world, backend agnostic
-loadWorld
-  :: DB.MonadReadDB m
-  => (m (Either Text Ledger.World) -> IO (Either Text Ledger.World))
-  -> IO Ledger.World
-loadWorld runDB = do
-  eInitWorld <- runDB DB.readWorld
-  case eInitWorld of
-    Left err -> do
-      Utils.putRed $ "Could not read world state from Database: " <> show err
-      System.Exit.die "Database corrupt."
-    Right initWorld' -> pure initWorld'
-
--- | Initialize world by loading preallocated accounts and writing them to DB
--- Note: Currently, using PoA, preallocated accounts are validator accounts
-initWorld
-  :: DB.MonadWriteDB m
-  => Config
-  -> (m (Either Text ()) -> IO (Either Text ()))
-  -> IO ()
-initWorld config runDB = do
-  let preallocAccsDir = Config.preallocated config
-  ePreallocatedAccs <- NodeState.loadPreallocatedAccs' preallocAccsDir
-  case ePreallocatedAccs of
-    Left err   -> do
-      Utils.putRed $ "Failed to load preallocated accounts from directory: " <> show err
-      System.Exit.die "Please run `uplink keys` to generate validator accounts."
-    Right accs -> do
-      let eInitWorld = Ledger.addAccounts accs mempty
-      case eInitWorld of
-        Left err -> do
-          Utils.putRed $ "Failed to add validator accounts to world state: " <> show err
-          System.Exit.die ""
-        Right initWorld -> do
-          eRes <- runDB $ DB.syncWorld initWorld
-          case eRes of
-            Left err -> do
-              Utils.putRed $ "Failed to write world state to Database: " <> show err
-              System.Exit.die ""
-            Right _ -> pure ()
-
---------------------------------------------------------------------------------
-
--- | Load a pre-existing genesis block
-loadBlocks
-  :: DB.MonadReadDB m
-  => (m (Either Text Block.Block) -> IO (Either Text Block.Block))
-  -> IO (Block.Block, Block.Block)
-loadBlocks runDB = do
-  eGenesisBlock <- runDB $ DB.readBlock 0
-  case eGenesisBlock of
-    Left err -> do
-      Utils.putRed $ "Failed to read genesis block from Database: " <> show err
-      System.Exit.die "Database not intialized."
-    Right gBlock -> do
-      eLastBlock <- runDB DB.readLastBlock
-      case eLastBlock of
-        Left err -> do
-          Utils.putRed $ "Failed to read last block from Database: " <> show err
-          System.Exit.die "Database not intialized."
-        Right lastBlock ->
-          pure (gBlock,lastBlock)
-
--- | Initialize a Genesis Block and write it to the DB
-initGenesisBlock
-  :: DB.MonadWriteDB m
-  => Config
-  -> (m () -> IO ())
-  -> IO ()
-initGenesisBlock Config{..} runDB = do
-  Log.info "Intializing genesis block..."
-  cs@ChainSettings{..} <- handleChain False chainConfigFile
-  case CAP.mkGenesisPoA poaValidators poaBlockPeriod poaBlockLimit poaSignLimit poaThreshold poaTransactions of
-    Left err -> System.Exit.die $
-      "Invalid PoA Consensus configuration: " <> show err
-    Right genPoa -> do
-      gBlock <- Block.genesisBlock (toS genesisHash) genesisTimestamp genPoa
-      eRes <- try $ runDB $ DB.writeBlock gBlock
-      case eRes of
-        Left (err :: DB.PostgreSQL.SqlError) -> do
-          Utils.putRed $ "Failed to write genesis block to database: " <> show err
-          System.Exit.exitFailure
-        Right _ -> pure ()
-
---------------------------------------------------------------------------------
 -- Uplink
 --------------------------------------------------------------------------------
 
@@ -176,6 +91,10 @@ driver
 driver (Chain cmd) opts (config @ Config {..}) = do
 
   Log.info (toS (Utils.ppShow config))
+
+  -- Read/Validate Chain config
+  -- ==========================
+  ChainSettings{..}<- handleChain False chainConfigFile
 
   -- Setup entropy pool with 4096 bytes of entropy
   -- ========================================
@@ -191,53 +110,47 @@ driver (Chain cmd) opts (config @ Config {..}) = do
     Log.info "Not connecting because --no-network"
     System.Exit.exitSuccess
 
-  -- Setup Node Files Directory
-  -- =========================
-  createDirectoryIfMissing False nodeDataDir
-  writeFile (TxLog.txLogFile nodeDataDir) mempty
+  -- Setup Node Data Files
+  -- =====================
+  (nodeData,nodeAccType) <- do
+    (eNodeData, accType) <-
+      case cmd of
+        Init accPrompt -> do
+          -- Attempt to read existing node data from nodeDataDir
+          eNodeData <- NF.readNodeDataDir nodeDataDir
+          case eNodeData of
+            Right _  -> do -- Fail if node data already exists
+              Utils.putRed $ "Node data files already exist at '" <> toS nodeDataDir <> "'."
+              Utils.dieRed "Please specify a different directory with the '-d' flag."
+            Left err -> do
+              (acc,keys) <-
+                Account.createAccPrompt'
+                  nodeDataDir
+                  (Opts._privKey opts)
+                  accPrompt
+              -- Initialize node data directory
+              fmap (,NodeState.New) $
+                NF.initNodeDataDir nodeDataDir acc keys >>= \enfps ->
+                  either (pure . Left) NF.readNodeDataFiles enfps
+        Run -> fmap (,NodeState.Existing) $ NF.readNodeDataDir nodeDataDir
 
-   -- Setup Account
-  ((nodeAcc, nodeKeys),nodeAccType) <-
-    case cmd of
-      Init accPrompt -> do
-        eAccAndKeys <-
-          Account.setupAccount
-            nodeDataDir
-            (Opts._privKey opts)
-            accPrompt
-        case eAccAndKeys of
-          Left err -> do
-            Utils.putRed $ toS err
-            System.Exit.die $ toS err
-          Right accAndKeys -> return (accAndKeys, NodeState.New)
+    case eNodeData of
+      Left err       -> Utils.dieRed $ toS err
+      Right nodeData -> pure (nodeData, accType)
 
-      Run  -> do
-        eAcc <- Account.loadAccount nodeDataDir
-        case eAcc of
-          Left err  -> do
-            Utils.putRed $ toS err
-            newAccAndKeys <-
-              Account.setupAccount'
-                nodeDataDir
-                (Opts._privKey opts)
-                Account.Prompt
-            return (newAccAndKeys, NodeState.New)
-          Right accAndKeys -> return (accAndKeys, NodeState.Existing)
+  let nodeDataFps = NF.mkNodeDataFilePaths nodeDataDir
+  let (NF.NodeData nodeAcc (nodePubKey, nodePrivKey) nodePeers) = nodeData
 
-  Utils.putGreen $ mconcat
-    [ "Found existing account with fingerprint:\n    "
-    , toS (Key.fingerprint $ Account.publicKey nodeAcc)
-    ]
-
+  let fingerprint = toS $ Key.fingerprint nodePubKey
+  Utils.putGreen $ "Found existing account with fingerprint:\n  " <> fingerprint
 
   -- Initialize NodeEnv (NodeConfig & NodeState)
   -- ===========================================
   let mkNodeEnv world genesisBlock lastBlock = do
         let eInvalidTxPool = MemPool.mkInvalidTxPool 100
         case eInvalidTxPool of
-          Left err ->
-            System.Exit.die
-              "Invalid size specified for Invalid Transaction pool."
+          Left err -> Utils.dieRed
+            "Invalid size specified for Invalid Transaction pool."
           Right invalidTxPool -> do
             nodeState <-
               NodeState.initNodeState
@@ -250,8 +163,9 @@ driver (Chain cmd) opts (config @ Config {..}) = do
             let nodeConfig =
                   NodeState.NodeConfig {
                     NodeState.account      = nodeAcc
-                  , NodeState.nodePrivKey  = snd nodeKeys
+                  , NodeState.privKey  = nodePrivKey
                   , NodeState.accountType  = nodeAccType
+                  , NodeState.dataFilePaths = nodeDataFps
                   , NodeState.genesisBlock = genesisBlock
                   , NodeState.config       = config
                   }
@@ -272,52 +186,46 @@ driver (Chain cmd) opts (config @ Config {..}) = do
     -----------------------
     DB.PostgreSQL connInfo -> do
 
-      case cmd of
-
-        -- `uplink chain init`
-        Init _ -> do
-
-          -- Attempt to create Uplink Postgres DB
-          eRes <- DB.PostgreSQL.setupDB connInfo
-
-          case eRes of
-            Left err -> do
-              Utils.putRed $ "Failed to create Uplink database: " <> show err
-              System.Exit.die "Database initialization failed."
-
-            Right _ -> do
-              -- Connect to newly created Uplink Postgres Database
-              connPool <- DB.PostgreSQL.connectDB connInfo
-              let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
-
-              -- Initialize Genesis Block & World with Validator Accounts
-              -- XXX Cleanup after failed initialization of either of these (`bracket`)
-              initGenesisBlock config runPostgresT'
-              initWorld config runPostgresT'
-
-              Utils.putGreen "Successfully intialized Uplink Postgres Database."
-              DB.PostgreSQL.closeConnPool connPool
-
-        -- `uplink chain`
-        Run -> pure ()
-
       -- Connect to Existing Uplink Postgres Database
-      connPool <- DB.PostgreSQL.connectDB connInfo
-      let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
+      eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
+      connPool <-
+        case eConnPool of
+          Left err -> do
+            Utils.putRed "Failed to connect to specified database. Creating a new db..."
+            -- Attempt to create Uplink Postgres DB
+            eConnPool' <- DB.PostgreSQL.setupDB connInfo
 
+            case eConnPool' of
+              Left err -> Utils.dieRed $
+                "Failed to create Uplink database: " <> show err
+              Right connPool -> do
+                -- Initialize Genesis Block & World with Validator Accounts
+                let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
+                DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runPostgresT'
+                DB.initWorld preallocated runPostgresT'
+                Utils.putGreen "Successfully intialized Uplink Postgres Database."
+                pure connPool
+
+          Right connPool -> pure connPool
+
+      let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
 
       -- Load world state and genesis block to initialize NodeEnv
       Utils.putGreen "Loading world state from DB."
-      world <- loadWorld runPostgresT'
+      world <- DB.loadWorld runPostgresT'
       Utils.putGreen "Loading genesis block from DB."
-      (genesisBlock, lastBlock) <- loadBlocks runPostgresT'
+      (genesisBlock, lastBlock) <- DB.loadBlocks runPostgresT'
       nodeEnv <- mkNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
       -- Launch RPC Server
       Utils.putGreen "Starting RPC server..."
-      forkIO $ RPC.rpcServer config rpcToP2PChan $
-        runPostgresT' . runNodeT'
+      forkIO $
+        RPC.rpcServer
+          config
+          rpcToP2PChan
+          (runPostgresT' . runNodeT')
+          (Just connPool)
 
       -- Launch P2P Server
       Utils.putGreen "Starting P2P processes..."
@@ -329,9 +237,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
     DB.LevelDB path -> do
       eDatabase <- DB.LevelDB.setupDB path
       case eDatabase of
-        Left err -> do
-          Utils.putRed $ toS err
-          System.Exit.die $ toS err
+        Left err       -> Utils.dieRed $ toS err
         Right database -> do
 
           let runLevelDBT' = DB.LevelDB.runLevelDBT database
@@ -341,24 +247,29 @@ driver (Chain cmd) opts (config @ Config {..}) = do
             Init _ -> do
 
               -- Initialize Genesis Block & World with Validator Accounts
-              -- XXX Cleanup after failed initialization of either of these (`bracket`)
-              initGenesisBlock config runLevelDBT'
-              initWorld config runLevelDBT'
+              DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runLevelDBT'
+              DB.initWorld preallocated runLevelDBT'
 
               Utils.putGreen "Successfully intialized Uplink LevelDB Database."
 
             Run -> pure ()
 
           -- Load world state and genesis block to initialize NodeEnv
-          world <- loadWorld runLevelDBT'
-          (genesisBlock, lastBlock) <- loadBlocks runLevelDBT'
+          Utils.putGreen "Loading world state from DB."
+          world <- DB.loadWorld runLevelDBT'
+          Utils.putGreen "Loading genesis block from DB."
+          (genesisBlock, lastBlock) <- DB.loadBlocks runLevelDBT'
           nodeEnv <- mkNodeEnv world genesisBlock lastBlock
           let runNodeT' = NodeState.runNodeT nodeEnv
 
           -- Launch RPC Server
           Utils.putGreen "Starting RPC server..."
-          forkIO $ RPC.rpcServer config rpcToP2PChan $
-            runLevelDBT' . runNodeT'
+          forkIO $
+            RPC.rpcServer
+              config
+              rpcToP2PChan
+              (runLevelDBT' . runNodeT')
+              Nothing
 
           -- Launch P2P Server
           Utils.putGreen "Starting P2P processes..."
@@ -369,9 +280,14 @@ driver (Script cmd) opts (config @ Config {..}) =
   case storageBackend of
 
     DB.PostgreSQL connInfo -> do
-      connPool <- DB.PostgreSQL.connectDB connInfo
-      DB.PostgreSQL.runPostgresT connPool $
-        driverScript cmd opts config
+      eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
+      case eConnPool of
+        Left err -> do
+          Utils.putRed $ "Failed to create Uplink database: " <> show err
+          System.Exit.die "Database initialization failed."
+        Right connPool ->
+          DB.PostgreSQL.runPostgresT connPool $
+            driverScript cmd opts config
 
     DB.LevelDB path -> do
       eDatabase <- DB.LevelDB.setupDB path
@@ -384,7 +300,7 @@ driver (Script cmd) opts (config @ Config {..}) =
             driverScript cmd opts config
 
   -- Create authority accounts
-driver (Keys (Opts.CreateAuthorities nAuths)) opts config =
+driver (Keys (Opts.CreateAuthorities nAuths)) opts config = do
   Authority.authorityDirs "auth" nAuths
 
 driver Version opts config = pass
@@ -393,9 +309,14 @@ driver (Data cmd) opts (config @ Config {..}) = do
   case storageBackend of
 
     DB.PostgreSQL connInfo -> do
-      connPool <- DB.PostgreSQL.connectDB connInfo
-      DB.PostgreSQL.runPostgresT connPool $
-        driverData cmd opts config
+      eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
+      case eConnPool of
+        Left err -> do
+          Utils.putRed $ "Failed to create Uplink database: " <> show err
+          System.Exit.die "Database initialization failed."
+        Right connPool ->
+          DB.PostgreSQL.runPostgresT connPool $
+            driverData cmd opts config
 
     DB.LevelDB path -> do
       eDatabase <- DB.LevelDB.setupDB path
@@ -410,67 +331,43 @@ driver (Data cmd) opts (config @ Config {..}) = do
 
 -- XXX Refactor using MonadReadWriteDB and MonadProcessBase
 driver Console opts config = do
-  let host = Config.hostname config
-  let port = Config.port config
-  remote <- mkNodeId $ toS $ host <> ":" <> show port
+    let host = Config.hostname config
+    let port = Config.port config
+    remote <- mkNodeId $ toS $ host <> ":" <> show port
 
-  localNode <-
-    P2P.createLocalNode
-      "localhost"
-      ""
-      (Just DPN.initRemoteTable)
-
-  runProcess localNode $ console remote
+    localNode <- P2P.createLocalNode "localhost" "" (Just DPN.initRemoteTable)
+    runConsoleProcs localNode remote
   where
-    console :: NodeId -> Process ()
-    console remote = do
+    runConsoleProcs :: DPN.LocalNode -> NodeId -> IO ()
+    runConsoleProcs localNode cmdProcNodeId = do
 
       -- Find the ProcessId for the tasks proc on the remote node
-      (Just remoteTasksProc) <- findTasksProc remote
-      link remoteTasksProc
+      cmdProcIdMVar <- newEmptyMVar
+      runProcess localNode $ do
+        cmdProcId <- findTasksProc cmdProcNodeId
+        link cmdProcId
+        liftIO $ putMVar cmdProcIdMVar cmdProcId
 
-      -- A CH channel to initially send alongside the cmd, for the remote node
-      -- to send the response through
-      resultChan <- newChan
+      -- Run the console process
+      -- XXX Initialize console state with account & privKey, read from disk
+      remoteCmdProcId <- takeMVar cmdProcIdMVar
+      Console.runConsole localNode remoteCmdProcId $
+        Console.Config.ConsoleState
+          { account = Nothing
+          , privKey = Nothing
+          , vars    = mempty
+          }
 
-      -- A channel which the console uses to send a command here
-      -- so it can then be sent to the remote node
-      localChan <- liftIO Chan.newChan
-
-      -- A channel to send the result of a command to the console
-      localResultChan <- liftIO Chan.newChan
-
-      spawnLocal $ loop localChan localResultChan resultChan remoteTasksProc
-
-      liftIO $ Console.runConsole $ Console.ConsoleConfig localChan localResultChan
-
-    -- Handles requests/results for the console repl
-    loop :: Chan.Chan Cmd.Cmd -> Chan.Chan Cmd.CmdResult -> (SendPort Cmd.CmdResult, ReceivePort Cmd.CmdResult) -> ProcessId -> Process ()
-    loop localChan localResultChan (sport, rport) remoteTasksProc = forever $ do
-      -- Get cmd from console repl
-      cmd <- liftIO $ Chan.readChan localChan
-
-      -- Send the cmd alongside a CH channel
-      -- which the remote node sends the result through
-      send remoteTasksProc (cmd, sport)
-
-      -- Receive the result from the remote node
-      -- and send to the console repl
-      res <- receiveChan rport
-      liftIO $ Chan.writeChan localResultChan res
-
-    findTasksProc :: NodeId -> Process (Maybe ProcessId)
-    findTasksProc node = do
-      whereisRemoteAsync node tasks
+    findTasksProc :: NodeId -> Process ProcessId
+    findTasksProc nodeId = do
+      whereisRemoteAsync nodeId (show Service.Tasks)
       reply <- expectTimeout 1500000
       case reply of
         Just (WhereIsReply tasks (Just pid)) ->
-          return $ Just pid -- XXX
+          return pid
         _ -> do
-          putText $ "Failed to connect to: " <>  show node
-          findTasksProc node
-
-    tasks = show Service.Tasks
+          putText $ "Failed to connect to: " <> show nodeId
+          findTasksProc nodeId
 
 -------------------------------------------------------------------------------
 -- Script Commands
@@ -653,11 +550,10 @@ driverData cmd opts (config @ Config {..}) =
         Just asset -> do
           ledger <- DB.readWorld
           let world = do
-                world <- ledger
-                first show $
-                  Ledger.addAsset addr asset world
+                world <- first show ledger
+                first show $ Ledger.addAsset addr asset world
           case world of
-            Left err -> Log.info $ toS $ "Load Asset: " <> err
+            Left err -> Log.info $ "Load Asset: " <> err
             Right world' -> do
               DB.writeAsset asset
               eRes <- DB.syncWorld world'
@@ -672,10 +568,10 @@ driverData cmd opts (config @ Config {..}) =
         Just acc -> do
           ledger <- DB.readWorld
           let world = do
-                world <- ledger
+                world <- first show $ ledger
                 first show $ Ledger.addAccount acc world
           case world of
-            Left err -> Log.info $ toS $ "Load Asset: " <> err
+            Left err -> Log.info $ "Load Asset: " <> err
             Right world' -> do
               DB.writeAccount acc
               eRes <- DB.syncWorld world'

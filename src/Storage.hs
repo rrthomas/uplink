@@ -40,7 +40,7 @@ module Storage (
 
 ) where
 
-import Protolude
+import Protolude hiding (Type)
 
 import Address (Address, fromRaw, addrSize)
 import Script (Type(..), Value(..), DateTime(..))
@@ -64,12 +64,15 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.ByteString as BS
 import Foreign.Storable (sizeOf)
 
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField
+
 -------------------------------------------------------------------------------
 -- Types
 -------------------------------------------------------------------------------
 
 newtype Key = Key { unKey :: ByteString }
-  deriving (Eq, Show, Ord, NFData, IsString)
+  deriving (Eq, Show, Generic, Ord, NFData, IsString)
 
 type Storage = Map.Map Key Value
 type Schema = [(Key, Type)]
@@ -216,8 +219,22 @@ instance ToJSON Key where
 
 instance FromJSON Key where
   parseJSON v = case v of
-                  A.String s -> pure  (Key (encodeUtf8 s))
-                  _ -> typeMismatch "Cannot parse key" v
+    A.String s -> pure  (Key (encodeUtf8 s))
+    _ -> typeMismatch "Cannot parse key" v
+
+-------------------------------------------------------------------------------
+
+instance ToField Key where
+  toField = toField . unKey
+
+instance FromField Key where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case bs of
+      Nothing          -> returnError UnexpectedNull f ""
+      Just (Left err)  -> returnError ConversionFailed f err
+      Just (Right key) -> pure $ Key key
+
 -------------------------------------------------------------------------------
 -- Hashing
 -------------------------------------------------------------------------------

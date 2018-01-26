@@ -8,6 +8,7 @@ Script graph overlay.
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Script.Graph (
   -- ** Static specification
@@ -24,14 +25,19 @@ module Script.Graph (
 
 import Protolude hiding (put, get)
 
+import qualified Control.Monad
+
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField
+
 import Script.Pretty
 import qualified Script.Token as Token
 
 import Data.Aeson (ToJSON(..))
 import Data.Serialize (Serialize, put, get, putWord8, getWord8)
 import Data.String (IsString(..))
+
 import qualified Hash
-import qualified Control.Monad
 
 -------------------------------------------------------------------------------
 -- Static Specification
@@ -46,7 +52,7 @@ data Transition
   | Step Label                   -- ^ Named state
   | Arrow Transition Transition  -- ^ State transition
   | Terminal                     -- ^ Terminal state
-  deriving (Eq, Show, Generic, NFData, Serialize, Hash.Hashable)
+  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hash.Hashable)
 
 instance Serialize Label where
   put (Label nm) = put (encodeUtf8 nm)
@@ -109,10 +115,27 @@ instance Serialize GraphState where
       _ -> Control.Monad.fail "Invalid graph element serialization"
 
 instance ToJSON GraphState where
-  toJSON gstate = case gstate of
+  toJSON = \case
     GraphInitial         -> let (Label initial) = initialLabel in toJSON initial
     GraphLabel (Label l) -> toJSON l
     GraphTerminal        -> let (Label terminal) = terminalLabel in toJSON terminal
+
+instance ToField GraphState where
+  toField = \case
+    GraphInitial         -> toField $ Token.initial
+    GraphLabel (Label l) -> toField l
+    GraphTerminal        -> toField $ Token.terminal
+
+instance FromField GraphState where
+  fromField f mdata = do
+    mText <- fmap (toS :: ByteString -> Text) <$> fromField f mdata
+    case mText of
+      Nothing  -> returnError UnexpectedNull f ""
+      Just lbl
+        | lbl == Token.initial  -> pure $ GraphInitial
+        | lbl == Token.terminal -> pure $ GraphTerminal
+        | otherwise             -> pure $ GraphLabel $ Label lbl
+
 
 terminalLabel :: Label
 terminalLabel = "terminal"

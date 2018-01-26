@@ -29,7 +29,7 @@ module Script.Typecheck (
   ppError,
 ) where
 
-import Protolude hiding (TypeError, Constraint)
+import Protolude hiding (Type, TypeError, Constraint)
 import Unsafe (unsafeIndex)
 
 import Script
@@ -456,6 +456,7 @@ primSig = \case
   ContractExists      -> pure $ Sig [TContract] TBool
   TransferTo          -> pure $ Sig [TAsset, TInt] TVoid -- from Account to Contract
   TransferFrom        -> pure $ Sig [TAsset, TInt, TAccount] TVoid -- from Contract to Account
+  CirculateSupply     -> pure $ Sig [TAsset, TInt] TVoid -- from Asset Supply to Asset issuer's holdings
   TransferHoldings    -> pure $ Sig [TAccount, TAsset, TInt, TAccount] TVoid -- from Account to Account
   Terminate           -> pure $ Sig [TMsg] TAny
   Now                 -> pure $ Sig [] TDateTime

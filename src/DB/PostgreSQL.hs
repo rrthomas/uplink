@@ -4,7 +4,6 @@ PostgreSQL backend for ledger state.
 
 -}
 
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -25,10 +24,14 @@ module DB.PostgreSQL (
   setupDB,
   createDB,
   executeSchema,
-  connectDB,
-  createAndConnectDB,
 
-  createConnPool,
+  connect,
+  tryConnectDB,
+  connectDB,
+
+  createAndConnectDB,
+  createAndConnectDB',
+
   closeConnPool,
 
 ) where
@@ -59,6 +62,7 @@ import DB.PostgreSQL.Asset
 import DB.PostgreSQL.Contract
 import DB.PostgreSQL.Block
 import DB.PostgreSQL.InvalidTransaction
+import DB.PostgreSQL.Error
 
 type ConnectionPool = Pool.Pool Connection
 
@@ -101,7 +105,8 @@ instance MonadProcessBase m => MonadProcessBase (PostgresT m) where
 --------------------------------------------------------------------------------
 
 instance MonadBase IO m => MonadDB (PostgresT m) where
-  type Conn (PostgresT m) = Connection
+  type DBConn (PostgresT m) = Connection
+  type DBError (PostgresT m) = PostgreSQLError
   withConn f = do
     pool <- ask
     liftBase $ Pool.withResource pool f
@@ -112,7 +117,7 @@ instance (MonadBase IO m) => MonadReadDB (PostgresT m) where
   readAssets         = withConn queryAssets
 
   readAccount addr   = withConn (flip queryAccount addr)
-  readAccounts       = withConn (fmap Right . queryAccounts)
+  readAccounts       = withConn queryAccounts
 
   readContract addr  = withConn (flip queryContract addr)
   readContracts      = withConn queryContracts
@@ -129,23 +134,26 @@ instance (MonadBase IO m) => MonadReadDB (PostgresT m) where
 
 instance (MonadBase IO m) => MonadWriteDB (PostgresT m) where
 
-  writeAsset asset     = withConn (flip insertAsset asset)
-  writeAssets assets   = withConn (flip insertAssets assets)
+  writeAsset asset     = withConn (fmap ignoreModRows . flip insertAsset asset)
+  writeAssets assets   = withConn (fmap ignoreModRows . flip insertAssets assets)
 
-  writeAccount acc     = withConn (flip insertAccount acc)
-  writeAccounts accs   = withConn (flip insertAccounts accs)
+  writeAccount acc     = withConn (fmap ignoreModRows . flip insertAccount acc)
+  writeAccounts accs   = withConn (fmap ignoreModRows . flip insertAccounts accs)
 
-  writeContract c      = withConn (flip insertContract c)
-  writeContracts cs    = withConn (flip insertContracts cs)
+  writeContract c      = withConn (fmap ignoreModRows . flip insertContract c)
+  writeContracts cs    = withConn (fmap ignoreModRows . flip insertContracts cs)
 
-  writeBlock blk       = withConn (flip insertBlock blk)
-  writeBlocks blks     = withConn (flip insertBlocks blks)
+  writeBlock blk       = withConn (fmap ignoreModRows . flip insertBlock blk)
+  writeBlocks blks     = withConn (fmap ignoreModRows . flip insertBlocks blks)
 
-  writeInvalidTx itx   = withConn (flip insertInvalidTx itx)
-  writeInvalidTxs itxs = withConn (flip insertInvalidTxs itxs)
+  writeInvalidTx itx   = withConn (fmap ignoreModRows . flip insertInvalidTx itx)
+  writeInvalidTxs itxs = withConn (fmap ignoreModRows . flip insertInvalidTxs itxs)
 
-  resetDB              = withConn (fmap (first show) . resetDB)
-  syncWorld world      = withConn (fmap (first show) . flip syncWorld world)
+  resetDB              = withConn (fmap ignoreModRows . resetDB)
+  syncWorld world      = withConn (flip syncWorld world)
+
+ignoreModRows :: Either a b -> Either a ()
+ignoreModRows = second (const ())
 
 --------------------------------------------------------------------------------
 -- PostgreSQL DB Initialization & Connection Management
@@ -155,21 +163,26 @@ instance (MonadBase IO m) => MonadWriteDB (PostgresT m) where
 uplinkSchema :: IsString a => a
 uplinkSchema =  $(embedStringFile "postgres/uplink.sql")
 
--- | Execute the uplink schema (create the DB) with the user of the connection
-setupDB :: ConnectInfo -> IO (Either SqlError ())
-setupDB connInfo = try $ void $ do
+-- | Create an uplink database, execute the uplink schema, and return the
+-- connection pool to the uplink database for futher use. The user of
+-- ConnectInfo (`connectUser`) role must exist in the machine's Postgres
+-- database and have the priveledge of creating a database.
+setupDB :: ConnectInfo -> IO (Either PostgreSQLError ConnectionPool)
+setupDB connInfo = tryPostgreSQL $ do
     -- Create database with connection user with db name supplied in connInfo
-    bracket (connect userConnInfo) close $ \userConn ->
-      createDB (toS dbName) userConn
+    bracket (connect initConnInfo) close $ \conn ->
+      createDB (toS dbName) conn
     -- Execute DB schema to build the uplink database
-    bracket (connect connInfo) close $ \uplinkConn ->
-      executeSchema uplinkConn
+    uplinkConnPool <- connectDB connInfo
+    Pool.withResource uplinkConnPool $ \conn ->
+      executeSchema conn
+    pure uplinkConnPool
   where
     dbUser = connectUser connInfo
     dbName = connectDatabase connInfo
 
-    userConnInfo = connInfo
-      { connectDatabase = dbUser }
+    initConnInfo = connInfo
+      { connectDatabase = "postgres" }
 
 -- | Create the uplink database with supplied name
 -- Warning: Throws exception on failure
@@ -183,21 +196,31 @@ executeSchema :: Connection -> IO Int64
 executeSchema conn =
   execute_ conn uplinkSchema
 
+tryConnectDB :: ConnectInfo -> IO (Either PostgreSQLError ConnectionPool)
+tryConnectDB connInfo = tryPostgreSQL $ do
+  bracket (connect connInfo) close $ \conn -> do
+    (_ :: [Only Int]) <- query_ conn "SELECT 1;"
+    pure ()
+  connectDB connInfo
+
+-- | Connect to a DB returning a ConnectionPool
+-- Warning: The connection pool will not report a failed connection until a
+-- connection is asked for (`withResource` is called), at which point the
+-- exception will be thrown.
 connectDB :: ConnectInfo -> IO ConnectionPool
-connectDB conninfo =
-  Pool.createPool (connect conninfo) close 1 0.5 1
+connectDB connInfo = do
+  Pool.createPool (connect connInfo) close 1 0.5 1
+
+createAndConnectDB :: ConnectInfo -> IO (Either PostgreSQLError ConnectionPool)
+createAndConnectDB = tryPostgreSQL . createAndConnectDB'
 
 -- | Connects to the supplied DB and executes the uplink schema, returning the
 -- connection pool created for furter use.
-createAndConnectDB :: ConnectInfo -> IO ConnectionPool
-createAndConnectDB connInfo = do
+createAndConnectDB' :: ConnectInfo -> IO ConnectionPool
+createAndConnectDB' connInfo = do
   pool <- connectDB connInfo
   Pool.withResource pool executeSchema
   pure pool
-
-createConnPool :: Connection -> IO ConnectionPool
-createConnPool conn =
-  Pool.createPool (pure conn) close 1 0.5 1
 
 closeConnPool :: ConnectionPool -> IO ()
 closeConnPool = Pool.destroyAllResources
@@ -211,54 +234,55 @@ closeConnPool = Pool.destroyAllResources
 syncWorld
   :: Connection
   -> Ledger.World
-  -> IO (Either SqlError ())
+  -> IO (Either PostgreSQLError ())
 syncWorld conn world =
   withTransaction conn $ do
-    eDel <- deleteWorld conn
+    eDel <- ignoreModRows <$> deleteWorld conn
     case eDel of
       Left err -> pure $ Left err
-      Right _  -> writeWorld conn world
+      Right _  -> ignoreModRows <$> writeWorld conn world
 
 -- | Read the world from the database, failing on the first error.
 readWorld
   :: Connection
-  -> IO (Either Text Ledger.World)
+  -> IO (Either PostgreSQLError Ledger.World)
 readWorld conn =
   liftA3 Ledger.mkWorld
     <$> queryAssets conn
-    <*> fmap Right (queryAccounts conn)
+    <*> queryAccounts conn
     <*> queryContracts conn
 
 -- | Atomically write the world state to the database
 writeWorld
   :: Connection
   -> Ledger.World
-  -> IO (Either SqlError ())
-writeWorld conn world = try $ do
-    insertAssets conn assets
-    insertAccounts conn accounts
-    insertContracts conn contracts
+  -> IO (Either PostgreSQLError ())
+writeWorld conn world =
+    ignoreModRows <$> do
+      insertAssets conn assets
+      insertAccounts conn accounts
+      insertContracts conn contracts
   where
     assets    = Map.elems $ Ledger.assets world
     accounts  = Map.elems $ Ledger.accounts world
     contracts = Map.elems $ Ledger.contracts world
 
--- | Atomically delete the world from the database
+-- | Delete the world from the database
 deleteWorld
   :: Connection
-  -> IO (Either SqlError ())
-deleteWorld conn = try $ do
-  deleteAssets conn
-  deleteAccounts conn
+  -> IO (Either PostgreSQLError Int64)
+deleteWorld conn = do
+  _ <- deleteAssets conn
+  _ <- deleteAccounts conn
   deleteContracts conn
 
 resetDB
   :: Connection
-  -> IO (Either SqlError ())
-resetDB conn = try $
+  -> IO (Either PostgreSQLError Int64)
+resetDB conn =
   withTransaction conn $ do
-    deleteAssets conn
-    deleteAccounts conn
-    deleteContracts conn
-    deleteBlocks conn
+    _ <- deleteAssets conn
+    _ <- deleteAccounts conn
+    _ <- deleteContracts conn
+    _ <- deleteBlocks conn
     deleteInvalidTxs conn

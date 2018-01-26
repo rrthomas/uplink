@@ -44,13 +44,17 @@ import qualified Data.Aeson as A
 
 import Script.Pretty (Pretty(..))
 
+import Database.PostgreSQL.Simple
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField
+
 -- | Maximum number of bytes to read from wire for this field.
 maxSize :: Int
 maxSize = 10000
 
 -- | Strings safe for network serialization
 newtype SafeString = SafeString ByteString
-  deriving (Read, Eq, Ord, IsString, Generic, NFData, Hashable)
+  deriving (Read, Eq, Ord, IsString, Generic, NFData, Hashable, ToField, FromField)
 
 -- Exceptions for handling invalid string construction
 data HugeString = HugeString

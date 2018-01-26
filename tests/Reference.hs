@@ -35,6 +35,7 @@ module Reference (
   -- ** Transaction
   testTx,
   testTxs,
+  testInvalidTxs,
 
   -- ** Block
   testGenesis,
@@ -140,6 +141,7 @@ import Address
 import Asset
 import Block
 import Contract
+import Ledger
 import Hash
 import Encoding
 import Network.P2P.Message
@@ -314,6 +316,40 @@ testTxs = map testTx
   , testSyncLocal
   ]
 
+testInvalidTxs :: [InvalidTransaction]
+testInvalidTxs =
+    map (uncurry InvalidTransaction . first testTx) itxs
+  where
+    itxs =
+      [ (testCreateAccount
+        , itxhdr $ InvalidTxAccount (InvalidPubKeyByteString "thisisnotapublickey")
+        )
+      , (testCreateAsset
+        , itxhdr $ InvalidTxAsset (DerivedAddressesDontMatch testAddr testAddr2)
+        )
+      , (testTransfer
+        , itxhdr $ InvalidTxAsset $ Transaction.AssetError (ReceiverDoesNotExist testAddr)
+        )
+      , (testCreateContract
+        , itxhdr $ InvalidTxContract (InvalidContract "this is not a valid script")
+        )
+      , (testRevokeAccount
+        , itxhdr $ InvalidTxAccount (RevokeValidatorError testAddr2)
+        )
+      , (testCall
+        , InvalidPubKey
+        )
+      , (testBind
+        , InvalidTxField (InvalidTxTimestamp testTimestamp)
+        )
+      , (testSyncLocal
+        , NoSuchOriginAccount testAddr
+        )
+      ]
+
+    itxhdr = InvalidTxHeader
+
+
 -------------------------------------------------------------------------------
 -- Block Fixtures
 -------------------------------------------------------------------------------
@@ -378,7 +414,12 @@ testBlockHash = do
 testBalance :: Text
 testBalance = displayType (Fractional 6) 42
 
-mkTestAsset :: ByteString -> Asset.Balance -> Asset.Ref -> Asset.AssetType -> Asset
+mkTestAsset
+  :: ByteString
+  -> Asset.Balance
+  -> Asset.Ref
+  -> Asset.AssetType
+  -> Asset
 mkTestAsset name supply ref typ = Asset{..}
   where
     issuedOn = testTimestamp
@@ -434,7 +475,7 @@ testAssets :: [Asset]
 testAssets =
   [testAsset1, testAsset2, testAsset3]
 
-testHoldings :: IO (Either AssetError Asset)
+testHoldings :: IO (Either Asset.AssetError Asset)
 testHoldings = do
   a1 <- Address.newAddr
   a2 <- Address.newAddr
@@ -717,7 +758,7 @@ testDHSecret' = CNS.os2ip $ DH.getShared Key.sec_p256k1 (ECDSA.private_d testPri
 testKeyExport :: IO ()
 testKeyExport = do
   (pub, priv) <- Key.new
-  let pem = Key.exportPriv (pub, priv)
+  let pem = Key.exportPriv priv
   let Right (pub', priv') = Key.importPriv pem
   putStrLn pem
   print (pub==pub', priv==priv')
@@ -797,4 +838,4 @@ testTxLog :: IO ()
 testTxLog = do
   let dt1 = Delta.ModifyGlobal "a" (VFloat 3.14)
   let dt2 = Delta.ModifyGlobal "b" (VInt 3)
-  TxLog.writeDeltas 0 (TxLog.txLogFile "node1") testAddr [dt1, dt2]
+  TxLog.writeDeltas (TxLog.txLogFile "node1") 0 testAddr [dt1, dt2]

@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module DB.PostgreSQL.Block (
 
@@ -16,6 +17,9 @@ module DB.PostgreSQL.Block (
   queryBlocks,
   queryLastBlock,
   queryLastNBlocks,
+
+  blockRowToBlock,
+  blockRowsToBlocks,
 
   -- ** Inserts
   insertBlock,
@@ -36,6 +40,7 @@ import Block (Block(..), BlockHeader(..), BlockSignatures)
 import Time
 import qualified Consensus.Authority.Params as CAP
 
+import DB.PostgreSQL.Error
 import DB.PostgreSQL.Transaction
 
 import Database.PostgreSQL.Simple
@@ -75,16 +80,17 @@ blockToRowTypes Block{..} =
     transactionRows =
       map (transactionToRowType index) transactions
 
-rowTypesToBlock :: (BlockRow, [TransactionRow]) -> Either Text Block
+rowTypesToBlock :: (BlockRow, [TransactionRow]) -> Block
 rowTypesToBlock (blockRow, txRows) = do
-    transactions' <- sequence $ map rowTypeToTransaction txRows
-    pure $ Block
+    Block
       { index        = blockIndex blockRow
       , header       = blockHeader
       , signatures   = blockSignatures blockRow
       , transactions = transactions'
       }
   where
+    transactions' = map rowTypeToTransaction txRows
+
     blockHeader = BlockHeader
       { origin     = blockOrigin blockRow
       , prevHash   = blockPrevHash blockRow
@@ -98,60 +104,64 @@ rowTypesToBlock (blockRow, txRows) = do
 --------------------------------------------------------------------------------
 
 -- | Query all blocks in the chain
-queryBlocks :: Connection -> IO (Either Text [Block])
+queryBlocks :: Connection -> IO (Either PostgreSQLError [Block])
 queryBlocks conn = do
-  blockRows <- queryBlockRows conn
-  fmap sequence $
-    forM blockRows $ \blockRow -> do
-      let blockIdx = blockIndex blockRow
-      txRows <- queryTransactionRowsByBlock conn blockIdx
-      pure $ rowTypesToBlock (blockRow, txRows)
+  eBlockRows <- queryBlockRows conn
+  case eBlockRows of
+    Left err -> pure $ Left err
+    Right blockRows ->
+      fmap sequence $
+        forM blockRows $ \blockRow -> do
+          let blockIdx = blockIndex blockRow
+          eTxRows <- queryTransactionRowsByBlock conn blockIdx
+          pure $ Right . rowTypesToBlock . (blockRow,) =<< eTxRows
 
 -- | Query a block at a given index
-queryBlock :: Connection -> Int -> IO (Either Text Block)
+queryBlock :: Connection -> Int -> IO (Either PostgreSQLError Block)
 queryBlock conn blockIdx = do
-  mBlockRow <- queryBlockRow conn blockIdx
-  case mBlockRow of
-    Nothing -> pure $ Left $ Text.intercalate " "
-      [ "PostgreSQL: Block with index"
-      , show blockIdx
-      , "does not exist."
-      ]
-    Just blockRow -> do
-      txRows <- queryTransactionRowsByBlock conn blockIdx
-      pure $ rowTypesToBlock (blockRow, txRows)
+  eBlockRow <- queryBlockRow conn blockIdx
+  case eBlockRow of
+    Left err              -> pure $ Left err
+    Right Nothing         -> pure $ Left $ BlockDoesNotExist blockIdx
+    Right (Just blockRow) -> blockRowToBlock conn blockRow
 
 -- | Query the last block in the chain
-queryLastBlock :: Connection -> IO (Either Text Block)
+queryLastBlock :: Connection -> IO (Either PostgreSQLError Block)
 queryLastBlock conn = do
   eBlock <- fmap headMay <$> queryLastNBlocks conn 1
   case eBlock of
     Left err         -> pure $ Left err
-    Right Nothing    -> pure $ Left
-      "queryLastBlock: no blocks in table 'blocks'."
+    Right Nothing    -> pure $ Left NoBlocksInDatabase
     Right (Just blk) -> pure $ Right blk
 
 -- | Query the last n block in the chain
-queryLastNBlocks :: Connection -> Int -> IO (Either Text [Block])
+queryLastNBlocks :: Connection -> Int -> IO (Either PostgreSQLError [Block])
 queryLastNBlocks conn n = do
-  blockRows <- queryLastNBlockRows conn n
-  fmap sequence $ forM blockRows $ \blockRow -> do
-    txRows <- queryTransactionRowsByBlock conn (blockIndex blockRow)
-    pure $ rowTypesToBlock (blockRow, txRows)
+  queryLastNBlockRows conn n >>=
+    either (pure . Left) (blockRowsToBlocks conn)
+
+blockRowToBlock :: Connection -> BlockRow -> IO (Either PostgreSQLError Block)
+blockRowToBlock conn blockRow = do
+  eTxRows <- queryTransactionRowsByBlock conn $ blockIndex blockRow
+  pure $ Right . rowTypesToBlock . (blockRow,) =<< eTxRows
+
+blockRowsToBlocks :: Connection -> [BlockRow] -> IO (Either PostgreSQLError [Block])
+blockRowsToBlocks conn =
+  fmap sequence . mapM (blockRowToBlock conn)
 
 --------------------------------------------------------------------------------
 
-queryBlockRow :: Connection -> Int -> IO (Maybe BlockRow)
-queryBlockRow conn blockIdx = headMay <$>
-  query conn "SELECT * FROM blocks WHERE idx=?" (Only blockIdx)
+queryBlockRow :: Connection -> Int -> IO (Either PostgreSQLError (Maybe BlockRow))
+queryBlockRow conn blockIdx = fmap headMay <$>
+  querySafe conn "SELECT * FROM blocks WHERE idx=?" (Only blockIdx)
 
-queryBlockRows :: Connection -> IO [BlockRow]
-queryBlockRows conn = do
-  query_ conn "SELECT * FROM blocks"
+queryBlockRows :: Connection -> IO (Either PostgreSQLError [BlockRow])
+queryBlockRows conn =
+  querySafe_ conn "SELECT * FROM blocks"
 
-queryLastNBlockRows :: Connection -> Int -> IO [BlockRow]
+queryLastNBlockRows :: Connection -> Int -> IO (Either PostgreSQLError [BlockRow])
 queryLastNBlockRows conn n =
-  query conn "SELECT * FROM blocks ORDER BY idx DESC LIMIT ?" (Only n)
+  querySafe conn "SELECT * FROM blocks ORDER BY idx DESC LIMIT ?" (Only n)
 
 --------------------------------------------------------------------------------
 -- Inserts
@@ -159,7 +169,7 @@ queryLastNBlockRows conn n =
 
 -- | Insert a Block into a PostgreSQL DB
 -- Warning: Do not use inside another transaction
-insertBlock :: Connection -> Block -> IO ()
+insertBlock :: Connection -> Block -> IO (Either PostgreSQLError Int64)
 insertBlock conn block =
     withTransaction conn $ do
       insertBlockRow conn blockRow
@@ -167,18 +177,20 @@ insertBlock conn block =
   where
     (blockRow, txRows) = blockToRowTypes block
 
-insertBlocks :: Connection -> [Block] -> IO ()
-insertBlocks conn blocks = mapM_ (insertBlock conn) blocks
+insertBlocks :: Connection -> [Block] -> IO (Either PostgreSQLError [Int64])
+insertBlocks conn blocks = sequence <$> mapM (insertBlock conn) blocks
 
-insertBlockRow :: Connection -> BlockRow -> IO ()
-insertBlockRow conn blockRow = void $
-  execute conn "INSERT INTO blocks VALUES (?,?,?,?,?,?,?)" blockRow
+insertBlockRow :: Connection -> BlockRow -> IO (Either PostgreSQLError Int64)
+insertBlockRow conn blockRow =
+  executeSafe conn "INSERT INTO blocks VALUES (?,?,?,?,?,?,?)" blockRow
 
 --------------------------------------------------------------------------------
 -- Deletions
 --------------------------------------------------------------------------------
 
-deleteBlocks :: Connection -> IO ()
-deleteBlocks conn = void $ do
-  deleteTransactions conn
-  execute_ conn "DELETE FROM blocks"
+deleteBlocks :: Connection -> IO (Either PostgreSQLError Int64)
+deleteBlocks conn = do
+  eRes <- deleteTransactions conn
+  case eRes of
+    Left err -> pure $ Left err
+    Right _  ->  executeSafe_ conn "DELETE FROM blocks"

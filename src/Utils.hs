@@ -16,6 +16,8 @@ module Utils (
   dieRed,
 
   safeRead,
+  safeReadLazy,
+  safeWrite,
 
   waitUntil,
   delayedReplicateM_,
@@ -41,6 +43,7 @@ import qualified Time
 import qualified Numeric as N
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import qualified Text.Show.Pretty (ppShow)
 
 import System.Console.Haskeline
@@ -50,6 +53,7 @@ import Text.Printf (printf)
 import System.Console.ANSI
 import System.Directory
 import qualified Data.Text as T
+
 showHex :: Word8 -> [Char]
 showHex = printf "%02x"
 
@@ -142,8 +146,24 @@ safeRead fpath = do
       contents <- BS.readFile fpath
       pure $ Right contents
     else do
-      pure $ Left $ "File does not exist" <> (show fpath)
+      pure $ Left $ "File does not exist: " <> (show fpath)
 
+safeReadLazy :: FilePath -> IO (Either Text BSL.ByteString)
+safeReadLazy fpath = do
+  exists <- doesFileExist fpath
+  if exists
+    then do
+      contents <- BSL.readFile fpath
+      pure $ Right contents
+    else do
+      pure $ Left $ "File does not exist: " <> (show fpath)
+
+safeWrite :: FilePath -> ByteString -> IO (Either Text ())
+safeWrite fpath bs =
+    fmap (first show) $ try' $ BS.writeFile fpath bs
+  where
+    try' :: IO a -> IO (Either SomeException a)
+    try' = Protolude.try
 
 -- | Calculate the median of list of sortable elements
 median :: (Fractional a, Ord a) => [a] -> Maybe a

@@ -36,6 +36,8 @@ import Transaction ( Transaction(..)
                    , base16HashInvalidTx
                    )
 
+import DB.PostgreSQL.Error
+
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.ToRow
 import Database.PostgreSQL.Simple.ToField
@@ -67,9 +69,9 @@ invalidTxToRowType itx@(InvalidTransaction Transaction{..} reason) =
     , itxReason     = reason
     }
 
-rowTypeToInvalidTx :: InvalidTxRow -> Either Text InvalidTransaction
+rowTypeToInvalidTx :: InvalidTxRow -> InvalidTransaction
 rowTypeToInvalidTx InvalidTxRow{..} = do
-    pure $ InvalidTransaction
+    InvalidTransaction
       { transaction = transaction'
       , reason      = itxReason
       }
@@ -88,48 +90,45 @@ rowTypeToInvalidTx InvalidTxRow{..} = do
 queryInvalidTxByHash
   :: Connection
   -> ByteString -- ^ must be base16 encoded sha3_256 hash
-  -> IO (Either Text InvalidTransaction)
+  -> IO (Either PostgreSQLError InvalidTransaction)
 queryInvalidTxByHash conn b16itxHash = do
-  rows <- query conn "SELECT * from invalidtxs where hash=?" (Only b16itxHash)
-  case headMay rows of
-    Nothing -> pure $ Left $ Text.intercalate " "
-      [ "PostgreSQL: Transaction with hash"
-      , toS b16itxHash
-      , "does not exist."
-      ]
-    Just itx -> pure $ rowTypeToInvalidTx itx
+  eRows <- querySafe conn "SELECT (hash,header,signature,origin,timestamp,reason FROM invalidtxs WHERE hash=?" (Only b16itxHash)
+  case fmap headMay eRows of
+    Left err         -> pure $ Left err
+    Right Nothing    -> pure $ Left $ InvalidTxDoesNotExist b16itxHash
+    Right (Just itx) -> pure $ Right $ rowTypeToInvalidTx itx
 
-queryInvalidTxs :: Connection -> IO (Either Text [InvalidTransaction])
+queryInvalidTxs :: Connection -> IO (Either PostgreSQLError [InvalidTransaction])
 queryInvalidTxs conn =
-  sequence . map rowTypeToInvalidTx <$> queryInvalidTxRows conn
+  second (map rowTypeToInvalidTx) <$> queryInvalidTxRows conn
 
-queryInvalidTxRows :: Connection -> IO [InvalidTxRow]
+queryInvalidTxRows :: Connection -> IO (Either PostgreSQLError [InvalidTxRow])
 queryInvalidTxRows conn =
-  query_ conn "SELECT * from invalidtxs"
+  querySafe_ conn "SELECT hash,header,signature,origin,timestamp,reason FROM invalidtxs"
 
 --------------------------------------------------------------------------------
 -- Inserts
 --------------------------------------------------------------------------------
 
-insertInvalidTx :: Connection -> InvalidTransaction -> IO ()
+insertInvalidTx :: Connection -> InvalidTransaction -> IO (Either PostgreSQLError Int64)
 insertInvalidTx conn itx = insertInvalidTxs conn [itx]
 
-insertInvalidTxs :: Connection -> [InvalidTransaction] -> IO ()
+insertInvalidTxs :: Connection -> [InvalidTransaction] -> IO (Either PostgreSQLError Int64)
 insertInvalidTxs conn itxs =
   insertInvalidTxRows conn $
     map invalidTxToRowType itxs
 
-insertInvalidTxRow :: Connection -> InvalidTxRow -> IO ()
+insertInvalidTxRow :: Connection -> InvalidTxRow -> IO (Either PostgreSQLError Int64)
 insertInvalidTxRow conn itxRow = insertInvalidTxRows conn [itxRow]
 
-insertInvalidTxRows :: Connection -> [InvalidTxRow] -> IO ()
-insertInvalidTxRows conn itxRows = void $
-  executeMany conn "INSERT INTO invalidtxs hash,header,signature,origin,timestamp,reason VALUES (?,?,?,?,?,?)" itxRows
+insertInvalidTxRows :: Connection -> [InvalidTxRow] -> IO (Either PostgreSQLError Int64)
+insertInvalidTxRows conn itxRows =
+  executeManySafe conn "INSERT INTO invalidtxs (hash,header,signature,origin,timestamp,reason) VALUES (?,?,?,?,?,?)" itxRows
 
 --------------------------------------------------------------------------------
 -- Deletions
 --------------------------------------------------------------------------------
 
-deleteInvalidTxs :: Connection -> IO ()
-deleteInvalidTxs conn = void $
-  execute_ conn "DELETE FROM invalidtxs"
+deleteInvalidTxs :: Connection -> IO (Either PostgreSQLError Int64)
+deleteInvalidTxs conn =
+  executeSafe_ conn "DELETE FROM invalidtxs"

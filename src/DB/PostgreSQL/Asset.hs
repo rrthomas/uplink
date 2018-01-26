@@ -1,15 +1,22 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module DB.PostgreSQL.Asset (
 
   AssetRow(..),
+  HoldingsRow(..),
+
   assetToRowTypes,
   rowTypesToAsset,
 
   queryAsset,
   queryAssets,
+  queryAssetsByAddrs,
+
+  assetRowToAsset,
+  assetRowsToAssets,
 
   insertAsset,
   insertAssets,
@@ -31,6 +38,8 @@ import Address
 import qualified Asset
 import qualified Time
 
+import DB.PostgreSQL.Error
+
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.ToRow
 import Database.PostgreSQL.Simple.ToField
@@ -44,11 +53,10 @@ data AssetRow = AssetRow
   , assetIssuer        :: Address
   , assetIssuedOn      :: Int64
   , assetSupply        :: Int64
-  , assetReference     :: Maybe Int16
-  , assetType          :: Int16
-  , assetTypePrec      :: Maybe Int16
+  , assetReference     :: Maybe Asset.Ref
+  , assetType          :: Asset.AssetType
   , assetAddress       :: Address
-  } deriving (Generic)
+  } deriving (Show, Generic)
 
 instance ToRow AssetRow
 instance FromRow AssetRow
@@ -57,7 +65,7 @@ data HoldingsRow = HoldingsRow
   { holdingsAsset   :: Address
   , holdingsHolder  :: Address
   , holdingsBalance :: Int64
-  } deriving (Generic)
+  } deriving (Show, Generic)
 
 instance ToRow HoldingsRow
 instance FromRow HoldingsRow
@@ -65,22 +73,13 @@ instance FromRow HoldingsRow
 assetToRowTypes :: Asset -> (AssetRow, [HoldingsRow])
 assetToRowTypes Asset{..} = (assetRow, holdingsRows)
   where
-    (atyp :: Int16, atypPrec) =
-      case assetType of
-        Asset.Discrete     -> (0,Nothing)
-        Asset.Fractional n -> (1,Just $ fromIntegral n)
-        Asset.Binary       -> (2,Nothing)
-
-    ref = fromIntegral . fromEnum <$> reference
-
     assetRow = AssetRow
       { assetName      = toS name
       , assetIssuer    = issuer
       , assetIssuedOn  = issuedOn
       , assetSupply    = supply
-      , assetReference = ref
-      , assetType      = atyp
-      , assetTypePrec  = atypPrec
+      , assetReference = reference
+      , assetType      = assetType
       , assetAddress   = address
       }
 
@@ -88,20 +87,18 @@ assetToRowTypes Asset{..} = (assetRow, holdingsRows)
       map (uncurry $ HoldingsRow address) $
         Map.toList (Asset.unHoldings holdings)
 
-rowTypesToAsset :: (AssetRow, [HoldingsRow]) -> Either Text Asset
+rowTypesToAsset :: (AssetRow, [HoldingsRow]) -> Either PostgreSQLError Asset
 rowTypesToAsset (assetRow, holdingsRows) =
-    case eAssetType of
-      Left err         -> Left err
-      Right assetType' -> Right $ Asset
-        { name      = toS $ assetName assetRow
-        , issuer    = assetIssuer assetRow
-        , issuedOn  = assetIssuedOn assetRow
-        , supply    = assetSupply assetRow
-        , reference = assetRef
-        , holdings  = holdings'
-        , assetType = assetType'
-        , address   = assetAddress assetRow
-        }
+    Right $ Asset
+      { name      = toS $ assetName assetRow
+      , issuer    = assetIssuer assetRow
+      , issuedOn  = assetIssuedOn assetRow
+      , supply    = assetSupply assetRow
+      , reference = assetReference assetRow
+      , holdings  = holdings'
+      , assetType = DB.PostgreSQL.Asset.assetType assetRow
+      , address   = assetAddress assetRow
+      }
   where
     holdings' = Asset.Holdings $ Map.fromList $
       map holdingsRowToHoldingEntry holdingsRows
@@ -109,92 +106,99 @@ rowTypesToAsset (assetRow, holdingsRows) =
     holdingsRowToHoldingEntry hrow =
       (holdingsHolder hrow, holdingsBalance hrow)
 
-    -- Convert AssetRow assetType and assetTypePrec to Asset assetType
-    eAssetType = do
-      let rowAssetType = DB.PostgreSQL.Asset.assetType assetRow
-      case (rowAssetType, assetTypePrec assetRow) of
-        (0,Nothing) -> Right $ Asset.Discrete
-        (1,Just n)  -> Right $ Asset.Fractional $ fromIntegral n
-        (2,Nothing) -> Right $ Asset.Binary
-        otherwise   -> Left $
-          "Could not parse `assetType` field of Asset from DB"
-
-    -- Convert AssetRow ref to Asset ref
-    assetRef =
-      fmap (toEnum . fromIntegral) $
-        assetReference assetRow
-
 --------------------------------------------------------------------------------
 -- Queries (SELECTs)
 --------------------------------------------------------------------------------
 
-queryAsset :: Connection -> Address -> IO (Either Text Asset)
+queryAsset :: Connection -> Address -> IO (Either PostgreSQLError Asset)
 queryAsset conn assetAddr = do
   mAssetRow <- queryAssetRow conn assetAddr
   case mAssetRow of
-    Nothing -> pure $ Left $ Text.intercalate " "
-      [ "PostgreSQL: Asset with addr"
-      , toS (rawAddr assetAddr)
-      , "does not exist."
-      ]
-    Just assetRow -> do
-      holdingsRows <- queryHoldingsRows conn assetAddr
-      pure $ rowTypesToAsset (assetRow, holdingsRows)
+    Left err              -> pure $ Left err
+    Right Nothing         -> pure $ Left $ AssetDoesNotExist assetAddr
+    Right (Just assetRow) -> assetRowToAsset conn assetRow
 
-queryAssets :: Connection -> IO (Either Text [Asset])
+queryAssets :: Connection -> IO (Either PostgreSQLError [Asset])
 queryAssets conn = do
-  assetRows <- queryAssetRows conn
-  fmap sequence $
-    forM assetRows $ \assetRow -> do
-      holdingsRows <- queryHoldingsRows conn (assetAddress assetRow)
-      pure $ rowTypesToAsset (assetRow, holdingsRows)
+  eAssetRows <- queryAssetRows conn
+  case eAssetRows of
+    Left err -> pure $ Left err
+    Right assetRows ->
+      fmap sequence $
+        forM assetRows $
+          assetRowToAsset conn
+
+queryAssetsByAddrs
+  :: Connection
+  -> [Address]
+  -> IO (Either PostgreSQLError [Asset])
+queryAssetsByAddrs conn addrs = do
+  eAssetRows <- queryAssetRowsByAddrs conn addrs
+  either (pure . Left) (assetRowsToAssets conn) eAssetRows
+
+assetRowToAsset :: Connection -> AssetRow -> IO (Either PostgreSQLError Asset)
+assetRowToAsset conn assetRow = do
+  eHoldingsRows <- queryHoldingsRows conn (assetAddress assetRow)
+  pure $ rowTypesToAsset . (assetRow,) =<< eHoldingsRows
+
+assetRowsToAssets
+  :: Connection
+  -> [AssetRow]
+  -> IO (Either PostgreSQLError [Asset])
+assetRowsToAssets conn =
+  fmap sequence . mapM (assetRowToAsset conn)
 
 --------------------------------------------------------------------------------
 
-queryAssetRow :: Connection -> Address -> IO (Maybe AssetRow)
-queryAssetRow conn assetAddr = headMay <$>
-  query conn "SELECT * FROM assets where address=?" (Only assetAddr)
+queryAssetRow :: Connection -> Address -> IO (Either PostgreSQLError (Maybe AssetRow))
+queryAssetRow conn assetAddr = fmap headMay <$>
+  querySafe conn "SELECT * FROM assets WHERE address=?" (Only assetAddr)
 
-queryAssetRows :: Connection -> IO [AssetRow]
+queryAssetRows :: Connection -> IO (Either PostgreSQLError [AssetRow])
 queryAssetRows conn =
-  query_ conn "SELECT * FROM assets"
+  querySafe_ conn "SELECT * FROM assets"
 
-queryHoldingsRows :: Connection -> Address -> IO [HoldingsRow]
+queryAssetRowsByAddrs :: Connection -> [Address] -> IO (Either PostgreSQLError [AssetRow])
+queryAssetRowsByAddrs conn addrs =
+  querySafe conn "SELECT * from assets WHERE address IN ?" $
+    Only $ In addrs
+
+queryHoldingsRows :: Connection -> Address -> IO (Either PostgreSQLError [HoldingsRow])
 queryHoldingsRows conn assetAddr =
-  query conn "SELECT asset,holder,balance FROM holdings WHERE asset=?" (Only assetAddr)
+  querySafe conn "SELECT * FROM holdings WHERE asset=?" (Only assetAddr)
 
 --------------------------------------------------------------------------------
 -- Inserts
 --------------------------------------------------------------------------------
 
-insertAsset :: Connection -> Asset -> IO ()
+insertAsset :: Connection -> Asset -> IO (Either PostgreSQLError Int64)
 insertAsset conn asset = do
     insertAssetRow conn assetRow
     insertHoldingsRows conn holdingsRows
   where
     (assetRow, holdingsRows) = assetToRowTypes asset
 
-insertAssets :: Connection -> [Asset] -> IO ()
+insertAssets :: Connection -> [Asset] -> IO (Either PostgreSQLError [Int64])
 insertAssets conn assets =
-  forM_ assets (insertAsset conn)
+  sequence <$> mapM (insertAsset conn) assets
 
-insertAssetRow :: Connection -> AssetRow -> IO ()
-insertAssetRow conn assetRow = void $
-  execute conn "INSERT INTO assets VALUES (?,?,?,?,?,?,?,?)" assetRow
+insertAssetRow :: Connection -> AssetRow -> IO (Either PostgreSQLError Int64)
+insertAssetRow conn assetRow =
+  executeSafe conn "INSERT INTO assets VALUES (?,?,?,?,?,?,?)" assetRow
 
-insertHoldingsRows :: Connection -> [HoldingsRow] -> IO ()
-insertHoldingsRows conn holdingsRows = void $
-  executeMany conn "INSERT INTO holdings (asset,holder,balance) VALUES (?,?,?)" holdingsRows
+insertHoldingsRows :: Connection -> [HoldingsRow] -> IO (Either PostgreSQLError Int64)
+insertHoldingsRows conn holdingsRows =
+  executeManySafe conn "INSERT INTO holdings VALUES (?,?,?)" holdingsRows
 
 --------------------------------------------------------------------------------
 -- Deletes
 --------------------------------------------------------------------------------
 
-deleteAsset :: Connection -> Address -> IO ()
-deleteAsset conn addr = void $ do
-  execute conn "DELETE FROM assets WHERE address=?" (Only addr)
-  execute conn "DELETE FROM holdings WHERE asset=?" (Only addr)
+deleteAsset :: Connection -> Address -> IO (Either PostgreSQLError Int64)
+deleteAsset conn addr = do
+  _ <- executeSafe conn "DELETE FROM assets WHERE address=?" (Only addr)
+  executeSafe conn "DELETE FROM holdings WHERE asset=?" (Only addr)
 
-deleteAssets :: Connection -> IO ()
-deleteAssets conn = void $
-  execute_ conn "DELETE FROM assets"
+deleteAssets :: Connection -> IO (Either PostgreSQLError Int64)
+deleteAssets conn =
+  executeSafe_ conn "DELETE FROM assets"

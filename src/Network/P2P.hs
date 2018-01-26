@@ -64,6 +64,7 @@ import qualified Account
 import qualified Block
 import qualified Storage
 import qualified NodeState
+import qualified Node.Peer
 import qualified Transaction
 import qualified Console
 import qualified Console.Config
@@ -93,7 +94,7 @@ initPeerController
 initPeerController config = do
 
   -- Construct bootnode processIds
-  cachedPeersNodeIds <- NodeState.peersToNodeIds <$> getCachedPeers
+  cachedPeersNodeIds <- Node.Peer.peersToNodeIds <$> getCachedPeers
   bootNodeIds <- liftBase $ mapM mkNodeId $ Config.bootnodes config
   let initNodeIds = List.nub $ bootNodeIds ++ cachedPeersNodeIds
 
@@ -116,8 +117,7 @@ createLocalNode host port mRemoteTable = do
       DPN.newLocalNode transport rTable
 
     TCP -> do
-      mtransport <- liftIO $
-        TCP.createTransport host port TCP.defaultTCPParameters
+      mtransport <- TCP.createTransport host port (const (host,port)) TCP.defaultTCPParameters
       case mtransport of
         Left err        -> do
           Log.warning (show err)
@@ -164,7 +164,7 @@ p2p config chan runNodeTtoProcess = do
 
   -- Run main process
   DPN.runProcess node $ runNodeTtoProcess $
-    waitController 100000 $ mainProcess chan
+    waitController 1000000 $ mainProcess chan
 
 mainProcess
   :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
@@ -349,6 +349,8 @@ tasksProc service chan = do
       forever $ receiveWait
         [ match $ runInBase . onConsoleMsg ]
   where
+    -- XXX RPC server can probably use cloud haskell primitives too, instead of
+    -- passing Chan Cmd to this process and RPC server
     rpcHandler :: NodeT m ()
     rpcHandler =
       forever $ do

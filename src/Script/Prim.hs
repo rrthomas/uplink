@@ -38,6 +38,7 @@ data PrimOp
   | ContractExists      -- ^ @contractExists(addr)@                           : Check if contract exists in world state
   | TransferTo          -- ^ @transferTo(asset,amount)@                       : Transfer n asset holdings to contract
   | TransferFrom        -- ^ @transferFrom(asset,amount,acc)@                 : Transfer n asset holdings from contract to account
+  | CirculateSupply     -- ^ @circulate(asset,amount)@                        : Circulate n asset supply to issuer's holdings
   | TransferHoldings    -- ^ @transferHoldings(from,asset,amount,to)@         : Transfer asset holdings from account to account
   | Terminate           -- ^ @terminate(msg)@                                 : Terminate contract execution
   | Now                 -- ^ @now()@                                          : Current date + time in UTC
@@ -55,12 +56,12 @@ data PrimOp
   | IsBusinessDayNYSE   -- ^ @isBusinessDayNYSE(datetime)@                    : Predicate checking if datetime is a business day or not
   | NextBusinessDayNYSE -- ^ @nextBusinessDayNYSE(datetime)@                  : Returns the next business day after the supplied datetime
   | Between             -- ^ @between(datetime,datetime,datetime)@            : Returns (True/False) if the first datetime is within the latter two
-  | Fixed1ToFloat       -- ^ @fixedToFloat(fixed1)@                           : Coerce a fixed point number into a floating point number
-  | Fixed2ToFloat       -- ^ @fixedToFloat(fixed2)@                           : Coerce a fixed point number into a floating point number
-  | Fixed3ToFloat       -- ^ @fixedToFloat(fixed3)@                           : Coerce a fixed point number into a floating point number
-  | Fixed4ToFloat       -- ^ @fixedToFloat(fixed4)@                           : Coerce a fixed point number into a floating point number
-  | Fixed5ToFloat       -- ^ @fixedToFloat(fixed5)@                           : Coerce a fixed point number into a floating point number
-  | Fixed6ToFloat       -- ^ @fixedToFloat(fixed6)@                           : Coerce a fixed point number into a floating point number
+  | Fixed1ToFloat       -- ^ @fixed1ToFloat(fixed1)@                          : Coerce a fixed point number into a floating point number
+  | Fixed2ToFloat       -- ^ @fixed2ToFloat(fixed2)@                          : Coerce a fixed point number into a floating point number
+  | Fixed3ToFloat       -- ^ @fixed3ToFloat(fixed3)@                          : Coerce a fixed point number into a floating point number
+  | Fixed4ToFloat       -- ^ @fixed4ToFloat(fixed4)@                          : Coerce a fixed point number into a floating point number
+  | Fixed5ToFloat       -- ^ @fixed5ToFloat(fixed5)@                          : Coerce a fixed point number into a floating point number
+  | Fixed6ToFloat       -- ^ @fixed6ToFloat(fixed6)@                          : Coerce a fixed point number into a floating point number
   | FloatToFixed1       -- ^ @floatToFixed1(float)@                           : Coerce a floating point number into a fixed point number
   | FloatToFixed2       -- ^ @floatToFixed2(float)@                           : Coerce a floating point number into a fixed point number
   | FloatToFixed3       -- ^ @floatToFixed3(float)@                           : Coerce a floating point number into a fixed point number
@@ -86,6 +87,7 @@ primName = \case
   ContractExists      -> "contractExists"
   TransferTo          -> "transferTo"
   TransferFrom        -> "transferFrom"
+  CirculateSupply     -> "circulate"
   TransferHoldings    -> "transferHoldings"
   Terminate           -> "terminate"
   Now                 -> "now"
@@ -132,6 +134,7 @@ prims = [
   , ( primName ContractExists     , ContractExists )
   , ( primName TransferTo         , TransferTo )
   , ( primName TransferFrom       , TransferFrom )
+  , ( primName CirculateSupply    , CirculateSupply )
   , ( primName TransferHoldings   , TransferHoldings )
   , ( primName Terminate          , Terminate )
   , ( primName Now                , Now )
@@ -178,6 +181,7 @@ arity = \case
   ContractExists      -> 1
   TransferTo          -> 2
   TransferFrom        -> 3
+  CirculateSupply     -> 2
   TransferHoldings    -> 4
   Terminate           -> 1
   Now                 -> 0

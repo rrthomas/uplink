@@ -12,27 +12,23 @@ CREATE TABLE assets (
   issuer        varchar NOT NULL,
   issuedOn      int8    NOT NULL,
   supply        int8    NOT NULL,
-  reference     int2,
-  assetType     int2    NOT NULL,
-  assetTypePrec int2,             -- If assetType is Fractiional
-  address varchar PRIMARY KEY,
+  reference     varchar,
+  assetType     varchar NOT NULL,
+  address       varchar PRIMARY KEY,
 
-  CONSTRAINT assets_reference_check CHECK (reference >= 0),
-  CONSTRAINT assets_supply_check CHECK (supply > 0),
-  CONSTRAINT assets_assetType_check CHECK (assetType >= 0)
+  CONSTRAINT assets_supply_check CHECK (supply >= 0)
 );
 
 CREATE TABLE holdings (
-  id      serial  PRIMARY KEY,
   asset   varchar NOT NULL REFERENCES assets(address) ON DELETE CASCADE,
   holder  varchar NOT NULL, -- XXX REFERENCES accounts(address) ON DELETE CASCADE,
   balance int8    NOT NULL,
 
+  CONSTRAINT PK_holdings PRIMARY KEY (asset,holder),
   CONSTRAINT positive_balance CHECK (balance >= 0)
 );
 
 CREATE INDEX holdings_asset ON holdings (asset); -- (?) necessary (?)
-CREATE INDEX holdings_asset_holder ON holdings (asset, holder);
 
 ------------------------------------------------------
 
@@ -49,23 +45,25 @@ CREATE TABLE contracts (
 );
 
 CREATE TABLE global_storage (
-  id           serial  PRIMARY KEY,
-  contractAddr varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
-  key          bytea   NOT NULL,
-  value        bytea   NOT NULL
+  contract varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
+  key      bytea   NOT NULL,
+  value    bytea   NOT NULL,
+
+  CONSTRAINT PK_global_storage PRIMARY KEY (contract,key)
 );
 
-CREATE INDEX global_storage_var ON global_storage (contractAddr, key);
+CREATE INDEX global_storage_var ON global_storage (contract, key);
 
 CREATE TABLE local_storage (
-  id           serial  PRIMARY KEY,
-  contractAddr varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
-  accountAddr  varchar NOT NULL, -- XXX REFERENCES accounts(address),
-  key          bytea   NOT NULL,
-  value        bytea   NOT NULL
+  contract varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
+  account  varchar NOT NULL, -- XXX REFERENCES accounts(address),
+  key      bytea   NOT NULL,
+  value    bytea   NOT NULL,
+  
+  CONSTRAINT PK_local_storage PRIMARY KEY (contract,account,key)
 );
 
-CREATE INDEX local_storage_var ON local_storage (contractAddr, accountAddr, key);
+CREATE INDEX local_storage_var ON local_storage (contract, account, key);
 
 ------------------------------------------------------
 
@@ -82,26 +80,27 @@ CREATE TABLE blocks (
 );
 
 CREATE TABLE transactions (
-  idx        serial PRIMARY KEY,
   block_idx  int8    NOT NULL REFERENCES blocks(idx) ON DELETE CASCADE,
   hash       bytea   NOT NULL UNIQUE,
+  tx_type    varchar NOT NUll, -- type of transaction (header) 
   header     bytea   NOT NULL, -- binary encoding of header
   signature  bytea   NOT NULL,
   origin     varchar NOT NULL, -- REFERENCES accounts(address) ON DELETE RESTRICT,
   timestamp  int8    NOT NULL,
 
+  CONSTRAINT PK_transactions PRIMARY KEY (hash), -- may be very slow :(
   CONSTRAINT transactions_positive_timestamp CHECK (timestamp > 0),
   CONSTRAINT transactions_positive_block_idx CHECK (block_idx > 0)
 );
 
 CREATE TABLE invalidtxs (
-  idx        serial PRIMARY KEY,
   hash       bytea   NOT NULL UNIQUE,
   header     bytea   NOT NULL, -- binary encoding of header
   signature  bytea   NOT NULL,
-  origin     varchar NOT NULL REFERENCES accounts(address) ON DELETE RESTRICT,
+  origin     varchar NOT NULL, -- REFERENCES accounts(address) ON DELETE RESTRICT,
   timestamp  int8    NOT NULL,
   reason     bytea   NOT NULL,
 
+  CONSTRAINT PK_invalidtxs PRIMARY KEY (hash), -- may be very slow :(
   CONSTRAINT invalidtxs_positive_timestamp CHECK (timestamp > 0)
 );

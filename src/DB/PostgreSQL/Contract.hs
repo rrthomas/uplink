@@ -1,15 +1,23 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module DB.PostgreSQL.Contract (
   ContractRow(..),
+  GlobalStorageRow(..),
+  LocalStorageRow(..),
+  MethodsCol,
 
   contractToRowTypes,
   rowTypesToContract,
 
   queryContract,
   queryContracts,
+  queryContractsByAddrs,
+
+  contractRowToContract,
+  contractRowsToContracts,
 
   insertContract,
   insertContracts,
@@ -29,12 +37,15 @@ import qualified Data.Serialize as S
 
 import Address
 import Contract (Contract(..), LocalStorageVars(..))
-import Storage (GlobalStorage(..), LocalStorage(..))
+import Storage (GlobalStorage(..), LocalStorage(..), Key(..))
 import Script (Script, Name, Value)
 import Script.Graph (GraphState(..), Label(..), terminalLabel, initialLabel)
 import qualified Contract
+import qualified Script.Pretty as Pretty
 import qualified Storage
 import qualified Time
+
+import DB.PostgreSQL.Error
 
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.ToRow
@@ -51,6 +62,7 @@ import Database.PostgreSQL.Simple.FromField
 -- list of methods when reading from the DB and calling Data.Serialize.decode.
 newtype MethodsCol = MethodsCol
   { unMethodsCol :: [ Name ] }
+  deriving (Eq, Ord, Generic)
 
 instance ToField MethodsCol where
   toField = EscapeByteA . S.encode . unMethodsCol
@@ -77,19 +89,19 @@ instance ToRow ContractRow
 instance FromRow ContractRow
 
 data GlobalStorageRow = GlobalStorageRow
-  { gsContractAddr :: Address
-  , gsKey          :: ByteString
-  , gsValue        :: Value
+  { gsContract :: Address
+  , gsKey      :: Key
+  , gsValue    :: Value
   } deriving (Generic)
 
 instance ToRow GlobalStorageRow
 instance FromRow GlobalStorageRow
 
 data LocalStorageRow = LocalStorageRow
-  { lsContractAddr :: Address
-  , lsAccountAddr  :: Address
-  , lsKey          :: ByteString
-  , lsValue        :: Value
+  { lsContract :: Address
+  , lsAccount  :: Address
+  , lsKey      :: Key
+  , lsValue    :: Value
   } deriving (Generic)
 
 instance ToRow LocalStorageRow
@@ -121,8 +133,7 @@ contractToRowTypes Contract{..} =
         map mkGSRow $ Map.toList $
           unGlobalStorage globalStorage
       where
-        mkGSArgs = first Storage.unKey
-        mkGSRow  = uncurry (GlobalStorageRow address) . mkGSArgs
+        mkGSRow  = uncurry (GlobalStorageRow address)
 
     lsRows =
         concatMap (map mkLSRow . mkLSArgs) $
@@ -130,16 +141,16 @@ contractToRowTypes Contract{..} =
       where
         mkLSArgs (accAddr, ls) =
           flip map (Map.toList $ unLocalStorage ls) $ \(key, val) ->
-            (accAddr, Storage.unKey key, val)
+            (accAddr, key, val)
 
         mkLSRow (accAddr, key, val) =
           LocalStorageRow address accAddr key val
 
 rowTypesToContract
   :: (ContractRow, [GlobalStorageRow], [LocalStorageRow])
-  -> Either Text Contract
+  -> Contract
 rowTypesToContract (contractRow, gsRows, lsRows) = do
-    pure $ Contract
+    Contract
       { timestamp        = contractTs contractRow
       , script           = contractScript contractRow
       , globalStorage    = globalStorage
@@ -155,7 +166,7 @@ rowTypesToContract (contractRow, gsRows, lsRows) = do
     globalStorage :: GlobalStorage
     globalStorage =
       GlobalStorage . Map.fromList $
-        map ((Storage.Key . gsKey) &&& gsValue) gsRows
+        map (gsKey &&& gsValue) gsRows
 
     -- create local storage from local storage rows
     localStorages = insertLSEntries mempty lsRows
@@ -163,8 +174,7 @@ rowTypesToContract (contractRow, gsRows, lsRows) = do
         -- Try to insert all entries, shortcircuit fail on failed decode
         insertLSEntries lsMap []         = lsMap
         insertLSEntries lsMap (lsr:lsrs) = do
-          let (LocalStorageRow _ accAddr key' val') = lsr
-          let (key, val) = (Storage.Key key', val')
+          let (LocalStorageRow _ accAddr key val) = lsr
           let insertVar  = Map.alter (insertLSVar key val) accAddr
           insertLSEntries (insertVar $ lsMap) lsrs
 
@@ -190,108 +200,133 @@ rowTypesToContract (contractRow, gsRows, lsRows) = do
 queryContract
   :: Connection
   -> Address
-  -> IO (Either Text Contract)
+  -> IO (Either PostgreSQLError Contract)
 queryContract conn contractAddr = do
-  mContractRow <- queryContractRow conn contractAddr
-  case mContractRow of
-    Nothing -> pure $ Left $ Text.intercalate " "
-      [ "PostgreSQL: Contract with addr"
-      , toS (rawAddr contractAddr)
-      , "does not exist."
-      ]
-    Just contractRow -> do
-      gsRows <- queryGlobalStorageRows conn contractAddr
-      lsRows <- queryLocalStorageRows conn contractAddr
-      pure $ rowTypesToContract (contractRow, gsRows, lsRows)
+  eContractRow <- queryContractRow conn contractAddr
+  case eContractRow of
+    Left err                 -> pure $ Left err
+    Right Nothing            -> pure $ Left $ ContractDoesNotExist contractAddr
+    Right (Just contractRow) -> contractRowToContract conn contractRow
 
-queryContracts :: Connection -> IO (Either Text [Contract])
+queryContracts
+  :: Connection
+  -> IO (Either PostgreSQLError [Contract])
 queryContracts conn = do
-  contractRows <- queryContractRows conn
-  fmap sequence $
-    forM contractRows $ \contractRow -> do
-      let contractAddr = contractAddress contractRow
-      gsRows <- queryGlobalStorageRows conn contractAddr
-      lsRows <- queryLocalStorageRows conn contractAddr
-      pure $ rowTypesToContract (contractRow, gsRows, lsRows)
+  queryContractRows conn >>=
+    either (pure . Left) (contractRowsToContracts conn)
+
+queryContractsByAddrs
+  :: Connection
+  -> [Address]
+  -> IO (Either PostgreSQLError [Contract])
+queryContractsByAddrs conn addrs = do
+  queryContractRowsByAddrs conn addrs >>=
+    either (pure . Left) (contractRowsToContracts conn)
+
+contractRowToContract
+  :: Connection
+  -> ContractRow
+  -> IO (Either PostgreSQLError Contract)
+contractRowToContract conn contractRow = do
+  let contractAddr = contractAddress contractRow
+  eGsRows <- queryGlobalStorageRows conn contractAddr
+  eLsRows <- queryLocalStorageRows conn contractAddr
+  pure $ fmap rowTypesToContract $
+    (contractRow,,) <$> eGsRows <*> eLsRows
+
+contractRowsToContracts
+  :: Connection
+  -> [ContractRow]
+  -> IO (Either PostgreSQLError [Contract])
+contractRowsToContracts conn =
+  fmap sequence . mapM (contractRowToContract conn)
 
 --------------------------------------------------------------------------------
 
 queryContractRows
   :: Connection
-  -> IO [ContractRow]
+  -> IO (Either PostgreSQLError [ContractRow])
 queryContractRows conn =
-  query_ conn "SELECT * FROM contracts"
+  querySafe_ conn "SELECT * FROM contracts"
+
+queryContractRowsByAddrs
+  :: Connection
+  -> [Address]
+  -> IO (Either PostgreSQLError [ContractRow])
+queryContractRowsByAddrs conn addrs = do
+  querySafe conn "SELECT * FROM contracts WHERE address IN ?" $
+    Only $ In addrs
 
 queryContractRow
   :: Connection
   -> Address
-  -> IO (Maybe ContractRow)
-queryContractRow conn contractAddr = headMay <$>
-  query conn "SELECT * FROM contracts where address=?" (Only contractAddr)
+  -> IO (Either PostgreSQLError (Maybe ContractRow))
+queryContractRow conn contractAddr = fmap headMay <$>
+  querySafe conn "SELECT * FROM contracts where address=?" (Only contractAddr)
 
 queryGlobalStorageRows
   :: Connection
   -> Address
-  -> IO [GlobalStorageRow]
+  -> IO (Either PostgreSQLError [GlobalStorageRow])
 queryGlobalStorageRows conn contractAddr =
-  query conn
-    "SELECT contractAddr,key,value FROM global_storage WHERE contractAddr=?"
+  querySafe conn
+    "SELECT * FROM global_storage WHERE contract=?"
     (Only contractAddr)
 
 queryLocalStorageRows
   :: Connection
   -> Address
-  -> IO [LocalStorageRow]
+  -> IO (Either PostgreSQLError [LocalStorageRow])
 queryLocalStorageRows conn contractAddr =
-  query conn
-    "SELECT contractAddr,accountAddr,key,value FROM local_storage WHERE contractAddr=?"
+  querySafe conn
+    "SELECT * FROM local_storage WHERE contract=?"
     (Only contractAddr)
 
 --------------------------------------------------------------------------------
 -- Inserts
 --------------------------------------------------------------------------------
 
-insertContracts :: Connection -> [Contract] -> IO ()
+insertContracts :: Connection -> [Contract] -> IO (Either PostgreSQLError Int64)
 insertContracts conn contracts =
-  mapM_ (insertContract conn) contracts
+  second sum . sequence <$> mapM (insertContract conn) contracts
 
 -- | Insert a Contract into a PostgreSQL DB
 -- Note: You may think it is best to use a Postgres Transaction here, but
 -- contracts should only be written to the database along with the rest of the
 -- world state (accounts & assets). Therefore, a transaction is created when
 -- writing the entire ledger to the database, instead of here.
-insertContract :: Connection -> Contract -> IO ()
+insertContract :: Connection -> Contract -> IO (Either PostgreSQLError Int64)
 insertContract conn contract = do
-    insertContractRow conn contractRow
-    insertGlobalStorageRows conn gsRows
+    _ <- insertContractRow conn contractRow
+    _ <- insertGlobalStorageRows conn gsRows
     insertLocalStorageRows conn lsRows
   where
     (contractRow, gsRows, lsRows) = contractToRowTypes contract
 
-insertContractRow :: Connection -> ContractRow -> IO ()
-insertContractRow conn contractRow = void $
-  execute conn "INSERT INTO contracts VALUES (?,?,?,?,?,?,?)" contractRow
+insertContractRow :: Connection -> ContractRow -> IO (Either PostgreSQLError Int64)
+insertContractRow conn contractRow =
+  executeSafe conn "INSERT INTO contracts VALUES (?,?,?,?,?,?,?)" contractRow
 
-insertGlobalStorageRows :: Connection -> [GlobalStorageRow] -> IO ()
-insertGlobalStorageRows conn gsRows = void $
-  executeMany conn "INSERT INTO global_storage (contractAddr,key,value) VALUES (?,?,?)" gsRows
+insertGlobalStorageRows :: Connection -> [GlobalStorageRow] -> IO (Either PostgreSQLError Int64)
+insertGlobalStorageRows conn gsRows =
+  executeManySafe conn "INSERT INTO global_storage VALUES (?,?,?)" gsRows
 
-insertLocalStorageRows :: Connection -> [LocalStorageRow] -> IO ()
-insertLocalStorageRows conn lsRows = void $
-  executeMany conn "INSERT INTO local_storage (contractAddr,accountAddr,key,value) VALUES (?,?,?,?)" lsRows
+insertLocalStorageRows :: Connection -> [LocalStorageRow] -> IO (Either PostgreSQLError Int64)
+insertLocalStorageRows conn lsRows =
+  executeManySafe conn "INSERT INTO local_storage VALUES (?,?,?,?)" lsRows
 
 --------------------------------------------------------------------------------
 -- Deletes
 --------------------------------------------------------------------------------
 
-deleteContract :: Connection -> Address -> IO ()
-deleteContract conn addr = void $ do
-  execute conn "DELETE FROM contracts WHERE address = ?" (Only addr)
-  execute conn "DELETE FROM local_storage WHERE contractAddr = ?" (Only addr)
-  execute conn "DELETE FROM global_storage WHERE contractAddr = ?" (Only addr)
+deleteContract :: Connection -> Address -> IO (Either PostgreSQLError Int64)
+deleteContract conn addr = do
+  _ <- executeSafe conn "DELETE FROM contracts WHERE address = ?" (Only addr)
+  _ <- executeSafe conn "DELETE FROM local_storage WHERE contract = ?" (Only addr)
+  executeSafe conn "DELETE FROM global_storage WHERE contract = ?" (Only addr)
 
-deleteContracts :: Connection -> IO ()
-deleteContracts conn = void $ do
-  execute_ conn "DELETE FROM contracts"
-  execute_ conn "DELETE FROM local_storage"
-  execute_ conn "DELETE FROM global_storage"
+deleteContracts :: Connection -> IO (Either PostgreSQLError Int64)
+deleteContracts conn = do
+  _ <- executeSafe_ conn "DELETE FROM contracts"
+  _ <- executeSafe_ conn "DELETE FROM local_storage"
+  executeSafe_ conn "DELETE FROM global_storage"

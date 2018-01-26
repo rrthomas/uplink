@@ -131,7 +131,7 @@ validateBlock validateCtx newBlock poa = do
       let n = blockGenLimit poa - 1
       eBlocks <- lift $ DB.readLastNBlocks n
       case eBlocks of
-        Left err -> pure $ Left $ BlockValidationError $ toS err
+        Left err -> pure $ Left $ BlockValidationError $ show err
         Right blks -> do
           let blockOrigins = map (Block.origin . Block.header) blks
           let currBlkOrigin = Block.origin $ Block.header newBlock
@@ -155,7 +155,7 @@ validateBlock validateCtx newBlock poa = do
       eBlocks <- lift $ DB.readLastNBlocks n
       let eBlockSigners = concatMap (Set.toList . Block.signatures) <$> eBlocks
       case eBlockSigners of
-        Left err -> pure $ Left $ BlockValidationError $ toS err
+        Left err -> pure $ Left $ BlockValidationError $ show err
         Right pastNBlockSigAddrs -> do
           let signerAddrs = snd $ partitionBlkSigsAndAddrs pastNBlockSigAddrs
           if null (List.intersect currBlkSignerAddrs signerAddrs)

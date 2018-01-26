@@ -4,4 +4,8 @@
 , ( Name { unName = "getX" } , Sig [] (TFixed Prec2) )
 , ( Name { unName = "f" } , Sig [ TInt , TBool ] TInt )
 , ( Name { unName = "g" } , Sig [ TAsset , TAccount ] TVoid )
+, ( Name { unName = "circulate" } , Sig [ TAsset , TInt ] TVoid )
+, ( Name { unName = "transfer" }
+  , Sig [ TAsset , TAccount , TAccount , TInt ] TAny
+  )
 ]

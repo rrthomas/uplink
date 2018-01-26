@@ -15,6 +15,9 @@ module Asset (
   Asset(..),
   AssetError(..),
   AssetType(..),
+  assetTypeToTuple,
+  tupleToAssetType,
+
   Ref(..),
   validateAsset,
 
@@ -132,7 +135,18 @@ data Ref
   | CHF               -- ^ Swiss Francs
   | Token             -- ^ Abstract token
   | Security          -- ^ Security
-  deriving (Eq, Ord, Show, Enum, Bounded, Generic, NFData, ToJSON, FromJSON, Hash.Hashable)
+  deriving (Eq, Ord, Show, Read, Enum, Bounded, Generic, NFData, ToJSON, FromJSON, Hash.Hashable)
+
+instance ToField Ref where
+  toField = toField . (show :: Ref -> [Char])
+
+instance FromField Ref where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case (readMaybe :: [Char] -> Maybe Ref) . toS <$> (bs :: Maybe ByteString) of
+      Nothing               -> returnError UnexpectedNull f ""
+      Just Nothing          -> returnError ConversionFailed f "Failed to read Ref from field."
+      Just (Just assetType) -> return assetType
 
 -- | Type of an asset's value. Underlying value is always a Int64, but this
 -- informs the representation and range of valid values.
@@ -140,7 +154,37 @@ data AssetType
   = Discrete          -- ^ Discrete (Non-zero integer value)
   | Fractional Int    -- ^ Fractional (Fixed point decimal value)
   | Binary            -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
-  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+  deriving (Eq, Ord, Show, Read, Generic, NFData, Hash.Hashable)
+
+-- | Used for serializing asset types
+assetTypeToTuple :: AssetType -> (Int16, Maybe Int16)
+assetTypeToTuple atyp =
+  case atyp of
+    Discrete     -> (0,Nothing)
+    Fractional n -> (1, Just $ fromIntegral n)
+    Binary       -> (2,Nothing)
+
+-- | Used for deserializing asset types
+tupleToAssetType :: (Int16, Maybe Int16) -> Either Text AssetType
+tupleToAssetType (c,mPrec) =
+  case c of
+    0 -> Right Discrete
+    1 -> case mPrec of
+           Nothing   -> Left "A positive integer must be supplied as a precision value for Fractional AssetTypes"
+           Just prec -> Right $ Fractional $ fromIntegral prec
+    2 -> Right Binary
+    n -> Left $ "The number " <> show n <> " is an invalid constructor flag for AssetType"
+
+instance ToField AssetType where
+  toField = toField . (show :: AssetType -> [Char])
+
+instance FromField AssetType where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case (readMaybe :: [Char] -> Maybe AssetType) . toS <$> (bs :: Maybe ByteString) of
+      Nothing               -> returnError UnexpectedNull f ""
+      Just Nothing          -> returnError ConversionFailed f "Failed to read AssetType from field."
+      Just (Just assetType) -> return assetType
 
 -- | Initial holdings, all allocated to issuer.
 emptyHoldings :: Holdings
@@ -312,8 +356,8 @@ displayType ty bal = case ty of
 
 data AssetError
   = InsufficientHoldings Holder Balance
-  | InsufficientSupply [Char] Balance     -- [Char] for serialize instance
-  | CiruclatorIsNotIssuer Address Address
+  | InsufficientSupply Address Balance     -- [Char] for serialize instance
+  | CirculatorIsNotIssuer Address Address
   | SelfTransfer Address
   | HolderDoesNotExist Address
   deriving (Show, Eq, Generic, Serialize)
@@ -346,7 +390,7 @@ preallocate balances asset = asset { holdings = holdings' }
 circulateSupply :: Address -> Balance -> Asset -> Either AssetError Asset
 circulateSupply addr bal asset
   | integrity = Right $ asset { holdings = holdings', supply = supply' }
-  | otherwise = Left $ InsufficientSupply (toS $ name asset) (supply asset)
+  | otherwise = Left $ InsufficientSupply (address asset) (supply asset)
   where
     holdings' = Holdings $ clearZeroes $
       Map.insertWith (+) addr bal $ unHoldings (holdings asset)

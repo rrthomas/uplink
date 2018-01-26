@@ -69,7 +69,7 @@ module Script (
 
 ) where
 
-import Protolude hiding (put, get, (<>), show, Show, putByteString)
+import Protolude hiding (put, get, (<>), show, Show, putByteString, Type)
 import Prelude (show, Show(..))
 
 import Script.Fixed
@@ -134,7 +134,13 @@ type LUnOp  = Located UnOp
 
 -- | Variable names
 newtype Name = Name { unName :: Text }
-  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData, ToJSON)
+  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData)
+
+instance ToJSON Name where
+  toJSON (Name nm) = toJSON nm
+
+instance FromJSON Name where
+  parseJSON = fmap Name . parseJSON
 
 -- | Datetime literals
 newtype DateTime = DateTime { unDateTime :: DT.Datetime }
@@ -266,7 +272,7 @@ data Method = Method
   , methodName :: Name
   , methodArgs :: [Arg]
   , methodBody :: LExpr
-  } deriving (Eq, Show, Generic, NFData, Hash.Hashable)
+  } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 -- | Definition
 data Def
@@ -274,14 +280,14 @@ data Def
   | GlobalDefNull Type LName
   | LocalDef Type Name LLit
   | LocalDefNull Type LName
-  deriving (Eq, Show, Generic, NFData, Hash.Hashable)
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 -- | Script
 data Script = Script
   { scriptDefs        :: [Def]
   , scriptTransitions :: [Transition]
   , scriptMethods     :: [Method]
-  } deriving (Eq, Show, Generic, NFData, Hash.Hashable)
+  } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 emptyScript :: Script
 emptyScript = Script
@@ -620,3 +626,14 @@ instance FromField Value where
       Nothing          -> returnError UnexpectedNull f ""
       Just (Left err)  -> returnError ConversionFailed f err
       Just (Right val) -> return val
+
+instance ToField [Value] where
+  toField = EscapeByteA . Data.Serialize.encode
+
+instance FromField [Value] where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case Data.Serialize.decode <$> bs of
+      Nothing           -> returnError UnexpectedNull f ""
+      Just (Left err)   -> returnError ConversionFailed f err
+      Just (Right vals) -> return vals

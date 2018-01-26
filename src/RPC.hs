@@ -28,6 +28,8 @@ import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Exception.Lifted (catch)
 
 import DB
+import DB.PostgreSQL
+import DB.PostgreSQL.Error
 import NodeState (NodeT, runNodeT)
 import Script.Pretty (prettyPrint)
 import qualified DB
@@ -45,6 +47,7 @@ import qualified Address
 import qualified Contract
 import qualified Validate
 import qualified NodeState
+import qualified Node.Peer
 import qualified Derivation
 import qualified Transaction as Tx
 import qualified Script.Pretty as Pretty
@@ -54,9 +57,11 @@ import qualified Network.P2P.Cmd as Cmd
 import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
 import Data.Aeson.Types (typeMismatch)
 import qualified Data.Aeson as A
+import qualified Data.Pool as Pool
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TLE
 
 import Control.Distributed.Process (nodeAddress, processNodeId)
 import Network.Transport (endPointAddressToByteString)
@@ -116,8 +121,9 @@ rpcServer
   => Config.Config
   -> Chan.Chan Cmd.Cmd
   -> (NodeT m Warp.Response -> IO Warp.Response)
+  -> Maybe ConnectionPool
   -> IO ()
-rpcServer config chan runInIO = do
+rpcServer config chan runInIO mConnPool = do
 
     let rpcPort = Config.rpcPort config
     let key     = Config.rpcKey config
@@ -127,19 +133,19 @@ rpcServer config chan runInIO = do
     WL.withStdoutLogger $ \appLogger ->
 
       -- Die with better error message if server can't be started. This is
-      -- *probably* and ok catch-all, because exceptions during execution of RPC
-      -- server are handled within `rpcApi`. This *should* only fail for one
+      -- probably and ok catch-all, because exceptions during execution of RPC
+      -- server are handled within `rpcApi`. This should only fail for one
       -- reason: the socket the RPC server binds to is already in use.
       catchFailedSocketBind rpcPort $ do
         -- Setup HTTP server for RPC
         if Config.rpcSsl config
           then
             scottyTLS appLogger rpcPort key cert runInIO $
-              rpcApi chan
+              rpcApi chan mConnPool
           else do
             sock <- listenOn $ PortNumber (fromIntegral rpcPort)
             WS.scottySocketT (opts appLogger) sock runInIO $
-              rpcApi chan
+              rpcApi chan mConnPool
   where
     catchFailedSocketBind port a =
       catch a $ \(SomeException err) ->
@@ -172,10 +178,11 @@ post_ route action =
         else jsonInternalErr "Uplink encountered a fatal internal error."
 
 rpcApi
-  :: (MonadIO m, MonadBaseControl IO m, MonadReadDB m)
+  :: MonadIOReadDB m
   => Chan.Chan Cmd.Cmd
+  -> Maybe ConnectionPool -- Connection to PostgresDB to run DB Queries
   -> RpcT m ()
-rpcApi chan = do
+rpcApi chan mConnPool = do
 
     --------------------------------------------------
     -- RPC Command API
@@ -190,7 +197,7 @@ rpcApi chan = do
           case A.eitherDecode reqBody of
             Left err -> jsonParseErr $ toS err
             Right val -> do
-              resp <- lift $ handleRPCCmd chan val
+              resp <- lift $ handleRPCCmd chan mConnPool val
               WS.json $ toJSON resp
 
     --------------------------------------------------
@@ -218,7 +225,7 @@ rpcApi chan = do
     post_ "/blocks" $ do
       eBlocks <- lift $ lift DB.readBlocks
       case eBlocks of
-        Left err -> jsonInternalErr $ toS err
+        Left err -> jsonInternalErr $ show err
         Right blocks -> jsonRPCRespM blocks
 
     post_ "/blocks/:blockIdx" $ do
@@ -231,7 +238,7 @@ rpcApi chan = do
           eBlock <- lift $
             lift $ DB.readBlock blockIdx
           case eBlock of
-            Left err -> jsonNotFoundErr $ toS err
+            Left err -> jsonNotFoundErr $ show err
             Right block -> jsonRPCRespM block
 
     ---------------------------
@@ -362,7 +369,7 @@ rpcApi chan = do
           jsonInvalidParamErr errMsg
         Right blockIdx -> do
           eTxs <- lift $ lift $ getTransactions blockIdx
-          either (jsonNotFoundErr . toS) jsonRPCRespM eTxs
+          either (jsonNotFoundErr . show) jsonRPCRespM eTxs
 
     post_ "/transactions/:blockIdx/:txIdx" $ do
       eBlockIdx <- WS.parseParam <$> WS.param "blockIdx"
@@ -373,8 +380,7 @@ rpcApi chan = do
           jsonInvalidParamErr errMsg
         Right (blockIdx, txIdx) -> do
           eTx <- lift $ lift $ getTransaction blockIdx txIdx
-          either (jsonNotFoundErr . toS) jsonRPCRespM eTx
-
+          either (jsonNotFoundErr . show) jsonRPCRespM eTx
 
 -- | Construct a RPC response from a serializeable structure
 jsonRPCRespM :: (Monad m, ToJSON a) => a -> WS.ActionT Text m ()
@@ -398,6 +404,12 @@ jsonReadOnlyErr = WS.json readOnlyErr
 
 jsonNotFoundErr :: Monad m => Text -> WS.ActionT Text m ()
 jsonNotFoundErr = WS.json . RPCRespError . NotFound
+
+jsonSelectParseErr :: Monad m => Text -> WS.ActionT Text m ()
+jsonSelectParseErr = WS.json . RPCRespError . SelectParse
+
+jsonSelectError :: Monad m => PostgreSQLError -> WS.ActionT Text m ()
+jsonSelectError = WS.json . RPCRespError . SelectError . show
 
 -------------------------------------------------------------------------------
 -- Querying (Local NodeState or DB)
@@ -423,12 +435,12 @@ getContract addr = NodeState.withLedgerState $ pure . first show . Ledger.lookup
 
 getTransactions :: MonadReadDB m => Int -> m (Either Text [Tx.Transaction])
 getTransactions blockIdx = do
-  eBlock <- DB.readBlock blockIdx
+  eBlock <- first show <$> DB.readBlock blockIdx
   return $ Block.transactions <$> eBlock
 
 getTransaction :: MonadReadDB m => Int -> Int -> m (Either Text Tx.Transaction)
 getTransaction blockIdx txIdx = do
-  eTxs <- getTransactions blockIdx
+  eTxs <- first show <$> getTransactions blockIdx
   return $ case eTxs of
     Left err -> Left err
     Right [] -> Left "No transactions in the specified block"
@@ -437,7 +449,7 @@ getTransaction blockIdx txIdx = do
       Just tx -> Right tx
 
 getInvalidTx :: MonadReadDB m => ByteString -> m (Either Text Tx.InvalidTransaction)
-getInvalidTx = DB.readInvalidTx
+getInvalidTx = fmap (first show) . DB.readInvalidTx
 
 getInvalidTxs :: MonadReadDB m => m (Either Text [Tx.InvalidTransaction])
 getInvalidTxs = first show <$> DB.readInvalidTxs
@@ -473,7 +485,7 @@ queryAllRPC mkUrl = do
     let respVals = map (decodeVal . contents) rpcResps
     return $ Map.fromList $ zip peerAddrs respVals
   where
-    nodeIdToHostname' = toS . NodeState.nodeIdToHostname
+    nodeIdToHostname' = toS . Node.Peer.nodeIdToHostname
     getPeerAddrs = map nodeIdToHostname' <$> NodeState.getPeerNodeIds
 
     decodeVal :: A.Value -> Either Text a
@@ -485,8 +497,13 @@ queryAllRPC mkUrl = do
 -- Command
 -------------------------------------------------------------------------------
 
-handleRPCCmd :: MonadBase IO m => Chan Cmd.Cmd -> RPCCmd -> NodeT m RPCResponse
-handleRPCCmd chan rpcCmd = do
+handleRPCCmd
+  :: MonadBase IO m
+  => Chan Cmd.Cmd
+  -> Maybe ConnectionPool
+  -> RPCCmd
+  -> NodeT m RPCResponse
+handleRPCCmd chan mConnPool rpcCmd = do
   (mP2PCmd, rpcResp) <- case rpcCmd of
 
     Transaction tx -> do
@@ -502,6 +519,26 @@ handleRPCCmd chan rpcCmd = do
       case validationRes of
         Left err -> return (Nothing, txErr err)
         Right _ -> return (Just p2pCmd, RPCRespOK)
+
+    Query textQ ->
+      case mConnPool of
+        Nothing -> pure $ (Nothing,) $
+          RPCRespError $ Internal "Cannot query a LevelDB database"
+        Just connPool ->
+          case parseQuery textQ of
+            Left err ->
+              pure $ (Nothing,) $
+                RPCRespError (SelectParse err)
+            Right q  -> do
+              eQueryRes <- liftBase $
+                Pool.withResource connPool $
+                  flip runSelect q
+              pure $ (Nothing,) $
+                case eQueryRes of
+                  Left err ->
+                    RPCRespError $ SelectError (show err)
+                  Right qres ->
+                    RPCResp (toJSON qres)
 
     Test testCmd -> do
       isTestNode <- NodeState.isTestNode
@@ -537,6 +574,7 @@ handleTestRPCCmd testRPCCmd = do
 -- | An RPC Command (changes state of server)
 data RPCCmd
   = Transaction Tx.Transaction
+  | Query Text
   | Test TestRPCCmd
   deriving (Eq, Show, Generic)
 
@@ -569,6 +607,8 @@ data RPCResponseError
   | JSONParse Text
   | ReadOnly
   | Tx Text
+  | SelectError Text
+  | SelectParse Text
   | NotTestNode
   | NotFound Text
   deriving (Eq, Show, Generic, A.FromJSON)
@@ -607,13 +647,10 @@ jsonRPCResp = RPCResp . toJSON
 instance FromJSON RPCCmd where
   parseJSON (Object v) = do
     method <- v .: "method"
-    params <- v .: "params"
     case method :: Text of
-
       "Transaction" -> Transaction <$> v .: "params"
-
-      "Test" -> Test <$> A.parseJSON (A.Object params)
-
+      "Query" -> Query <$> v .: "params"
+      "Test" -> Test <$> v .: "params"
       invalid -> typeMismatch "RPCCmd" $ A.String invalid
 
   parseJSON invalid = typeMismatch "RPCCmd" invalid
@@ -671,6 +708,14 @@ instance ToJSON RPCResponseError where
     ]
   toJSON (ContractGet msg) = object
     [ "errorType" .= ("ContractGet" :: Text)
+    , "errorMsg"  .= msg
+    ]
+  toJSON (SelectParse msg) = object
+    [ "errorType" .= ("SelectParse" :: Text)
+    , "errorMsg"  .= msg
+    ]
+  toJSON (SelectError msg) = object
+    [ "errorType" .= ("SelectError" :: Text)
     , "errorMsg"  .= msg
     ]
   toJSON NotTestNode = object

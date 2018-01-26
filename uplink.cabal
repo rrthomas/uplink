@@ -1,9 +1,11 @@
--- This file has been generated from package.yaml by hpack version 0.17.1.
+-- This file has been generated from package.yaml by hpack version 0.20.0.
 --
 -- see: https://github.com/sol/hpack
+--
+-- hash: 75cf723cc0449ad1f154e9027b234feca8b59c677ee6ffbd67d9cecaa993582d
 
 name:           uplink
-version:        0.1.1
+version:        0.1.2
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
@@ -37,83 +39,83 @@ library
   default-extensions: LambdaCase RecordWildCards OverloadedStrings NoImplicitPrelude FlexibleInstances FlexibleContexts Rank2Types
   ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
   build-depends:
-      base >= 4.7 && < 5
-    , protolude >= 0.2
-    , deepseq
-    , directory
-    , filepath
-    , network
-    , unix
-    , process
-    , array
-    , pretty-show
-    , safe
-    , hslogger
-    , gitrev
-    , scientific
-    , filelock
+      aeson >=0.11
+    , aeson-pretty
     , ansi-terminal
-    , time
-    , datetimes
-    , hourglass
-    , mtl >= 2.2
-    , transformers
-    , transformers-base
-    , monad-control
-    , lifted-base
-    , distributed-process-lifted
-    , containers
-    , hashable ==1.2.4.0
-    , unordered-containers
-    , fgl
-    , dlist
-    , merkle-tree
-    , exceptions
-    , stm
+    , arithmoi
+    , array
+    , asn1-encoding
+    , asn1-types
     , async
-    , text
-    , bytestring
-    , parsec
-    , wl-pprint-text
+    , attoparsec >=0.13.1.0
+    , base >=4.7 && <5.0
     , base58-bytestring
     , base64-bytestring
-    , cryptonite >= 0.21
-    , memory
-    , pem
-    , x509
-    , asn1-types
-    , asn1-encoding
-    , merkle-tree
-    , pedersen-commitment
-    , arithmoi
-    , cereal
     , binary
+    , bytestring
+    , cereal
     , configurator
-    , aeson >= 0.11
-    , aeson-pretty
-    , pretty-hex
-    , hexpat >= 0.20
-    , hexpat-pickle >= 0.6
-    , http-types
-    , http-client
-    , network-transport
-    , network-transport-tcp
-    , network-transport-inmemory
+    , containers
+    , cryptonite >=0.21
+    , datetimes
+    , deepseq
+    , directory
     , distributed-process
+    , distributed-process-lifted
+    , dlist
+    , exceptions
+    , fgl
+    , file-embed
+    , filelock
+    , filepath
+    , gitrev
+    , hashable
+    , haskeline
+    , hexpat >=0.20
+    , hexpat-pickle >=0.6
+    , hourglass
+    , hslogger
+    , http-client
+    , http-types
+    , leveldb-haskell
+    , lifted-base
+    , memory
+    , merkle-tree
+    , monad-control
+    , mtl >=2.2
+    , network
+    , network-transport
+    , network-transport-inmemory
+    , network-transport-tcp
+    , network-uri
+    , parsec
+    , pedersen-commitment
+    , pem
+    , postgres-tmp
+    , postgresql-simple
+    , pretty-hex
+    , pretty-show
+    , process
+    , protolude >=0.2
+    , random
+    , repline
+    , resource-pool
+    , safe
+    , scientific
+    , scotty
+    , stm
+    , text
+    , time
+    , transformers
+    , transformers-base
+    , unix
+    , unordered-containers
     , wai
     , wai-logger
     , warp
     , warp-tls
-    , network-uri
-    , leveldb-haskell
-    , postgresql-simple
-    , resource-pool
-    , file-embed
-    , repline
-    , haskeline
-    , scotty
-    , lifted-base
-    , random
+    , wl-pprint-text
+    , x509
   if os(linux) && flag(static)
     ghc-options: -static -optl-static
   exposed-modules:
@@ -150,6 +152,8 @@ library
       Encoding
       DB
       DB.Class
+      DB.Query.Lang
+      DB.Query.Parser
       DB.LevelDB
       DB.PostgreSQL
       DB.PostgreSQL.Account
@@ -158,11 +162,13 @@ library
       DB.PostgreSQL.Block
       DB.PostgreSQL.Transaction
       DB.PostgreSQL.InvalidTransaction
-      DB.PostgreSQL.Tmp
+      DB.PostgreSQL.Error
       TxLog
       XML
       RPC
       NodeState
+      Node.Files
+      Node.Peer
       SafeString
       SafeInteger
       Network.Utils
@@ -205,86 +211,85 @@ executable uplink
       exe
   default-extensions: NoImplicitPrelude OverloadedStrings
   build-depends:
-      base >= 4.7 && < 5
-    , protolude >= 0.2
-    , deepseq
-    , directory
-    , filepath
-    , network
-    , unix
-    , process
-    , array
-    , pretty-show
-    , safe
-    , hslogger
-    , gitrev
-    , scientific
-    , filelock
+      aeson >=0.11
+    , aeson-pretty
     , ansi-terminal
-    , time
-    , datetimes
-    , hourglass
-    , mtl >= 2.2
-    , transformers
-    , transformers-base
-    , monad-control
-    , lifted-base
-    , distributed-process-lifted
-    , containers
-    , hashable ==1.2.4.0
-    , unordered-containers
-    , fgl
-    , dlist
-    , merkle-tree
-    , exceptions
-    , stm
+    , arithmoi
+    , array
+    , asn1-encoding
+    , asn1-types
     , async
-    , text
-    , bytestring
-    , parsec
-    , wl-pprint-text
+    , attoparsec >=0.13.1.0
+    , base >=4.7 && <5.0
     , base58-bytestring
     , base64-bytestring
-    , cryptonite >= 0.21
-    , memory
-    , pem
-    , x509
-    , asn1-types
-    , asn1-encoding
-    , merkle-tree
-    , pedersen-commitment
-    , arithmoi
-    , cereal
     , binary
+    , bytestring
+    , cereal
     , configurator
-    , aeson >= 0.11
-    , aeson-pretty
-    , pretty-hex
-    , hexpat >= 0.20
-    , hexpat-pickle >= 0.6
-    , http-types
-    , http-client
-    , network-transport
-    , network-transport-tcp
-    , network-transport-inmemory
+    , containers
+    , cryptonite >=0.21
+    , datetimes
+    , deepseq
+    , directory
     , distributed-process
+    , distributed-process-lifted
+    , dlist
+    , exceptions
+    , fgl
+    , file-embed
+    , filelock
+    , filepath
+    , gitrev
+    , hashable
+    , haskeline
+    , hexpat >=0.20
+    , hexpat-pickle >=0.6
+    , hourglass
+    , hslogger
+    , http-client
+    , http-types
+    , leveldb-haskell
+    , lifted-base
+    , memory
+    , merkle-tree
+    , monad-control
+    , mtl >=2.2
+    , network
+    , network-transport
+    , network-transport-inmemory
+    , network-transport-tcp
+    , network-uri
+    , optparse-applicative
+    , parsec
+    , pedersen-commitment
+    , pem
+    , postgres-tmp
+    , postgresql-simple
+    , pretty-hex
+    , pretty-show
+    , process
+    , protolude >=0.2
+    , random
+    , repline
+    , resource-pool
+    , safe
+    , scientific
+    , scotty
+    , stm
+    , text
+    , time
+    , transformers
+    , transformers-base
+    , unix
+    , unordered-containers
+    , uplink
     , wai
     , wai-logger
     , warp
     , warp-tls
-    , network-uri
-    , leveldb-haskell
-    , postgresql-simple
-    , resource-pool
-    , file-embed
-    , repline
-    , haskeline
-    , scotty
-    , lifted-base
-    , random
-    , uplink
-    , protolude >= 0.2
-    , optparse-applicative
+    , wl-pprint-text
+    , x509
   if os(linux) && flag(static)
     ghc-options: -static -optl-static
   if flag(optimized)
@@ -299,94 +304,89 @@ test-suite uplink-test
   hs-source-dirs:
       tests
   build-depends:
-      base >= 4.7 && < 5
-    , protolude >= 0.2
-    , deepseq
-    , directory
-    , filepath
-    , network
-    , unix
-    , process
-    , array
-    , pretty-show
-    , safe
-    , hslogger
-    , gitrev
-    , scientific
-    , filelock
+      QuickCheck
+    , aeson
+    , aeson-pretty
     , ansi-terminal
-    , time
-    , datetimes
-    , hourglass
-    , mtl >= 2.2
-    , transformers
-    , transformers-base
-    , monad-control
-    , lifted-base
-    , distributed-process-lifted
-    , containers
-    , hashable ==1.2.4.0
-    , unordered-containers
-    , fgl
-    , dlist
-    , merkle-tree
-    , exceptions
-    , stm
+    , arithmoi
+    , array
+    , asn1-encoding
+    , asn1-types
     , async
-    , text
-    , bytestring
-    , parsec
-    , wl-pprint-text
+    , attoparsec >=0.13.1.0
+    , base >=4.7 && <5
     , base58-bytestring
     , base64-bytestring
-    , cryptonite >= 0.21
-    , memory
-    , pem
-    , x509
-    , asn1-types
-    , asn1-encoding
-    , merkle-tree
-    , pedersen-commitment
-    , arithmoi
-    , cereal
     , binary
+    , bytestring
+    , cereal
     , configurator
-    , aeson >= 0.11
-    , aeson-pretty
-    , pretty-hex
-    , hexpat >= 0.20
-    , hexpat-pickle >= 0.6
-    , http-types
-    , http-client
-    , network-transport
-    , network-transport-tcp
-    , network-transport-inmemory
+    , containers
+    , cryptonite >=0.21
+    , datetimes
+    , deepseq
+    , directory
     , distributed-process
+    , distributed-process-lifted
+    , dlist
+    , exceptions
+    , fgl
+    , file-embed
+    , filelock
+    , filepath
+    , gitrev
+    , hashable
+    , haskeline
+    , hexpat >=0.20
+    , hexpat-pickle >=0.6
+    , hourglass
+    , hslogger
+    , http-client
+    , http-types
+    , leveldb-haskell
+    , lifted-base
+    , memory
+    , merkle-tree
+    , monad-control
+    , mtl >=2.2
+    , network
+    , network-transport
+    , network-transport-inmemory
+    , network-transport-tcp
+    , network-uri
+    , parsec
+    , pedersen-commitment
+    , pem
+    , postgres-tmp
+    , postgresql-simple
+    , pretty-hex
+    , pretty-show
+    , process
+    , protolude >=0.2
+    , random
+    , repline
+    , resource-pool
+    , safe
+    , scientific
+    , scotty
+    , stm
+    , tasty
+    , tasty-golden
+    , tasty-hunit
+    , tasty-quickcheck
+    , text
+    , time
+    , transformers
+    , transformers-base
+    , unix
+    , unordered-containers
+    , uplink
     , wai
     , wai-logger
     , warp
     , warp-tls
-    , network-uri
-    , leveldb-haskell
-    , postgresql-simple
-    , resource-pool
-    , file-embed
-    , repline
-    , haskeline
-    , scotty
-    , lifted-base
-    , random
-    , base >= 4.7 && < 5
-    , uplink
-    , protolude >= 0.2
-    , aeson
-    , cereal
-    , QuickCheck
-    , tasty
-    , pretty-hex
-    , tasty-golden
-    , tasty-hunit
-    , tasty-quickcheck
+    , wl-pprint-text
+    , x509
   other-modules:
       KeyTests
       Reference
@@ -394,13 +394,14 @@ test-suite uplink-test
       TestDB
       TestJson
       TestPaillier
-      TestPostgres
+      TestQueryLang
       TestScript
       TestStorage
       TestTx
       TestTxAsset
       TestWire
       TestXML
+      Paths_uplink
   default-language: Haskell2010
 
 benchmark uplink-benchmarks
@@ -409,83 +410,85 @@ benchmark uplink-benchmarks
   hs-source-dirs:
       bench
   build-depends:
-      base >= 4.7 && < 5
-    , protolude >= 0.2
-    , deepseq
-    , directory
-    , filepath
-    , network
-    , unix
-    , process
-    , array
-    , pretty-show
-    , safe
-    , hslogger
-    , gitrev
-    , scientific
-    , filelock
+      aeson >=0.11
+    , aeson-pretty
     , ansi-terminal
-    , time
-    , datetimes
-    , hourglass
-    , mtl >= 2.2
-    , transformers
-    , transformers-base
-    , monad-control
-    , lifted-base
-    , distributed-process-lifted
-    , containers
-    , hashable ==1.2.4.0
-    , unordered-containers
-    , fgl
-    , dlist
-    , merkle-tree
-    , exceptions
-    , stm
+    , arithmoi
+    , array
+    , asn1-encoding
+    , asn1-types
     , async
-    , text
-    , bytestring
-    , parsec
-    , wl-pprint-text
+    , attoparsec >=0.13.1.0
+    , base >=4.7 && <5.0
     , base58-bytestring
     , base64-bytestring
-    , cryptonite >= 0.21
-    , memory
-    , pem
-    , x509
-    , asn1-types
-    , asn1-encoding
-    , merkle-tree
-    , pedersen-commitment
-    , arithmoi
-    , cereal
     , binary
+    , bytestring
+    , cereal
     , configurator
-    , aeson >= 0.11
-    , aeson-pretty
-    , pretty-hex
-    , hexpat >= 0.20
-    , hexpat-pickle >= 0.6
-    , http-types
-    , http-client
-    , network-transport
-    , network-transport-tcp
-    , network-transport-inmemory
+    , containers
+    , criterion
+    , cryptonite >=0.21
+    , datetimes
+    , deepseq
+    , directory
     , distributed-process
+    , distributed-process-lifted
+    , dlist
+    , exceptions
+    , fgl
+    , file-embed
+    , filelock
+    , filepath
+    , gitrev
+    , hashable
+    , haskeline
+    , hexpat >=0.20
+    , hexpat-pickle >=0.6
+    , hourglass
+    , hslogger
+    , http-client
+    , http-types
+    , leveldb-haskell
+    , lifted-base
+    , memory
+    , merkle-tree
+    , monad-control
+    , mtl >=2.2
+    , network
+    , network-transport
+    , network-transport-inmemory
+    , network-transport-tcp
+    , network-uri
+    , parsec
+    , pedersen-commitment
+    , pem
+    , postgres-tmp
+    , postgresql-simple
+    , pretty-hex
+    , pretty-show
+    , process
+    , protolude >=0.2
+    , random
+    , repline
+    , resource-pool
+    , safe
+    , scientific
+    , scotty
+    , stm
+    , text
+    , time
+    , transformers
+    , transformers-base
+    , unix
+    , unordered-containers
+    , uplink
     , wai
     , wai-logger
     , warp
     , warp-tls
-    , network-uri
-    , leveldb-haskell
-    , postgresql-simple
-    , resource-pool
-    , file-embed
-    , repline
-    , haskeline
-    , scotty
-    , lifted-base
-    , random
-    , uplink
-    , criterion
+    , wl-pprint-text
+    , x509
+  other-modules:
+      Paths_uplink
   default-language: Haskell2010

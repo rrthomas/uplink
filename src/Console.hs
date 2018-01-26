@@ -5,12 +5,12 @@
 
 module Console (
   runConsole,
-  ConsoleConfig(..)
 ) where
 
 import Protolude hiding (StateT, evalStateT, Prefix)
 
-import Control.Distributed.Process (Process)
+import Control.Distributed.Process (Process, ProcessId)
+import Control.Distributed.Process.Node (LocalNode, runProcess)
 import Control.Monad.State.Strict
 
 import Data.Either
@@ -29,27 +29,31 @@ import Console.Config
 
 import System.Console.Repline
 
-command :: [Char] -> Console ()
-command input =
+handleConsoleInput
+  :: LocalNode       -- Cloud Haskell Node to run the process on
+  -> ProcessId  -- Command Process to send the message to
+  -> [Char]
+  -> ConsoleM ()
+handleConsoleInput node cmdProcId input =
   case parseConsoleCmd input of
     Left err -> do
       putText $ Pretty.prettyPrint err
-
       -- Try to match first word in input and print corresponding help text
       displayCmdHelp $ fromMaybe "" $ head $ T.words $ lineContents err
       displayActiveAccount
 
+    Right ccmd -> do
+      mCmd <- getCmd ccmd
+      case mCmd of
+        Nothing -> pure ()
+        Just cmd ->
+          -- Handle the command
+          liftIO $ runProcess node $
+            handleConsoleCmd cmdProcId cmd
 
-    Right cmd -> handleConsoleCmd cmd
-
-runConsole :: ConsoleConfig -> IO ()
-runConsole cfg =
-    flip evalStateT ctx
-  . flip runReaderT cfg $
-  evalRepl ">>> " command [] completion (return ())
+runConsole :: LocalNode -> ProcessId -> ConsoleState -> IO ()
+runConsole node cmdProcId consoleState =
+    runConsoleT consoleState $
+      evalRepl ">>> " handleConsoleInput' [] completion (pure ())
   where
-    ctx = ConsoleCtx {
-        account = Nothing
-      , privKey = Nothing
-      , vars = Map.empty
-      }
+    handleConsoleInput' = unConsoleM . handleConsoleInput node cmdProcId

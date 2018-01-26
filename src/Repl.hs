@@ -310,7 +310,7 @@ repl accPath sigs script verbose = do
     first ((<>) latestBlockErrPref) <$> do
       eBlocks <- DB.readBlocks
       case lastMay <$> eBlocks of
-        Left err         -> pure $ Left err
+        Left err         -> pure $ Left $ show err
         Right Nothing    -> pure $ Left "No blocks in DB"
         Right (Just blk) -> pure $ Right blk
 

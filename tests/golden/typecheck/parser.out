@@ -34,6 +34,8 @@ Script
       , Arrow
           (Step Label { unLabel = "getX" }) (Step Label { unLabel = "setX" })
       , Arrow (Step Label { unLabel = "settlement" }) Terminal
+      , Arrow Initial (Step Label { unLabel = "circulated" })
+      , Arrow (Step Label { unLabel = "circulated" }) Terminal
       ]
   , scriptMethods =
       [ Method
@@ -197,6 +199,43 @@ Script
                       , EVar Name { unName = "t" }
                       ]))
                 (ERet (ELit LVoid))
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "initial" }
+          , methodName = Name { unName = "circulate" }
+          , methodArgs =
+              [ Arg { argType = TAsset , argName = Name { unName = "a" } }
+              , Arg { argType = TInt , argName = Name { unName = "amount" } }
+              ]
+          , methodBody =
+              ESeq
+                (ECall
+                   Name { unName = "circulate" }
+                   [ EVar Name { unName = "a" } , EVar Name { unName = "amount" } ])
+                (ECall
+                   Name { unName = "transitionTo" }
+                   [ ELit (LState Label { unLabel = "circulated" }) ])
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "circulated" }
+          , methodName = Name { unName = "transfer" }
+          , methodArgs =
+              [ Arg { argType = TAsset , argName = Name { unName = "a" } }
+              , Arg { argType = TAccount , argName = Name { unName = "from" } }
+              , Arg { argType = TAccount , argName = Name { unName = "to" } }
+              , Arg { argType = TInt , argName = Name { unName = "amount" } }
+              ]
+          , methodBody =
+              ESeq
+                (ECall
+                   Name { unName = "transferHoldings" }
+                   [ EVar Name { unName = "from" }
+                   , EVar Name { unName = "a" }
+                   , EVar Name { unName = "amount" }
+                   , EVar Name { unName = "to" }
+                   ])
+                (ECall
+                   Name { unName = "terminate" } [ ELit (LMsg "finished transfer") ])
           }
       ]
   }

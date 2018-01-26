@@ -20,33 +20,45 @@ import Address
 
 import Database.PostgreSQL.Simple
 
-queryAccount :: Connection -> Address -> IO (Either Text Account)
+import DB.PostgreSQL.Error
+
+queryAccount :: Connection -> Address -> IO (Either PostgreSQLError Account)
 queryAccount conn addr = do
-  accs <- query conn "SELECT * FROM accounts WHERE address=?" (Only addr)
-  case accs of
-    [acc]     -> pure $ Right acc
-    otherwise -> pure $ Left $ Text.intercalate " "
-      [ "PostgreSQL: Account with addr"
-      , toS (rawAddr addr)
-      , "does not exist."
-      ]
+  eAccs <- querySafe conn "SELECT * FROM accounts WHERE address=?" (Only addr)
+  case fmap headMay eAccs of
+    Left err         -> pure $ Left err
+    Right Nothing    -> pure $ Left $ AccountDoesNotExist addr
+    Right (Just acc) -> pure $ Right acc
 
-queryAccounts :: Connection -> IO [Account]
+queryAccounts
+  :: Connection
+  -> IO (Either PostgreSQLError [Account])
 queryAccounts conn =
-  query_ conn "SELECT * FROM accounts"
+  querySafe_ conn "SELECT * FROM accounts"
 
-insertAccount :: Connection -> Account -> IO ()
+insertAccount
+  :: Connection
+  -> Account
+  -> IO (Either PostgreSQLError Int64)
 insertAccount conn acc =
   insertAccounts conn [acc]
 
-insertAccounts :: Connection -> [Account] -> IO ()
-insertAccounts conn accs = void $
-  executeMany conn "INSERT INTO accounts VALUES (?,?,?,?)" accs
+insertAccounts
+ :: Connection
+ -> [Account]
+ -> IO (Either PostgreSQLError Int64)
+insertAccounts conn accs =
+  executeManySafe conn "INSERT INTO accounts VALUES (?,?,?,?)" accs
 
-deleteAccount :: Connection -> Address -> IO ()
-deleteAccount conn addr = void $
-  execute conn "DELETE FROM accounts WHERE address=?" (Only addr)
+deleteAccount
+  :: Connection
+  -> Address
+  -> IO (Either PostgreSQLError Int64)
+deleteAccount conn addr =
+  executeSafe conn "DELETE FROM accounts WHERE address=?" (Only addr)
 
-deleteAccounts :: Connection -> IO ()
-deleteAccounts conn = void $
-  execute_ conn "DELETE FROM accounts"
+deleteAccounts
+  :: Connection
+  -> IO (Either PostgreSQLError Int64)
+deleteAccounts conn =
+  executeSafe_ conn "DELETE FROM accounts"

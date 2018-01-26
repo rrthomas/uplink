@@ -44,6 +44,8 @@ module Transaction (
   TxValidationError(..),
   InvalidTxField(..),
 
+  TxValidationCtx(..),
+
   -- ** Validation / Verification
   verifyTransaction,
   validateTransaction,
@@ -624,7 +626,7 @@ instance FromJSON TxAccount where
 
   parseJSON invalid = typeMismatch "TxAccount" invalid
 
--- Necessary instances because Data.Serialize.encode/decode does not play well
+-- Necessary instance because Data.Serialize.encode/decode does not play well
 -- with postgresql-simple's ByteString-to-bytea serializer
 instance ToField TransactionHeader where
   toField = EscapeByteA . S.encode
@@ -721,8 +723,7 @@ data InvalidTxAccount
   deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxAsset
-  = MissingAssetAddress
-  | DerivedAddressesDontMatch Address Address
+  = DerivedAddressesDontMatch Address Address
   | AssetError Ledger.AssetError
   deriving (Show, Eq, Generic, S.Serialize)
 
@@ -760,17 +761,27 @@ verifyTransaction key t = do
       | Key.verify key sig encodedHeader -> Right ()
       | otherwise -> Left $ Key.InvalidSignature sig encodedHeader
 
+data TxValidationCtx = TxBlock Time.Timestamp | TxMemPool | TxInvalid
+
 -- | Validate a transaction without looking up the origin account
 -- by using cryptography magic (public key recovery from signature)
-validateTransaction :: Transaction -> IO (Either InvalidTransaction ())
-validateTransaction tx@Transaction{..} = do
-    isTimeValid <- Time.validateTimestamp timestamp
-    -- Validate transaction timestamp
-    return $ do
+validateTransaction
+  :: TxValidationCtx
+  -> Transaction
+  -> IO (Either InvalidTransaction ())
+validateTransaction txvctx tx@Transaction{..} = do
+    isTimeValid <-
+      case txvctx of
+        TxBlock blockTs -> pure $
+          Time.validateTimestamp_ blockTs timestamp
+        TxMemPool ->
+          Time.validateTimestamp timestamp
+        -- For "validating" the data integrity of invalid txs
+        TxInvalid -> pure True
+    return $
       unless isTimeValid $
         Left $ mkInvalidTx $ InvalidTxTimestamp timestamp
-      validateTransactionNoTs tx
-  where
+ where
     mkInvalidTx = InvalidTransaction tx . InvalidTxField
 
 -- | Validate a transaction without looking up the origin account

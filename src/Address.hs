@@ -62,7 +62,7 @@ import qualified GHC.TypeLits as Lits
 import Encoding
 import qualified Key
 import qualified Hash
-import Script.Pretty (Pretty(..))
+import Script.Pretty (Pretty(..), squotes)
 
 import Control.Monad (fail)
 
@@ -120,7 +120,7 @@ instance Serialize Address where
   get = Address . b58 <$> S.getByteString addrSize
 
 instance Pretty Address where
-  ppr (Address bs) = ppr bs
+  ppr (Address bs) = squotes $ ppr bs
 
 
 instance ToJSONKey Address where

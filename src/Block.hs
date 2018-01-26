@@ -28,7 +28,7 @@ module Block (
 
   -- ** Validation & Verification
   validateBlock,
-  validBlockDB,
+  validateBlockDB,
   validateChain,
   verifyBlockSig,
 
@@ -220,7 +220,7 @@ data InvalidBlock
 -- 6. Previous block hash is correct
 validateBlock :: Time.Timestamp -> Block -> Block -> IO (Either InvalidBlock ())
 validateBlock medianTs prevBlock Block{..} = do
-  validTxs <- mapM Tx.validateTransaction transactions
+  validTxs <- mapM (Tx.validateTransaction $ Tx.TxBlock blockTs) transactions
   let blockIsValid = do
         first InvalidBlockTx $ sequence validTxs
         validateMerkleRoot
@@ -251,9 +251,13 @@ validateBlock medianTs prevBlock Block{..} = do
 
 -- | Only used when validating a block being read from DB
 -- XXX: Come up with block integrity check, previous one not correct
-validBlockDB :: Block -> Bool
-validBlockDB block = either (const False) (const True) .
-  sequence $ map Tx.validateTransactionNoTs (transactions block)
+validateBlockDB :: Block -> IO Bool
+validateBlockDB block =
+    either (const False) (const True) . sequence <$>
+      mapM validateTx (transactions block)
+  where
+    blockTs = timestamp $ header block
+    validateTx = Tx.validateTransaction $ Tx.TxBlock blockTs
 
 validateChain :: [Block] -> IO (Either InvalidBlock ())
 validateChain [] = pure $ Right ()

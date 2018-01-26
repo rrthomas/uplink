@@ -35,7 +35,7 @@ module Script.Compile (
   scriptHex,
 ) where
 
-import Protolude
+import Protolude hiding (Type)
 
 import qualified Utils
 import qualified Storage
@@ -78,7 +78,7 @@ stage pass = either (Left . Pretty.prettyPrint) Right
 compileFile :: FilePath -> IO (Either Text ([(Name,Sig)], Script))
 compileFile fpath = do
   res <- Utils.safeRead fpath
-  case res of 
+  case res of
     (Left err) -> return $ Left err
     (Right contents) -> return $ compile $ decodeUtf8 contents
 

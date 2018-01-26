@@ -1,10 +1,17 @@
-resolver: lts-9.0
+resolver: lts-10.0
+flags: {}
+arch: x86_64
+extra-package-dbs: []
+require-stack-version: ">=1.6"
+
+ghc-options:
+   "$locals": -fhide-source-paths
 
 packages:
 - '.'
 - location:
     git: https://github.com/adjoint-io/pedersen-commitment.git
-    commit: f610759235eb777e16091df96fa40dc7dcc2f2a7
+    commit: b32d2183426594a8fa518976159e5a1b09083e51
   extra-dep: true
 
 - location:
@@ -18,25 +25,19 @@ packages:
   extra-dep: true
     
 extra-deps:
-- protolude-0.2
-- syb-0.6
-- hashable-1.2.4.0 # Explicit, because of bug with serializer compat
-- repline-0.1.6.0
+- protolude-0.2.1
+- repline-0.1.7.0
 - pretty-hex-1.0
 - base58-bytestring-0.1.0
+- template-haskell-2.11.1.0
 - hexpat-pickle-0.6
 - distributed-process-0.7.3
 - distributed-process-lifted-0.3.0.0
 - distributed-process-monad-control-0.5.1.3
-- postgres-tmp-0.1.0.1
-
-flags: {}
-arch: x86_64
-extra-package-dbs: []
-require-stack-version: ">=1.2"
+- postgres-tmp-0.2.0
 
 docker:
-  enable: true
+  enable: false
   auto-pull: true
 
 image:

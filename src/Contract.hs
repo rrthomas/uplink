@@ -48,7 +48,7 @@ import qualified Data.Map as Map
 import qualified Data.Binary as Binary
 import qualified Data.Set as Set
 
-import Data.Aeson (object, (.=))
+import Data.Aeson (ToJSON(..), object, (.=))
 import qualified Data.Aeson as A
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
@@ -62,12 +62,15 @@ type LocalStorages = Map.Map Address.Address LocalStorage
 
 newtype LocalStorageVars = LocalStorageVars
   { unLocalStorageVars :: Set.Set Name
-  } deriving (Eq, Show, Generic, NFData, Serialize, Hash.Hashable)
+  } deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hash.Hashable)
 
 instance Monoid LocalStorageVars where
   mempty = LocalStorageVars mempty
   (LocalStorageVars lsvars1) `mappend` (LocalStorageVars lsvars2) =
     LocalStorageVars (lsvars1 `mappend` lsvars2)
+
+instance ToJSON LocalStorageVars where
+  toJSON (LocalStorageVars lsvars) = toJSON lsvars
 
 -- | A contract is a 4-tuple of the address of publisher, timestamp of
 -- deployment time, script source, and it's initial storage hash.

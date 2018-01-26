@@ -15,7 +15,6 @@ module Ledger (
   AssetError(..),
   AccountError(..),
   ContractError(..),
-  Transition,
   genesisWorld,
   mkWorld,
 
@@ -122,9 +121,6 @@ data AccountError
   = AccountDoesNotExist Address
   | AccountExists Address
   deriving (Show, Eq, Generic, Serialize)
-
--- | A change in the world state.
-type Transition = World -> World
 
 -- | Empty world state
 genesisWorld :: World

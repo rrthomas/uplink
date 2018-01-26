@@ -10,9 +10,6 @@ module Threshold (
   -- ** Generation
   new,
   combine,
-
-  -- ** Testing
-  testThreshold,
 ) where
 
 import Protolude
@@ -29,7 +26,7 @@ import qualified Data.Map as Map
 new :: Word8 -> Word8 -> IO (Key.PubKey, Shamir.Secrets)
 new t n = do
   (pk, sk) <- Key.new
-  shares <- Shamir.split t n (Key.exportPriv (pk, sk))
+  shares <- Shamir.split t n (Key.exportPriv sk)
   return (pk, (fmap Encoding.base64 shares))
 
 -- | Combine secretes to reconsitute a message.
@@ -37,11 +34,3 @@ combine :: Shamir.Secrets -> Either [Char] ByteString
 combine secrets = do
   secrets' <- mapM Encoding.unbase64 secrets
   pure (Shamir.combine secrets')
-
-testThreshold :: IO ()
-testThreshold = do
-  (pk, shares) <- new 10 2
-  let eSecret = combine shares
-  case eSecret of
-    Left err -> putStrLn err
-    Right secret -> putStrLn secret

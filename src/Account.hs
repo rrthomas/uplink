@@ -23,22 +23,32 @@ module Account (
   decodeAccount,
   accountKeyVal,
 
-  -- ** Save/Load Account
-  saveAccount,
-  loadAccountFile,
-
   -- ** Persistence
   AccountPrompt(..),
-  setupAccount,
-  setupAccount',
-  loadAccount,
-  loadAccount',
+  createAccPrompt,
+  createAccPrompt',
 
   readKeys,
+  readKeys',
   writeKeys,
+  writePrivKey,
+  writePrivKey',
+  writePrivKey_,
+  writePubKey,
+  writePubKey',
+  writePubKey_,
+
+  readAccount,
   writeAccount,
+  writeAccount',
+  writeAccount_,
   writeAccountData,
-  readAccountData
+  readAccountData,
+  readAccountsFromDir,
+
+  accountFile,
+  privKeyFile,
+  pubKeyFile,
 
 ) where
 
@@ -145,15 +155,9 @@ accountFilesExist root = do
   accountExists <- doesFileExist $ accountFile root
   return $ pubKeyExists && privKeyExists && accountExists
 
-loadAccount :: FilePath -> IO (Either Text (Account, Key.ECDSAKeyPair))
-loadAccount root = do
-  accountExists <- accountFilesExist root
-  if accountExists then loadAccount' root
-  else return $ Left $ "Could not find account at path: " <> toS root
-
 -- | Like `loadAccount` but will throw an exception if account doesn't exist
-loadAccount' :: FilePath -> IO (Either Text (Account, Key.ECDSAKeyPair))
-loadAccount' root = do
+readAccountData :: FilePath -> IO (Either Text (Account, Key.ECDSAKeyPair))
+readAccountData root = do
   res <- liftA3 (,,)
     <$> Utils.safeRead (pubKeyFile root)
     <*> Utils.safeRead (privKeyFile root)
@@ -173,32 +177,24 @@ loadAccount' root = do
 data AccountPrompt = Prompt | NoPrompt
   deriving (Eq, Ord, Show)
 
--- | Used when spinning up a new node via cmd line.
--- This function checks for an existing account and loads it.
--- Otherwise it prompts user for account creation.
-setupAccount
+-- | Prompts user for account creation, returning the created account data
+createAccPrompt
   :: FilePath
   -> Maybe FilePath
   -> AccountPrompt
   -> IO (Either Text (Account, Key.ECDSAKeyPair))
-setupAccount root privKey accPrompt = do
-    eAcc <- loadAccount root
-    case eAcc of
-      Left err -> do
-        ePrivKey <- case privKey of
-          Nothing -> promptSupplyKey $ promptArg accPrompt
-          Just _  -> promptKeyFile privKey
-        case ePrivKey of
-          Left err -> return $ Left err
-          Right privKey -> do
-            -- XXX Prompt for timezone & metadata? How?
-            let pubKey = Key.toPublic privKey
-                acc = createAccount pubKey "UTC" mempty
-                keys = (pubKey,privKey)
-            Log.info "Writing account data to disk."
-            writeAccountData root acc keys
-            return $ Right (acc, keys)
-      Right acc -> return $ Right acc
+createAccPrompt root privKey accPrompt = do
+    ePrivKey <- case privKey of
+      Nothing -> promptSupplyKey $ promptArg accPrompt
+      Just _  -> promptKeyFile privKey
+    case ePrivKey of
+      Left err -> return $ Left err
+      Right privKey -> do
+        -- XXX Prompt for timezone & metadata? How?
+        let pubKey = Key.toPublic privKey
+            acc = createAccount pubKey "UTC" mempty
+            keys = (pubKey,privKey)
+        return $ Right (acc, keys)
   where
     promptArg Prompt = Nothing
     promptArg NoPrompt = Just "n"
@@ -230,12 +226,12 @@ setupAccount root privKey accPrompt = do
       promptKeyFile $ Just $ toS privKeyFile
 
 -- | Like `setupAccount`, but will throw an exception if an error occurs.
-setupAccount' :: FilePath -> Maybe FilePath -> AccountPrompt -> IO (Account, Key.ECDSAKeyPair)
-setupAccount' root privKey accPrompt = do
-  eAcc <- Account.setupAccount root privKey accPrompt
-  case eAcc of
-    Left err  -> Utils.dieRed err
-    Right acc -> return acc
+createAccPrompt' :: FilePath -> Maybe FilePath -> AccountPrompt -> IO (Account, Key.ECDSAKeyPair)
+createAccPrompt' root privKey accPrompt = do
+  eAccAndKeys <- createAccPrompt root privKey accPrompt
+  case eAccAndKeys of
+    Left err         -> Utils.dieRed err
+    Right accAndKeys -> return accAndKeys
 
 createAccountDir :: FilePath -> IO (Either Text ())
 createAccountDir root = do
@@ -246,56 +242,117 @@ createAccountDir root = do
     createDirectoryIfMissing True root
     pure (Right ())
 
+-- | Reads an ECC private key in PEM format from a
+-- file found in the given directory: <root>/key
 readKeys :: FilePath -> IO (Either Text Key.ECDSAKeyPair)
 readKeys root = do
   rootExists <- doesDirectoryExist root
   if rootExists then do
     let privFile = privKeyFile root
-    privExists <- doesFileExist privFile
-    if privExists then do
-      privKeyPem <- BS.readFile privFile
-      pure $ Key.importPriv privKeyPem
-    else
-      pure $ Left "One of the public or private keys does not exist"
+    readKeys' privFile
   else
     pure $ Left "Node root directory has not been initialized."
 
+-- | Reads a private key found at the given path
+readKeys' :: FilePath -> IO (Either Text Key.ECDSAKeyPair)
+readKeys' privKeyPath =
+  join . fmap Key.importPriv <$> Utils.safeRead privKeyPath
+
 -- | Write account key data to disk
-writeKeys :: FilePath -> (Key.PubKey, Key.PrivateKey) -> IO (Either Text ())
+-- Note: does not overwrite existing keys
+writeKeys :: FilePath -> Key.ECDSAKeyPair -> IO (Either Text ())
 writeKeys root (publicKey, privateKey) = do
   rootExists <- doesDirectoryExist root
   if rootExists then do
-    let pubFile  = pubKeyFile root
-    let privFile = privKeyFile root
-    pubExists  <- doesFileExist pubFile
-    privExists <- doesFileExist privFile
-    if (pubExists || privExists) then
-      pure (Left "Not overwriting existing keys.")
-    else do
-      BS.writeFile privFile (Key.exportPriv (publicKey, privateKey))
-      BS.writeFile pubFile (Key.exportPub publicKey)
-      -- Set chmod 0400
-      setFileMode pubFile ownerReadMode
-      setFileMode privFile ownerReadMode
-      pure (Right ())
+    e1 <- writePrivKey root privateKey
+    e2 <- writePubKey root publicKey
+    pure (e1 >> e2)
   else
     pure (Left "Root directory does not exist.")
 
--- | Write account metadata to disk
+--------------------------------------------------------------------------------
+
+-- | Writes a private key to the given directory in PEM format tothe file <root>/key
+writePrivKey :: FilePath -> Key.PrivateKey -> IO (Either Text ())
+writePrivKey root = writePrivKey' (privKeyFile root)
+
+-- | Writes a private key to a given file in PEM format
+-- Note: Does not overwrite existing files
+writePrivKey' :: FilePath -> Key.PrivateKey -> IO (Either Text ())
+writePrivKey' file privKey = do
+  privExists <- doesFileExist file
+  if privExists
+    then pure $ Left $
+      "Not overwriting existing Private Key at: " <> toS file
+    else writePrivKey_ file privKey
+
+-- | Writes a private key to a given file in PEM format
+-- Note: Overwrites existing file
+writePrivKey_ :: FilePath -> Key.PrivateKey -> IO (Either Text ())
+writePrivKey_ file privKey = do
+  eRes <- Utils.safeWrite file $ Key.exportPriv privKey
+  case eRes of
+    Left err -> pure $ Left err -- V Set chmod 0400
+    Right _  -> Right <$> setFileMode file ownerReadMode
+
+--------------------------------------------------------------------------------
+
+-- | Write a PEM serialized Public Key to disk
+writePubKey :: FilePath -> Key.PubKey -> IO (Either Text ())
+writePubKey root = writePubKey' (pubKeyFile root)
+
+-- | Write a PEM serialized Public Key to disk
+-- Note: Does not overwrite existing file at the given filepath
+writePubKey' :: FilePath -> Key.PubKey -> IO (Either Text ())
+writePubKey' file pubKey = do
+  pubExists <- doesFileExist file
+  if pubExists
+    then pure $ Left $
+      "Not overwriting existing Public Key at: " <> toS file
+    else do
+      BS.writeFile file (Key.exportPub pubKey)
+      setFileMode file ownerReadMode -- Set chmod 0400
+      pure $ Right ()
+
+-- | Write a PEM serialized Public Key to disk
+-- Warning: Overwrites existing file at the given filepath
+writePubKey_ :: FilePath -> Key.PubKey -> IO (Either Text ())
+writePubKey_ file pubKey = do
+  eRes <- Utils.safeWrite file $ Key.exportPub pubKey
+  case eRes of
+    Left err -> pure $ Left err -- V Set chmod 0400
+    Right _  -> Right <$> setFileMode file ownerReadMode
+
+--------------------------------------------------------------------------------
+
+-- | Write JSON encoded account metadata to disk as file <root>/account
+-- Note: Will not overwrite existing file at the given filepath
 writeAccount :: FilePath -> Account -> IO (Either Text ())
 writeAccount root acct = do
   rootExists <- doesDirectoryExist root
   if rootExists then do
     let acctFile = accountFile root
-    acctExists <- doesFileExist acctFile
-    if acctExists then
-      pure (Left "Not overwriting existing account file.")
-    else do
-      BS.writeFile acctFile (toS (A.encodePretty acct))
-      setFileMode acctFile ownerReadMode
-      pure (Right ())
+    writeAccount' acctFile acct
   else
     pure (Left "Root directory does not exist.")
+
+-- | Write JSON encoded account metadata to disk at filepath
+-- Note: Will not overwrite existing file at the given filepath
+writeAccount' :: FilePath -> Account -> IO (Either Text ())
+writeAccount' file acct = do
+  acctExists <- doesFileExist file
+  if acctExists then
+    pure (Left "Not overwriting existing account file.")
+  else writeAccount_ file acct
+
+-- | Write JSON encoded account metadata to disk at filepath
+-- Warning: Will overwrite an existing file at the given filepath
+writeAccount_ :: FilePath -> Account -> IO (Either Text ())
+writeAccount_ file acct = do
+  eRes <- Utils.safeWrite file (toS (A.encodePretty acct))
+  case eRes of
+    Left err -> pure $ Left err
+    Right _  -> Right <$> setFileMode file ownerReadMode
 
 writeAccountData
   :: FilePath
@@ -308,10 +365,26 @@ writeAccountData root acc keys = do
     Left err -> pure $ Left err
     Right _  -> writeKeys root keys
 
-readAccountData
-  :: FilePath
-  -> IO (Either Text (Account, Key.ECDSAKeyPair))
-readAccountData root = loadAccount root
+-------------------------------------------------------------------------------
+
+readAccountsFromDir :: FilePath -> IO (Either Text [Account.Account])
+readAccountsFromDir dir = do
+  dirExists <- doesDirectoryExist dir
+  if not dirExists
+    then pure $ Left $
+      "No directory found at path '" <> toS dir <> "'."
+    else do
+      accDirs <- listDirectory dir
+      if (null accDirs)
+        then pure $ Left $
+          "No account directories found in directory '" <> show dir <> "'."
+        else fmap (Right . rights) $
+          forM accDirs $ \accDir -> do
+            eAcc <- readAccountData $ dir </> accDir
+            case eAcc of
+              Left err -> Log.warning $ show err
+              Right _  -> pure ()
+            pure $ fst <$> eAcc
 
 -------------------------------------------------------------------------------
 -- Serialization
@@ -319,7 +392,7 @@ readAccountData root = loadAccount root
 
 instance A.ToJSON Account where
   toJSON acc = A.object
-    [ "publicKey" .= decodeUtf8 (Key.unHexPub (Key.hexPub (publicKey acc)))
+    [ "publicKey" .= publicKey acc
     , "address"   .= address acc
     , "timezone"  .= decodeUtf8 (timezone acc)
     , "metadata"  .= metadata acc
@@ -327,17 +400,13 @@ instance A.ToJSON Account where
 
 instance A.FromJSON Account where
   parseJSON o@(A.Object v) = do
-    pubHex   <- v .: "publicKey"
+    pubKey   <- v .: "publicKey"
     addr     <- v .: "address"
     timezone <- v .: "timezone"
     metadata <- v .: "metadata"
 
-    publicKey <- case Key.dehexPub (encodeUtf8 pubHex) of
-      Left err -> fail $ "FromJSON Account.publicKey: " <> err
-      Right k -> pure k
-
     pure $ Account
-      publicKey
+      pubKey
       addr
       (encodeUtf8 timezone)
       (parseMetadata metadata)
@@ -400,11 +469,11 @@ decodeAccount = S.decode
 accountKeyVal :: Account -> (Address.Address, Account)
 accountKeyVal acct = (address acct, acct)
 
-loadAccountFile :: FilePath -> IO (Either [Char] Account)
-loadAccountFile fp = BS.readFile fp >>= return . A.eitherDecodeStrict
-
-saveAccount :: Account -> FilePath -> IO ()
-saveAccount acc fp = BSL.writeFile fp $ A.encodePretty acc
+readAccount :: FilePath -> IO (Either Text Account)
+readAccount fp =
+    pure . either Left decodeAccountJSON =<< Utils.safeRead fp
+  where
+    decodeAccountJSON = first toS . A.eitherDecodeStrict
 
 -------------------------------------------------------------------------------
 -- Postgres DB

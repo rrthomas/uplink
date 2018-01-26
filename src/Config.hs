@@ -33,7 +33,6 @@ module Config (
   readChain,
   handleChain,
   defaultChain,
-  verifyChain,
 
   -- ** Testing
   testChain,
@@ -41,23 +40,26 @@ module Config (
 ) where
 
 import Protolude
+
 import Data.List (elemIndex)
+import Data.Configurator.Types (KeyError(..))
+import qualified Data.Configurator.Types as C (Config)
+
 import Address (Address)
 import qualified Utils
 import qualified Network.Utils as NU
 import qualified Data.Configurator as C
-
-import Data.Configurator.Types (KeyError(..))
-import qualified Data.Configurator.Types as C (Config)
-import Network.URI (URIAuth, parseURI, uriScheme, uriPath, uriAuthority, uriUserInfo, uriPort, uriRegName)
-import System.FilePath
-import System.Directory
-import System.Posix.Files
+import qualified Consensus.Authority.Params as CAP
 
 import DB
 import Database.PostgreSQL.Simple
 
+import Network.URI (URIAuth, parseURI, uriScheme, uriPath, uriAuthority, uriUserInfo, uriPort, uriRegName)
 import Network.BSD (getHostName)
+
+import System.FilePath
+import System.Directory
+import System.Posix.Files
 
 -- | Node configuration, all arguments are required and handled by override and
 -- defaulting logic in `Main`.
@@ -99,12 +101,7 @@ data ChainSettings = ChainSettings
 
   , contractSize     :: Int        -- ^ Contract size
 
-  , poaValidators    :: [Text]     -- ^ Proof of authority validating nodes
-  , poaThreshold     :: Int        -- ^ Proof of authority threshold
-  , poaBlockPeriod   :: Int        -- ^ Proof of authority block period
-  , poaTransactions  :: Int        -- ^ Proof of authority block minimum transactions
-  , poaBlockLimit    :: Int        -- ^ Proof of authority consecutive gen block limit
-  , poaSignLimit     :: Int        -- ^ Proof of authority consecutive sign block limit
+  , genesisPoA       :: CAP.PoA    -- ^ PoA Cosensus Algorithm Parameters
 
   } deriving (Eq, Show)
 
@@ -124,7 +121,7 @@ userRelative :: FilePath -> IO FilePath
 userRelative p = getHomeDirectory >>= return . (</> p)
 
 macOsPath :: FilePath -> IO FilePath
-macOsPath cfg = userRelative $ "/Library/Application Support/" </> "uplink" </> cfg
+macOsPath cfg = userRelative $ "/Library/Application Support/" </> "uplink" </> "config" </> cfg
 
 fallbacks :: FilePath -> IO [FilePath]
 fallbacks cfg = sequence [
@@ -134,7 +131,7 @@ fallbacks cfg = sequence [
   , (</> "uplink" </> cfg) <$> getDefault "XDG_CONFIG_HOME"  -- '$HOME/.config/uplink/node.config'
 
   -- MacOS
-  , (</> cfg) <$> macOsPath cfg                 -- '$HOME/Library/Application Support/uplink/node.config'
+  , macOsPath cfg                               -- '$HOME/Library/Application Support/uplink/node.config'
   ]
 
 -- | Fallback paths for finding configuration files
@@ -300,6 +297,19 @@ readChain silent cfgFile = do
   threshold     <- C.require cfg "authority.threshold"
   minTxs        <- C.require cfg "authority.transactions"
 
+  let eValidPoAParams =
+        CAP.mkGenesisPoA
+          validators
+          blockPeriod
+          blockGenLimit
+          blockSignLimit
+          threshold
+          minTxs
+  poaParams <- case eValidPoAParams of
+    Left err -> die $ "PoA Consensus parameters invalid:\n  " <> show err
+    Right poa -> pure poa
+
+  -- Genesis block params
   timestamp     <- C.require cfg "genesis.timestamp"
   genesisHash   <- C.require cfg "genesis.hash"
 
@@ -313,14 +323,9 @@ readChain silent cfgFile = do
   , presetAccts       = False
   , genesisTimestamp  = timestamp
   , genesisHash       = genesisHash
+  , genesisPoA        = poaParams
   , consensus         = consensus
   , chainScoring      = ""
-  , poaValidators     = validators
-  , poaBlockPeriod    = blockPeriod
-  , poaTransactions   = minTxs
-  , poaBlockLimit     = blockGenLimit
-  , poaSignLimit      = blockSignLimit
-  , poaThreshold      = threshold
   , contractSize      = contractSize
   }
 
@@ -341,18 +346,6 @@ verifyConfig Config {..} = do
       ]
   {-doesDirectoryExist dbpath-}
   pure (and $ exists <> ports <> conds)
-
-
-verifyChain :: ChainSettings -> IO Bool
-verifyChain ChainSettings {..} = do
-  pure (and [
-      nonZero poaBlockPeriod
-    , nonZero poaTransactions
-    , nonZero poaBlockLimit
-    , nonZero poaSignLimit
-    , nonZero poaThreshold
-    , nonZero (length poaValidators)
-    ])
 
 portValid :: Int -> Bool
 portValid x = x > 1023 && x < 65535

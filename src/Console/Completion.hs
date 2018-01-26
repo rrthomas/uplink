@@ -18,7 +18,7 @@ import Console.Config
 import qualified NodeState
 
 defaultMatcher
-  :: (MonadState ConsoleCtx m, MonadIO m) => [(String.String, CompletionFunc m)]
+  :: (MonadState ConsoleState m, MonadIO m) => [(String.String, CompletionFunc m)]
 defaultMatcher =
   [ (toS discover   , noCompletion)
   , (toS listPeers  , noCompletion)
@@ -37,13 +37,11 @@ defaultMatcher =
   ]
 
 -- Completion
-comp :: MonadState ConsoleCtx m => WordCompleter m
-comp n = do
-  ns <- get
-  return $ filter (isPrefixOf n) $ fmap T.unpack reservedNames
+comp :: MonadState ConsoleState m => WordCompleter m
+comp n = return $ filter (isPrefixOf n) $ fmap T.unpack reservedNames
 
 
-noCompletion :: MonadState ConsoleCtx m => CompletionFunc m
+noCompletion :: MonadState ConsoleState m => CompletionFunc m
 noCompletion = listCompleter []
 
 {-peerCompletion :: MonadState ConsoleCtx m => WordCompleter m-}
@@ -52,5 +50,5 @@ noCompletion = listCompleter []
   {-{-peers <- runNodeT' NodeState.getPeers-}-}
   {-return $ filter (isPrefixOf n) ["0.0.0.0", "bootnode"]-}
 
-completion :: (MonadIO m, MonadState ConsoleCtx m) => CompleterStyle m
+completion :: (MonadIO m, MonadState ConsoleState m) => CompleterStyle m
 completion = Prefix (wordCompleter comp) defaultMatcher

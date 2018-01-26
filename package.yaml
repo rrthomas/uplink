@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.1
+version: 0.1.2
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
@@ -22,7 +22,7 @@ flags:
 
 dependencies:
   # Prelude
-  - base >= 4.7 && < 5
+  - base >= 4.7 && < 5.0
   - protolude >= 0.2
   - deepseq
   - directory
@@ -54,7 +54,7 @@ dependencies:
 
   # Data Structures
   - containers
-  - hashable ==1.2.4.0
+  - hashable
   - unordered-containers
   - fgl
   - dlist
@@ -71,6 +71,7 @@ dependencies:
   - text
   - bytestring
   - parsec
+  - attoparsec >= 0.13.1.0 
   - wl-pprint-text
   - base58-bytestring
   - base64-bytestring
@@ -114,6 +115,7 @@ dependencies:
   # Persistence
   - leveldb-haskell
   - postgresql-simple
+  - postgres-tmp
   - resource-pool
   - file-embed
 
@@ -217,6 +219,8 @@ library:
     # Database
     - DB
     - DB.Class
+    - DB.Query.Lang
+    - DB.Query.Parser
 
     - DB.LevelDB
 
@@ -227,7 +231,7 @@ library:
     - DB.PostgreSQL.Block
     - DB.PostgreSQL.Transaction
     - DB.PostgreSQL.InvalidTransaction
-    - DB.PostgreSQL.Tmp
+    - DB.PostgreSQL.Error
 
     - TxLog
     - XML
@@ -235,8 +239,12 @@ library:
     # Networking
     - RPC
     - NodeState
+    - Node.Files
+    - Node.Peer
+    
     - SafeString
     - SafeInteger
+
     - Network.Utils
     - Network.P2P
     - Network.P2P.Cmd
