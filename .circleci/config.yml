@@ -8,7 +8,8 @@ jobs:
   build:
     <<: *defaults
     docker:
-      - image: haskell:8.0.2
+      - image: haskell:8.2.1
+      - image: postgres:9.5.10-alpine
     steps:
       - checkout
       - attach_workspace:
@@ -23,12 +24,34 @@ jobs:
       - run:
           name: Install system deps
           command: |
+            echo "deb http://apt.postgresql.org/pub/repos/apt/ jessie-pgdg main" >> /etc/apt/sources.list.d/pgdg.list
             apt-get update
-            apt-get install -y libleveldb-dev leveldb-doc openssh-client expat libexpat1-dev libpq-dev postgresql postgresql-contrib
+            apt-get install -y wget sudo
+            wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+            apt-get update
+            apt-get install -y libleveldb-dev leveldb-doc openssh-client expat libexpat1-dev libpq-dev postgresql-9.5 xz-utils make
+      - run:
+          name: install dockerize
+          command: wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && tar -C /usr/local/bin -xzvf dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && rm dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+          environment:
+            DOCKERIZE_VERSION: v0.3.0
+      - run:
+          name: Wait for DB 
+          command: dockerize -wait tcp://localhost:5432 -timeout 1m
+      - run:
+          name: Setup PostgresDB
+          command: sudo -i -u postgres psql -h localhost -p 5432 -c "CREATE USER uplink_test_user WITH CREATEDB CREATEROLE SUPERUSER PASSWORD 'uplink_test_user';" 
       - run:
           name: Install haskell dependencies
           command: |
+             stack upgrade
+             mv /root/.local/bin/stack /usr/local/bin/stack
              stack install --no-docker --only-dependencies -j2 --system-ghc
+      - save_cache:
+          key: uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
+          paths:
+            - ./.stack-work/
+            - ~/.stack/
       - run:
           name: Build uplink
           command: |
@@ -37,11 +60,6 @@ jobs:
           name: Copy uplink binary to local dir
           command: |
             cp `which uplink` .
-      - save_cache:
-          key: uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
-          paths:
-            - ./.stack-work/
-            - ~/.stack/
       - persist_to_workspace:
           root: .
           paths:
