@@ -1,0 +1,9 @@
+enum empty { };
+
+-------------^
+
+transition initial -> terminal;
+
+"<stdin>" (line 1, column 14):
+unexpected "}"
+expecting non-empty comma seperated list

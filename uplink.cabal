@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 75cf723cc0449ad1f154e9027b234feca8b59c677ee6ffbd67d9cecaa993582d
+-- hash: 377cc978cfb721625bd344665c6fb02acef3e768f14b3838c32970ead4d66e7a
 
 name:           uplink
 version:        0.1.2
@@ -73,10 +73,12 @@ library
     , haskeline
     , hexpat >=0.20
     , hexpat-pickle >=0.6
+    , hostname-validate
     , hourglass
     , hslogger
     , http-client
     , http-types
+    , iproute
     , leveldb-haskell
     , lifted-base
     , memory
@@ -123,9 +125,9 @@ library
       Config
       Opts
       Account
-      Logging
       Utils
       Version
+      Repl
       Console
       Console.Config
       Console.Command
@@ -135,6 +137,7 @@ library
       Ledger
       Block
       Asset
+      Metadata
       Contract
       Bind
       Transaction
@@ -178,6 +181,8 @@ library
       Network.P2P.Consensus
       Network.P2P.Message
       Network.P2P.Service
+      Network.P2P.Simulate
+      Network.P2P.Logging
       Consensus
       Consensus.Authority
       Consensus.Authority.Params
@@ -186,8 +191,8 @@ library
       Validate
       Script
       Delta
+      Fixed
       Script.Init
-      Script.Fixed
       Script.Storage
       Script.Pretty
       Script.Graph
@@ -200,8 +205,9 @@ library
       Script.Compile
       Script.Typecheck
       Script.Analysis
+      Script.Duplicate
+      Script.Undefinedness
   other-modules:
-      Repl
       Paths_uplink
   default-language: Haskell2010
 
@@ -245,10 +251,12 @@ executable uplink
     , haskeline
     , hexpat >=0.20
     , hexpat-pickle >=0.6
+    , hostname-validate
     , hourglass
     , hslogger
     , http-client
     , http-types
+    , iproute
     , leveldb-haskell
     , lifted-base
     , memory
@@ -339,10 +347,12 @@ test-suite uplink-test
     , haskeline
     , hexpat >=0.20
     , hexpat-pickle >=0.6
+    , hostname-validate
     , hourglass
     , hslogger
     , http-client
     , http-types
+    , iproute
     , leveldb-haskell
     , lifted-base
     , memory
@@ -445,10 +455,12 @@ benchmark uplink-benchmarks
     , haskeline
     , hexpat >=0.20
     , hexpat-pickle >=0.6
+    , hostname-validate
     , hourglass
     , hslogger
     , http-client
     , http-types
+    , iproute
     , leveldb-haskell
     , lifted-base
     , memory

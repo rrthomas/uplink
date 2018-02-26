@@ -13,16 +13,20 @@ interfaces.
 module Network.P2P.Cmd (
   Cmd(..),
   CmdResult(..),
-  handleCmd,
+
+  tasksProc,
 
   TestCmd(..),
   handleTestCmd,
+
+  commTasksProc,
+  commTasksProc',
 
   newTransaction,
   nsendTransaction,
 ) where
 
-import Protolude hiding (put, get)
+import Protolude hiding (put, get, newChan)
 
 import Control.Monad (fail)
 import Control.Monad.Base
@@ -53,10 +57,10 @@ import qualified Utils
 import qualified Time
 import qualified Transaction
 import qualified Derivation
-import qualified Logging as Log
 import Network.Utils
 import Network.P2P.Controller
-import Network.P2P.Service
+import Network.P2P.Service (Service(..))
+import qualified Network.P2P.Logging as Log
 import qualified Network.P2P.Message as Message
 
 import Script.Eval as Eval
@@ -114,11 +118,51 @@ data CmdResult
   | Assets [Asset.Asset]
   | Contracts [Contract.Contract]
   | PeerList Peers
+  | CmdFail Text
   deriving (Show, Generic, Binary)-- XXX
 
 cmdSuccess :: CmdResult
 cmdSuccess = CmdResult "Success"
 
+-------------------------------------------------------------------------------
+-- P2P Tasks Proc
+-------------------------------------------------------------------------------
+
+-- | Process that receives commands from external processes like the RPC server
+-- and/or the Console process. These commands get evaluated and then a CmdResult
+-- is returned
+tasksProc
+  :: forall m. (MonadProcessBase m, DB.MonadReadWriteDB m)
+  => Service
+  -> NodeT m ()
+tasksProc service = do
+    controlP $ \runInBase ->
+      forever $ runInBase $
+        onConsoleMsg =<< expect
+  where
+    onConsoleMsg :: (Cmd, SendPort CmdResult) -> NodeT m ()
+    onConsoleMsg (cmd, sp) = do
+      Log.info $ "Recieved Cmd:\n\t" <> show cmd
+      res <- handleCmd service cmd
+      sendChan sp res
+
+
+-- | Issue a Cmd to the "tasks" process and wait for a CmdResult
+-- Note: This function is blocking and will wait forever for a response. Use
+-- `commCmdProc'` to specify a timeout for how long to wait for a response.
+commTasksProc :: MonadProcessBase m => Cmd -> m CmdResult
+commTasksProc cmd = do
+  (sp,rp) <- newChan
+  nsend (show Tasks) (cmd, sp)
+  receiveChan rp
+
+-- | Issue a Cmd to the "tasks" process and wait for a CmdResult
+-- Note: This function is blocking and will wait `timeout` ms for a response.
+commTasksProc' :: MonadProcessBase m => Int -> Cmd -> m (Maybe CmdResult)
+commTasksProc' timeout cmd = do
+  (sp,rp) <- newChan
+  nsend (show Tasks) (cmd, sp)
+  receiveChanTimeout timeout rp
 
 -------------------------------------------------------------------------------
 -- P2P Command handlers
@@ -169,17 +213,24 @@ handleCmd service cmd =
     (PingPeer host) -> do
       nodeId <- extractNodeId
       let msg = SafeString.fromBytes' (toS nodeId)
-      peer <- liftIO $ mkNodeId (toS host)
-      nsendPeer' service peer $ Message.Ping msg
+      eNodeId <- liftIO $ mkNodeId (toS host)
+      case eNodeId of
+        Left err     -> Log.warning err
+        Right nodeId -> nsendPeer' service nodeId $ Message.Ping msg
 
       return cmdSuccess
     ListPeers -> do
       peers <- NodeState.getPeers
       return $ PeerList peers
     (AddPeer host) -> do
-      peer <- liftIO $ mkNodeId (toS host)
-      liftP $ doDiscover peer
-      return cmdSuccess
+      eNodeId <- liftIO $ mkNodeId (toS host)
+      case eNodeId of
+        Left err     -> do
+          Log.warning err
+          return $ CmdFail err
+        Right nodeId -> do
+          liftP $ doDiscover nodeId
+          return cmdSuccess
 
 
 handleTestCmd
@@ -266,7 +317,7 @@ nsendTransaction service tx = do
   let message = Message.SendTx (Message.SendTransactionMsg tx)
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
-  nsendPeersAsync' service message
+  nsendPeers' service message
 
 nsendTransactionMany
   :: MonadProcessBase m

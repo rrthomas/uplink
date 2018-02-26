@@ -1,0 +1,4 @@
+In method init:
+expected expression at line 11:8
+Stack trace leading up to error:
+  - @initial:init to @terminal

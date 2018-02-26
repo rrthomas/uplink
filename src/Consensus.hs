@@ -21,8 +21,8 @@ module Consensus (
 
 import Protolude
 
-import Control.Monad.Base (liftBase, MonadBase)
-import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Distributed.Process.Lifted
+import Control.Distributed.Process.Lifted.Class
 import Control.Distributed.Process (Process)
 
 import Data.List (genericLength)
@@ -42,7 +42,7 @@ import qualified MemPool
 import qualified Time
 import qualified Validate
 import qualified NodeState
-import qualified Logging as Log
+import qualified Network.P2P.Logging as Log
 
 import Consensus.Authority.State (PoAState(..))
 import qualified Consensus.Authority as CA
@@ -68,7 +68,7 @@ validateBlock validateCtx newBlock = do
 -------------------------------------------------------------------------------
 
 signBlock
-  :: MonadReadDB m
+  :: (MonadProcessBase m, MonadReadDB m)
   => Block.Block
   -> NodeT m (Either CAP.PoAError Key.Signature)
 signBlock block = do
@@ -87,7 +87,7 @@ signBlock block = do
     if validBlock
       then
         NodeState.withApplyCtx $ \applyCtx -> do
-          eBlockSig <- liftBase $
+          eBlockSig <- liftP $ liftIO $
             CA.signBlock applyCtx poaState privKey worldState block
           case eBlockSig of
             Left err -> return $ Left err
@@ -99,15 +99,15 @@ signBlock block = do
         return $ Left $ CAP.PoAErrors errs
 
   where
-    -- If new block has not been accepted since 2*blockPeriod, reset previously
+    -- If new block has not been accepted since 3*blockPeriod, reset previously
     -- signed block index to allow blocks to be signed at the same height.
     -- * This circumvents certain situations that deadlock the PoA consensus.
-    maybeDecPrevSignedBlkIdx :: MonadBase IO m => Block -> PoAState -> NodeT m ()
+    maybeDecPrevSignedBlkIdx :: MonadProcessBase m => Block -> PoAState -> NodeT m ()
     maybeDecPrevSignedBlkIdx latestBlock poaState = do
-      now <- liftBase Time.now
+      now <- liftP $ liftIO Time.now
       let blockPeriod = CAP.blockPeriod $ Block.getConsensus latestBlock
       let latestBlockTs = Block.getTimestamp latestBlock
-      when (now - latestBlockTs >= blockPeriod * 2000000) $
+      when (now - latestBlockTs >= blockPeriod * 3) $
         NodeState.setPoAState $
           poaState { CAS.prevSignedBlockIdx =
             calcNewPrevXBlockIdx latestBlock poaState CAS.prevSignedBlockIdx
@@ -128,7 +128,7 @@ data BlockGenError
 -- 1) Tries to construct a new block (checks state to see if it can)
 -- 2) Sets the `prevGenBlockIdx` field to new generated block index
 generateBlock
-  :: (MonadBaseControl IO m, MonadWriteDB m)
+  :: (MonadProcessBase m, MonadWriteDB m)
   => NodeT m (Either BlockGenError Block.Block)
 generateBlock = do
 
@@ -158,14 +158,15 @@ generateBlock = do
     -- 2) latestBlock in NodeState has larger index
     --
     -- * This circumvents certain situations that deadlock the PoA consensus.
-    maybeResetPrevGenBlock :: MonadBase IO m => Block -> PoAState -> NodeT m ()
+    maybeResetPrevGenBlock :: MonadProcessBase m => Block -> PoAState -> NodeT m ()
     maybeResetPrevGenBlock latestBlock poaState = do
-        now <- liftBase Time.now
+        now <- liftP $ liftIO Time.now
         mCurrGenBlock <- CAS.prevGenBlock <$> NodeState.getPoAState
         case mCurrGenBlock of
           Nothing -> pure ()
           Just currGenBlock ->
-            when (pastTwoBlockPeriods now || newerLatestBlock currGenBlock) $
+            when (pastTwoBlockPeriods now || newerLatestBlock currGenBlock) $ do
+              Log.warning "Decrementing prevGenBlockIdx because of potential deadlock..."
               NodeState.modifyPoAState_ CAS.resetPrevGenBlock
       where
         blockPeriod = CAP.blockPeriod $ Block.getConsensus latestBlock
@@ -179,7 +180,7 @@ generateBlock = do
 
 -- | Attempts to construct a new block given the current NodeState
 makeBlock
-  :: (MonadBaseControl IO m, MonadWriteDB m)
+  :: (MonadProcessBase m, MonadWriteDB m)
   => Block
   -> NodeT m (Either BlockGenError Block.Block)
 makeBlock prevBlock = do
@@ -208,7 +209,7 @@ makeBlock prevBlock = do
 
         -- Make block if enough transactions
         if length validTxs > 0
-          then fmap Right $ liftBase $
+          then fmap Right $ liftP $ liftIO $
             Block.newBlock addr prevBlockHash validTxs index privKey poa
           else pure $ Left NoTransactionsInMemPool
   where
@@ -240,7 +241,7 @@ makeBlock prevBlock = do
 -- 6) Set "latestBlock" field of NodeState to new block
 -- 7) Returns True if block was accepted, False otherwise
 acceptBlock
-  :: (MonadBaseControl IO m , MonadReadWriteDB m)
+  :: (MonadProcessBase m , MonadReadWriteDB m)
   => Block.Block
   -> NodeT m Bool
 acceptBlock block = do
@@ -257,7 +258,7 @@ acceptBlock block = do
         Block.InvalidMedianTimestamp $ toS err
       Right mts -> do
         prevBlock <- NodeState.getLastBlock
-        liftBase $ Block.validateBlock mts prevBlock block
+        liftP $ liftIO $ Block.validateBlock mts prevBlock block
 
   case validBlock of
     Left err -> do
@@ -275,7 +276,7 @@ acceptBlock block = do
           Log.info "Verifying and Validating block before acceptance..."
           NodeState.withApplyCtx $ \applyCtx -> do
             eRes <- NodeState.withLedgerState $ \ledgerState ->
-              liftBase $ Validate.verifyAndValidateBlock applyCtx ledgerState block
+              liftP $ liftIO $ Validate.verifyAndValidateBlock applyCtx ledgerState block
             case eRes of
               Left err -> do
                 Log.warning $ show err
@@ -308,7 +309,7 @@ acceptBlock block = do
 
 -- | If the block signature is a valid signature of the previously generated
 -- block, add the signtature to the previously generated block (in node state).
-acceptBlockSig :: MonadBase IO m => Block.BlockSignature -> NodeT m (Maybe Block)
+acceptBlockSig :: MonadProcess m => Block.BlockSignature -> NodeT m (Maybe Block)
 acceptBlockSig blkSig@(Block.BlockSignature sig signerAddr) = do
     mCurrGenBlock <- prevGenBlock <$> NodeState.getPoAState
     case mCurrGenBlock of

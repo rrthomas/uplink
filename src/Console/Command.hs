@@ -40,6 +40,7 @@ import qualified Derivation
 import qualified Storage
 import qualified Address
 import qualified Asset
+import qualified Metadata
 import qualified Account
 import qualified Network.P2P.Cmd as Cmd
 import qualified Validate
@@ -104,6 +105,7 @@ handleConsoleCmd cmdProc cmd = do
     (Cmd.Assets assets) -> putText $ toS $ encodePretty assets
     (Cmd.Contracts contracts) -> putText $ toS $ encodePretty contracts
     (Cmd.PeerList peers) -> putText $ show peers
+    (Cmd.CmdFail t) -> liftIO $ Utils.putRed t
 
 getCmd :: ConsoleCmd -> ConsoleM (Maybe Cmd.Cmd)
 getCmd c = do
@@ -135,7 +137,7 @@ getCmd c = do
           let hdr = Transaction.TxAccount Transaction.CreateAccount {
             pubKey = Key.exportPub $ fst priv
           , timezone = encodeUtf8 tz
-          , metadata = Account.Metadata $
+          , metadata = Metadata.Metadata $
                          Map.singleton "name" $ encodeUtf8 name
           }
 
@@ -155,6 +157,7 @@ getCmd c = do
               , supply    = fromInteger supply
               , reference = mref
               , assetType = Asset.Discrete
+              , metadata = mempty -- XXX make metadata prompt
               }
       getCmd (TransactionRaw hdr $ Just hdrTs)
 

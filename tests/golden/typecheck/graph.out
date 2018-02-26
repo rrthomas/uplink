@@ -1,5 +1,6 @@
-[ ( Name { unName = "entry" } , Sig [] TVoid )
-, ( Name { unName = "setX" } , Sig [] TVoid )
+[ ( Name { unName = "setX" } , Sig [] TVoid )
+, ( Name { unName = "setX2" } , Sig [] TVoid )
 , ( Name { unName = "setY" } , Sig [] TVoid )
-, ( Name { unName = "getZ" } , Sig [] TInt )
+, ( Name { unName = "setY2" } , Sig [] TVoid )
+, ( Name { unName = "setZ" } , Sig [] TAny )
 ]

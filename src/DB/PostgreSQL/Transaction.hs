@@ -89,7 +89,7 @@ transactionToRowType blockIdx tx@Transaction{..} =
             TX.Call _ _ _         -> "Call"
         TxAsset txa    ->
           case txa of
-            TX.CreateAsset _ _ _ _ _ -> "CreateAsset"
+            TX.CreateAsset _ _ _ _ _ _ -> "CreateAsset"
             TX.Transfer _ _ _        -> "Transfer"
             TX.Circulate _ _         -> "Circulate"
             TX.Bind _ _ _            -> "Bind"

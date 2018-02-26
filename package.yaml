@@ -71,7 +71,7 @@ dependencies:
   - text
   - bytestring
   - parsec
-  - attoparsec >= 0.13.1.0 
+  - attoparsec >= 0.13.1.0
   - wl-pprint-text
   - base58-bytestring
   - base64-bytestring
@@ -83,7 +83,7 @@ dependencies:
   - x509
   - asn1-types
   - asn1-encoding
-  - merkle-tree 
+  - merkle-tree
   - pedersen-commitment
 
   # Number Theory
@@ -98,8 +98,10 @@ dependencies:
   - pretty-hex
   - hexpat >= 0.20
   - hexpat-pickle >= 0.6
- 
+
   # Networking
+  - iproute
+  - hostname-validate
   - http-types
   - http-client
   - network-transport
@@ -128,7 +130,7 @@ dependencies:
   - lifted-base
 
   # Testing
-  - random 
+  - random
 
 library:
   source-dirs: src
@@ -168,22 +170,22 @@ library:
     - NoImplicitPrelude
     - FlexibleInstances
     - FlexibleContexts
-    - Rank2Types 
+    - Rank2Types
 
   when:
     - condition: os(linux) && flag(static)
       ghc-options: -static -optl-static
-
+  #ld-options: -static
   exposed-modules:
     # Application
     - Driver
     - Config
     - Opts
-    - Account 
-    - Logging
+    - Account
     - Utils
     - Version
-    
+    - Repl
+
     # Console
     - Console
     - Console.Config
@@ -196,6 +198,7 @@ library:
     - Ledger
     - Block
     - Asset
+    - Metadata
     - Contract
     - Bind
     - Transaction
@@ -241,7 +244,7 @@ library:
     - NodeState
     - Node.Files
     - Node.Peer
-    
+
     - SafeString
     - SafeInteger
 
@@ -252,6 +255,8 @@ library:
     - Network.P2P.Consensus
     - Network.P2P.Message
     - Network.P2P.Service 
+    - Network.P2P.Simulate
+    - Network.P2P.Logging
 
     # Consensus
     - Consensus
@@ -262,12 +267,12 @@ library:
 
     # Validation
     - Validate
-       
+
     # Contracts
     - Script
     - Delta
+    - Fixed
     - Script.Init
-    - Script.Fixed
     - Script.Storage
     - Script.Pretty
     - Script.Graph
@@ -280,6 +285,8 @@ library:
     - Script.Compile
     - Script.Typecheck
     - Script.Analysis
+    - Script.Duplicate
+    - Script.Undefinedness
 
 executables:
   uplink:
@@ -294,7 +301,8 @@ executables:
       - condition: os(linux) && flag(static)
         ghc-options: -static -optl-static
       - condition: flag(optimized)
-        ghc-options: -threaded -O2 -rtsopts 
+        ghc-options: -threaded -O2 -rtsopts
+    #ld-options: -static
     dependencies:
       - uplink
       - protolude >= 0.2
@@ -322,5 +330,5 @@ benchmarks:
     source-dirs: bench
     main: Main.hs
     dependencies:
-    - uplink 
+    - uplink
     - criterion

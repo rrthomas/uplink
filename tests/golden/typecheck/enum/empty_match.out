@@ -1,0 +1,9 @@
+run(enum trivial arg) {
+  someInt = case(arg) { };
+------------------------^
+  terminate("Bye");
+}
+
+"<stdin>" (line 9, column 25):
+unexpected "}"
+expecting "`"

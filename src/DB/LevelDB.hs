@@ -76,7 +76,6 @@ import qualified Contract
 import qualified Key
 import qualified Storage
 import qualified Ledger
-import qualified Logging as Log
 
 import Control.Monad.Base
 import Control.Monad.Trans.Class
@@ -577,7 +576,6 @@ mkDeleteBatchOps dbs = do
     eWorld <- readWorld dbs
     case eWorld of
       Left err -> do
-        Log.critical (show err)
         panic (show err)
       Right world -> do
         -- construct BatchOp Del operations
@@ -622,7 +620,6 @@ setupDB dbpath = do
     db <- loadDBs dbpath
     integrity <- testDB dbpath
     if integrity then do
-      Log.info $ "Using existing database at: " <> toS dbpath
       lockDb dbpath
       pure (Right db)
     else pure $ Left $

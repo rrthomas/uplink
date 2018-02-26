@@ -1,5 +1,6 @@
 Script
-  { scriptDefs =
+  { scriptEnums = []
+  , scriptDefs =
       [ GlobalDef TFloat Name { unName = "x" } (LFloat 0.0)
       , GlobalDef
           (TFixed Prec3) Name { unName = "f" } (LFixed (Fixed3 (F3 1.234)))
@@ -7,7 +8,7 @@ Script
       , LocalDef TInt Name { unName = "y" } (LInt 7)
       , LocalDefNull TFloat Name { unName = "v" }
       , GlobalDef
-          TAsset
+          (TAsset (TFractional Prec5))
           Name { unName = "z" }
           (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
       , GlobalDef
@@ -21,18 +22,25 @@ Script
       , GlobalDefNull TDateTime Name { unName = "dt" }
       ]
   , scriptTransitions =
-      [ Arrow Initial (Step Label { unLabel = "setup" })
+      [ Arrow Initial (Step Label { unLabel = "setX" })
+      , Arrow
+          (Step Label { unLabel = "setX" })
+          (Step Label { unLabel = "update" })
+      , Arrow
+          (Step Label { unLabel = "update" })
+          (Step Label { unLabel = "setX" })
+      , Arrow
+          (Step Label { unLabel = "setX" })
+          (Step Label { unLabel = "setup" })
+      , Arrow
+          (Step Label { unLabel = "update" })
+          (Step Label { unLabel = "setup" })
       , Arrow
           (Step Label { unLabel = "setup" })
           (Step Label { unLabel = "confirmation" })
       , Arrow
           (Step Label { unLabel = "confirmation" })
           (Step Label { unLabel = "settlement" })
-      , Arrow Initial (Step Label { unLabel = "getX" })
-      , Arrow
-          (Step Label { unLabel = "setX" }) (Step Label { unLabel = "getX" })
-      , Arrow
-          (Step Label { unLabel = "getX" }) (Step Label { unLabel = "setX" })
       , Arrow (Step Label { unLabel = "settlement" }) Terminal
       , Arrow Initial (Step Label { unLabel = "circulated" })
       , Arrow (Step Label { unLabel = "circulated" }) Terminal
@@ -68,7 +76,34 @@ Script
           , methodBody =
               ECall
                 Name { unName = "transitionTo" }
-                [ ELit (LState Label { unLabel = "getX" }) ]
+                [ ELit (LState Label { unLabel = "setX" }) ]
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "setup" }
+          , methodName = Name { unName = "confirm" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "confirmation" }) ]
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "confirmation" }
+          , methodName = Name { unName = "settle" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "settlement" }) ]
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "settlement" }
+          , methodName = Name { unName = "finalize" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "terminal" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "setX" }
@@ -104,15 +139,31 @@ Script
                                       [ EVar Name { unName = "k" } ]
                                   ])
                                (EVar Name { unName = "x" })))
-                         (ESeq
-                            (ECall
-                               Name { unName = "transitionTo" }
-                               [ ELit (LState Label { unLabel = "getX" }) ])
-                            (ERet (EVar Name { unName = "x" }))))))
+                         (ECall
+                            Name { unName = "transitionTo" }
+                            [ ELit (LState Label { unLabel = "update" }) ]))))
           }
       , Method
-          { methodTag = Main Label { unLabel = "getX" }
-          , methodName = Name { unName = "getX" }
+          { methodTag = Main Label { unLabel = "setX" }
+          , methodName = Name { unName = "fixX" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "setup" }) ]
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "update" }
+          , methodName = Name { unName = "fixY" }
+          , methodArgs = []
+          , methodBody =
+              ECall
+                Name { unName = "transitionTo" }
+                [ ELit (LState Label { unLabel = "setup" }) ]
+          }
+      , Method
+          { methodTag = Main Label { unLabel = "update" }
+          , methodName = Name { unName = "update" }
           , methodArgs = []
           , methodBody =
               ESeq
@@ -154,11 +205,9 @@ Script
                                   (ECall
                                      Name { unName = "floatToFixed2" }
                                      [ EVar Name { unName = "x" } ])))
-                            (ESeq
-                               (ECall
-                                  Name { unName = "transitionTo" }
-                                  [ ELit (LState Label { unLabel = "setX" }) ])
-                               (ERet (EVar Name { unName = "q" })))))))
+                            (ECall
+                               Name { unName = "transitionTo" }
+                               [ ELit (LState Label { unLabel = "setX" }) ])))))
           }
       , Method
           { methodTag = Main Label { unLabel = "f" }
@@ -167,17 +216,14 @@ Script
               [ Arg { argType = TInt , argName = Name { unName = "j" } }
               , Arg { argType = TBool , argName = Name { unName = "k" } }
               ]
-          , methodBody =
-              EIf
-                (EVar Name { unName = "k" })
-                (ERet (EVar Name { unName = "j" }))
-                (ERet (ELit (LInt (-1))))
+          , methodBody = EIf (EVar Name { unName = "k" }) ENoOp ENoOp
           }
       , Method
           { methodTag = Main Label { unLabel = "g" }
           , methodName = Name { unName = "g" }
           , methodArgs =
-              [ Arg { argType = TAsset , argName = Name { unName = "f" } }
+              [ Arg
+                  { argType = TAsset TDiscrete , argName = Name { unName = "f" } }
               , Arg { argType = TAccount , argName = Name { unName = "t" } }
               ]
           , methodBody =
@@ -198,14 +244,18 @@ Script
                       , ELit (LInt 20)
                       , EVar Name { unName = "t" }
                       ]))
-                (ERet (ELit LVoid))
+                ENoOp
           }
       , Method
           { methodTag = Main Label { unLabel = "initial" }
           , methodName = Name { unName = "circulate" }
           , methodArgs =
-              [ Arg { argType = TAsset , argName = Name { unName = "a" } }
-              , Arg { argType = TInt , argName = Name { unName = "amount" } }
+              [ Arg
+                  { argType = TAsset (TFractional Prec2)
+                  , argName = Name { unName = "a" }
+                  }
+              , Arg
+                  { argType = TFixed Prec2 , argName = Name { unName = "amount" } }
               ]
           , methodBody =
               ESeq
@@ -220,10 +270,11 @@ Script
           { methodTag = Main Label { unLabel = "circulated" }
           , methodName = Name { unName = "transfer" }
           , methodArgs =
-              [ Arg { argType = TAsset , argName = Name { unName = "a" } }
+              [ Arg
+                  { argType = TAsset TBinary , argName = Name { unName = "a" } }
               , Arg { argType = TAccount , argName = Name { unName = "from" } }
               , Arg { argType = TAccount , argName = Name { unName = "to" } }
-              , Arg { argType = TInt , argName = Name { unName = "amount" } }
+              , Arg { argType = TBool , argName = Name { unName = "amount" } }
               ]
           , methodBody =
               ESeq

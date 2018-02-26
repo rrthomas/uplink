@@ -161,7 +161,7 @@ ignoreModRows = second (const ())
 
 -- | Load the Uplink schema at compile time using TH
 uplinkSchema :: IsString a => a
-uplinkSchema =  $(embedStringFile "postgres/uplink.sql")
+uplinkSchema =  $(makeRelativeToProject "postgres/uplink.sql" >>= embedStringFile)
 
 -- | Create an uplink database, execute the uplink schema, and return the
 -- connection pool to the uplink database for futher use. The user of

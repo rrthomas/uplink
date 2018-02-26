@@ -12,7 +12,8 @@ module Network.P2P.Message (
   SyncHeadMsg(..),
   SendTransactionMsg(..),
   MsgType(..),
-  handleMessage,
+
+  messagingProc,
 
   TestMessage(..),
   ServiceRestartMsg(..),
@@ -44,10 +45,10 @@ import Protolude hiding (get,put,catch)
 import Control.Monad.Base (liftBase)
 
 import Control.Exception.Lifted (catch)
-import Control.Distributed.Process.Lifted.Class (MonadProcessBase, liftP)
-import Control.Distributed.Process hiding (Message, catch, handleMessage)
+import Control.Distributed.Process.Lifted.Class (MonadProcessBase, liftP, controlP)
+import Control.Distributed.Process.Lifted hiding (Message, catch, handleMessage)
 
-import Data.Serialize as S
+import Data.Serialize as S hiding (expect)
 import qualified Data.Binary as B
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -56,6 +57,7 @@ import Data.Text.Encoding.Error (lenientDecode)
 import Key (PubKey)
 import Block (Block)
 import Transaction (Transaction)
+import qualified Network.P2P.Logging as Log
 import Network.P2P.Service
 import Network.P2P.Controller
 import Network.Utils (mkNodeId, extractNodeId)
@@ -69,7 +71,6 @@ import qualified Validate
 import qualified Consensus
 import qualified NodeState
 import qualified Transaction
-import qualified Logging as Log
 
 import SafeString
 
@@ -206,8 +207,22 @@ data MsgType
   deriving (Eq, Show, Generic, Serialize)
 
 -------------------------------------------------------------------------------
--- Message Handling
+-- P2P Messaging Process
 -------------------------------------------------------------------------------
+
+-- | Message handling service
+-- Expects a bytestring because the canonical serialization library used in this
+-- software is Data.Serialize, whereas in order to use cloud haskell's `match`
+-- function to receive typed values, a Data.Binary instance must be written.
+messagingProc
+  :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
+  => Service
+  -> NodeT m ()
+messagingProc service = do
+  NodeEnv nodeConfig nodeState <- ask
+  controlP $ \runInBase ->
+    forever $ runInBase $
+      handleMessage service =<< expect
 
 -- | Handle a message datastream, parsingg into the appropriate wire protocol
 -- message and then dispatching to Node logic to write the entity to world state.
@@ -227,16 +242,23 @@ handleMessage replyService msg =
       case msg of
 
         Ping sender -> do
-          nodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
-          Log.info $ "Got a ping from " <> show sender
-
-          myNodeId <- liftP $ toS <$> extractNodeId
-          let response = Pong (SafeString.fromBytes' myNodeId)
-          liftP $ nsendPeer' replyService nodeId response
+          mNodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
+          case mNodeId of
+            Left err     ->
+              Log.warning $ "Received invalid hostname ping: " <> show err
+            Right nodeId -> do
+              Log.info $ "Got a ping from " <> show sender
+              myNodeId <- liftP $ toS <$> extractNodeId
+              let response = Pong (SafeString.fromBytes' myNodeId)
+              liftP $ nsendPeer' replyService nodeId response
 
         Pong sender -> do
-          nodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
-          Log.info $ "Got a pong from: " <> show nodeId
+          mNodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
+          case mNodeId of
+            Left err     ->
+              Log.warning $ "Received invalid hostname pong: " <> show err
+            Right nodeId ->
+              Log.info $ "Got a pong from: " <> show nodeId
 
         SendTx (SendTransactionMsg tx) -> do
           ledgerState <- NodeState.getLedger
@@ -266,19 +288,25 @@ handleMessage replyService msg =
           success <- Consensus.acceptBlock block
           when success $ do
             blkAtIdxMsg <- mkGetBlockAtIdxMsg (Block.index block + 1)
-            replyToNodeId <- liftIO $ mkNodeId $ toBytes sender
-            liftP $ nsendPeer' replyService replyToNodeId blkAtIdxMsg
+            mReplyToNodeId <- liftIO $ mkNodeId $ toBytes sender
+            case mReplyToNodeId of
+              Left err            -> Log.warning err
+              Right replyToNodeId ->
+                liftP $ nsendPeer' replyService replyToNodeId blkAtIdxMsg
 
         GetBlock gmsg@(GetBlockMsg idx sender) -> do
           eBlock <- lift $ DB.readBlock idx
           nodeId <- liftBase $ mkNodeId (toBytes sender)
           case eBlock of
-            Left err  -> Log.info $ "No block with index " <> show idx
+            Left err  -> Log.warning $ "No block with index " <> show idx
             Right blk -> do
               Log.info $ show gmsg
-              nodeId <- liftIO $ mkNodeId (toBytes sender)
-              blockMsg <- mkBlockMsg blk
-              liftP $ nsendPeer' replyService nodeId blockMsg
+              eNodeId <- liftIO $ mkNodeId (toBytes sender)
+              case eNodeId of
+                Left err -> Log.warning err
+                Right nodeId -> do
+                  blockMsg <- mkBlockMsg blk
+                  liftP $ nsendPeer' replyService nodeId blockMsg
 
         -- For Messages operating on a "test node"
         Test testMsg -> handleTestMessage replyService testMsg

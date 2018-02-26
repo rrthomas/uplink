@@ -3,10 +3,11 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Script.Fixed (
+module Fixed (
   PrecN(..),
   FixedN(..),
   mkFixed,
+  getFixedInteger,
 
   Fixed1(..),
   Fixed2(..),
@@ -39,7 +40,13 @@ data PrecN
   | Prec4
   | Prec5
   | Prec6
-  deriving (Eq, Ord, Enum, Show, Generic)
+  deriving (Eq, Ord, Enum, Bounded, Read, Show, Generic)
+
+instance ToJSON PrecN where
+  toJSON p = toJSON (fromEnum p + 1)
+
+instance FromJSON PrecN where
+  parseJSON = fmap (toEnum . (+1)) . parseJSON
 
 instance Serialize PrecN
 instance Hashable PrecN
@@ -133,6 +140,15 @@ mkFixed prec n =
     Prec4 -> Fixed4 $ F4 $ MkFixed n
     Prec5 -> Fixed5 $ F5 $ MkFixed n
     Prec6 -> Fixed6 $ F6 $ MkFixed n
+
+getFixedInteger :: FixedN -> Integer
+getFixedInteger = \case
+  Fixed1 (F1 (MkFixed n)) -> n
+  Fixed2 (F2 (MkFixed n)) -> n
+  Fixed3 (F3 (MkFixed n)) -> n
+  Fixed4 (F4 (MkFixed n)) -> n
+  Fixed5 (F5 (MkFixed n)) -> n
+  Fixed6 (F6 (MkFixed n)) -> n
 
 instance Hash.Hashable FixedN where
   toHash (Fixed1 (F1 (MkFixed n))) = Hash.toHash n

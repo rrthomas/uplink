@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="http://www.adjoint.io"><img src="https://www.adjoint.io/uplink.png"/></a>
+  <a href="http://www.adjoint.io"><img src="packages/uplink.png" width="250"/></a>
 </p>
 <h3 align="center">Community Edition</h3>
 
@@ -25,83 +25,124 @@ The community version of [Adjoint's](http://www.adjoint.io) software is released
 under an Apache License and is part of a larger suite of tools and languages
 offered commercially.
 
-Install
--------
-
-**Video Tutorial**
-
-1. [Installing Uplink](https://www.youtube.com/watch?v=N1I_jd89Lr4&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=1)
-2. [Setting up a Network](https://www.youtube.com/watch?v=k6RA8sLPRW0&index=2&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt)
-3. [Using the Uplink Console](https://www.youtube.com/watch?v=-e-S_NnXkP4&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=3)
-4. [Installing Uplink Explorer](https://www.youtube.com/watch?v=VeWkuNf83Kw&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt&index=4)
-5. [Importing Keys into Explorer](https://www.youtube.com/watch?v=5e9qpNu_ayU&index=5&list=PLssH0Xui89Ewqpo1GytkslfMhqFNN8jmt)
-
-**Install Directions**
-
-Install the ledger either through Docker or your system package manager.
-
-* [Docker](https://www.adjoint.io/pages/downloads.html#docker) (recommended)
-* [RedHat](https://www.adjoint.io/pages/downloads.html#redhat)
-* [Debian](https://www.adjoint.io/pages/downloads.html#debian)
-* [MacOS](https://www.adjoint.io/pages/downloads.html#mac)
-* [Arch](https://www.adjoint.io/pages/downloads.html#arch)
-
-To build using docker simply run:
-
-```bash
-$ docker run -it -p 8000:8000 --rm  uplinkdlt/uplink:latest
-```
-
-To build from source (not recommended) use:
-
-```bash
-$ git clone  git@github.com:adjoint-io/uplink.git
-$ cd uplink
-$ stack install --no-docker
-```
-
 Running a Node
 --------------
 
-To get started running a testnet download the testnet starter kit and unzip the
-folder locally:
+To run an Uplink node that has the ability to construct and sign blocks, you
+must supply a filepath to an existing private key located in the 
+`config/validators` directory. Accounts correspoding to these key pairs are 
+created on boot and added to the genesis world state, and the list of addresses
+defining the validator nodes is defined in `config/chain.config.local`.
+
+#### Without Docker  
 
 ```bash
-$ wget https://www.adjoint.io/release/config-1.0.zip
-$ unzip config-1.0.zip -d config
+$ stack install --no-docker
 ```
-
-This contains two files the node configuration and genesis block configuration
-used to configure a private network:
-
-* [node.config](config/node.config)
-* [chain.config](config/chain.config)
-
-To run an Uplink node that has the ability to construct and sign blocks, you
-must supply  an existing private key located in the `config/validators`
-directory. Accounts corresponding to these key pairs are created on boot and
-added to the genesis world state, and the list of addresses defining the
-validator nodes is defined in `config/chain.config.local`.
 
 To boot a validator node (needed to create & sign blocks): 
 
 ```bash
-$ uplink chain -p 8001 -d node1 -k config/validators/auth0/key -v
+$ uplink chain init -b "leveldb:///uplink1" -p 8001 -d node1 -k config/validators/auth0/key -v
 ```
 
-And run two non-validator nodes to start the consensus:
+And two non-validator nodes:
 
 ```bash
-$ uplink chain -p 8002 -d node2 -v 
-$ uplink chain -p 8003 -d node3 -v
+$ uplink chain init -b "leveldb:///uplink2" -p 8002 --rpc-port 8546 -d node2 -v
+$ uplink chain init -b "leveldb:///uplink3" -p 8003 --rpc-port 8547 -d node3 -v
+```
+
+When prompted whether we want to provide a private key, you can enter `n`.
+
+We can open up the console:
+
+```bash
+$ uplink console
+```
+
+Running the command `listPeers` in the Uplink console should give us a
+list containing the three peers we just started.
+
+#### With Docker
+
+The `run-container` script will compile and run a node using docker and 
+bind the P2P and RPC ports to the host. 
+
+```bash
+$ stack install
+```
+
+```bash
+$ ./run-container 
+Please supply three args: <db dir suffix> <p2pPort> <rpcPort>
+Examples: $ ./run-container 1 8001 8545
+          $ ./run-container 2 8002 8546
+```
+
+To boot a validator node (needed to create & sign blocks):
+
+```bash
+$ ./run-container 1 8001 8545 "-k config/validators/auth0/key" 
+```
+
+And two non-validator nodes:
+
+```bash
+$ ./run-container 2 8002 8546
+$ ./run-container 3 8003 8547
+```
+
+When prompted whether we want to provide a private key, you can enter `n`.
+
+We can open up the console:
+
+```bash
+$ uplink console --hostname 127.0.1.1
+```
+
+Running the command `listPeers` in the Uplink console should give us a
+list containing the three peers we just started.
+
+With optimizations:
+
+```bash
+$ stack build --flag uplink:optimized
+```
+
+If you follow either of these examples, booting 3 Uplink nodes (one validator
+and two non-validating nodes), then transactions issued to any of the nodes will
+propagate through the network and blocks will be generated by the validating
+node at intervals defined in the `blockPeriod` field of `config/chain.config`.
+
+Uplink Console
+--------------
+
+To interact with an Uplink node with a separate console process (instead of
+through the RPC), refer to the [documentation](https://www.adjoint.io/docs/console.html).
+
+Interactive Smart Contract (FCL) Shell
+--------------------------------------
+
+```bash
+$ uplink scripts 
+Available options:
+  -h,--help                Show this help text
+
+  Available commands:
+    compile                  Compile and typecheck a script.
+    repl                     Compile, typecheck a script, and load it into a REPL.
+    format                   Format a script
+    lint                     Lint a script.
+    graph                    Extract graph from a script.
+
+```
+
+```bash
+$ uplink scripts repl <fcl-file>
 ```
 
 Documentation
 -------------
 
 Extensive documentation can be found [here](https://www.adjoint.io/docs).
-
-License
--------
-
-Uplink is released under the Apache 2.0 License.

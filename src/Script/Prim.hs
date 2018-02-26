@@ -12,6 +12,7 @@ cryptographic primitives, network status, and ledger state.
 module Script.Prim (
   -- ** Data types
   PrimOp(..),
+  AssetPrimOp(..),
 
   -- ** Mappings
   arity,
@@ -20,7 +21,9 @@ module Script.Prim (
 ) where
 
 import Protolude
-import Script (Name, PrecN)
+import Control.Arrow ((&&&))
+import Fixed (PrecN)
+import Script (Name)
 import Data.List (lookup)
 
 data PrimOp
@@ -36,17 +39,12 @@ data PrimOp
   | AccountExists       -- ^ @accountExists(addr)@                            : Check if account exists in world state
   | AssetExists         -- ^ @assetExists(addr)@                              : Check if asset exists in world state
   | ContractExists      -- ^ @contractExists(addr)@                           : Check if contract exists in world state
-  | TransferTo          -- ^ @transferTo(asset,amount)@                       : Transfer n asset holdings to contract
-  | TransferFrom        -- ^ @transferFrom(asset,amount,acc)@                 : Transfer n asset holdings from contract to account
-  | CirculateSupply     -- ^ @circulate(asset,amount)@                        : Circulate n asset supply to issuer's holdings
-  | TransferHoldings    -- ^ @transferHoldings(from,asset,amount,to)@         : Transfer asset holdings from account to account
   | Terminate           -- ^ @terminate(msg)@                                 : Terminate contract execution
   | Now                 -- ^ @now()@                                          : Current date + time in UTC
   | Transition          -- ^ @transitionTo(msg)@                              : Transition to state msg
   | CurrentState        -- ^ @state()@                                        : Transition to state msg
   | TxHash              -- ^ @txHash()@                                       : Transaction hash
   | Bound               -- ^ @bound(addr,addr)@                               : Check binding status
-  | ContractValue       -- ^ @contractValue(addr,varName)@                    : Query a value in the contract's global storage
   | ContractValueExists -- ^ @contractValueExists(addr,varName)@              : Query a value's existence in a contract's global storage
   | ContractState       -- ^ @contractState(addr)@                            : Query the state of a smart contract
   | NovationInit        -- ^ @novationInit(int)@                              : Start novation side logic
@@ -68,7 +66,19 @@ data PrimOp
   | FloatToFixed4       -- ^ @floatToFixed4(float)@                           : Coerce a floating point number into a fixed point number
   | FloatToFixed5       -- ^ @floatToFixed5(float)@                           : Coerce a floating point number into a fixed point number
   | FloatToFixed6       -- ^ @floatToFixed6(float)@                           : Coerce a floating point number into a fixed point number
-  deriving (Eq, Show, Enum, Generic)
+  | ContractValue       -- ^ @contractValue(addr,varName)@                    : Query a value in the contract's global storage
+  | AssetPrimOp AssetPrimOp
+  deriving (Eq, Show, Generic)
+
+-- | These prim ops are "polymorphic" in the sense that their argument or return
+-- types vary based on the type of asset that is passed as an argument
+data AssetPrimOp
+  = HolderBalance       -- ^ @holderBalance(asset,account)@
+  | TransferTo          -- ^ @transferTo(asset,amount)@                       : Transfer n asset holdings to contract
+  | TransferFrom        -- ^ @transferFrom(asset,amount,acc)@                 : Transfer n asset holdings from contract to account
+  | CirculateSupply     -- ^ @circulate(asset,amount)@                        : Circulate n asset supply to issuer's holdings
+  | TransferHoldings    -- ^ @transferHoldings(from,asset,amount,to)@         : Transfer asset holdings from account to account
+  deriving (Eq, Show, Generic)
 
 {-# INLINE primName #-}
 primName :: PrimOp -> Name
@@ -85,10 +95,6 @@ primName = \case
   AccountExists       -> "accountExists"
   AssetExists         -> "assetExists"
   ContractExists      -> "contractExists"
-  TransferTo          -> "transferTo"
-  TransferFrom        -> "transferFrom"
-  CirculateSupply     -> "circulate"
-  TransferHoldings    -> "transferHoldings"
   Terminate           -> "terminate"
   Now                 -> "now"
   Transition          -> "transitionTo"
@@ -100,10 +106,10 @@ primName = \case
   ContractState       -> "contractState"
   NovationInit        -> "novationInit"
   NovationStop        -> "novationStop"
-  IsBusinessDayUK     -> "isBusinessDay"
-  NextBusinessDayUK   -> "nextBusinessDay"
-  IsBusinessDayNYSE   -> "isBusinessDay"
-  NextBusinessDayNYSE -> "nextBusinessDay"
+  IsBusinessDayUK     -> "isBusinessDayUK"
+  NextBusinessDayUK   -> "nextBusinessDayUK"
+  IsBusinessDayNYSE   -> "isBusinessDayNYSE"
+  NextBusinessDayNYSE -> "nextBusinessDayNYSE"
   Between             -> "between"
   Fixed1ToFloat       -> "fixed1ToFloat"
   Fixed2ToFloat       -> "fixed2ToFloat"
@@ -117,53 +123,69 @@ primName = \case
   FloatToFixed4       -> "floatToFixed4"
   FloatToFixed5       -> "floatToFixed5"
   FloatToFixed6       -> "floatToFixed6"
+  AssetPrimOp a       -> assetPrimName a
+
+assetPrimName :: AssetPrimOp -> Name
+assetPrimName = \case
+  TransferTo          -> "transferTo"
+  TransferFrom        -> "transferFrom"
+  CirculateSupply     -> "circulate"
+  TransferHoldings    -> "transferHoldings"
+  HolderBalance       -> "holderBalance"
 
 prims :: [(Name, PrimOp)]
-prims = [
-    ( primName Verify             , Verify )
-  , ( primName Sign               , Sign )
-  , ( primName Block              , Block )
-  , ( primName Deployer           , Deployer )
-  , ( primName Sender             , Sender )
-  , ( primName Created            , Created )
-  , ( primName Address            , Address )
-  , ( primName Validator          , Validator )
-  , ( primName Sha256             , Sha256 )
-  , ( primName AccountExists      , AccountExists )
-  , ( primName AssetExists        , AssetExists )
-  , ( primName ContractExists     , ContractExists )
-  , ( primName TransferTo         , TransferTo )
-  , ( primName TransferFrom       , TransferFrom )
-  , ( primName CirculateSupply    , CirculateSupply )
-  , ( primName TransferHoldings   , TransferHoldings )
-  , ( primName Terminate          , Terminate )
-  , ( primName Now                , Now )
-  , ( primName Transition         , Transition )
-  , ( primName CurrentState       , CurrentState )
-  , ( primName TxHash             , TxHash )
-  , ( primName Bound              , Bound )
-  , ( primName ContractValue      , ContractValue)
-  , ( primName ContractValueExists, ContractValueExists)
-  , ( primName ContractState      , ContractState)
-  , ( primName NovationInit       , NovationInit)
-  , ( primName NovationStop       , NovationStop)
-  , ( primName IsBusinessDayUK    , IsBusinessDayUK)
-  , ( primName NextBusinessDayUK  , NextBusinessDayUK)
-  , ( primName IsBusinessDayNYSE  , IsBusinessDayNYSE)
-  , ( primName NextBusinessDayNYSE, NextBusinessDayNYSE)
-  , ( primName Fixed1ToFloat      , Fixed1ToFloat)
-  , ( primName Fixed2ToFloat      , Fixed2ToFloat)
-  , ( primName Fixed3ToFloat      , Fixed3ToFloat)
-  , ( primName Fixed4ToFloat      , Fixed4ToFloat)
-  , ( primName Fixed5ToFloat      , Fixed5ToFloat)
-  , ( primName Fixed6ToFloat      , Fixed6ToFloat)
-  , ( primName FloatToFixed1      , FloatToFixed1)
-  , ( primName FloatToFixed2      , FloatToFixed2)
-  , ( primName FloatToFixed3      , FloatToFixed3)
-  , ( primName FloatToFixed4      , FloatToFixed4)
-  , ( primName FloatToFixed5      , FloatToFixed5)
-  , ( primName FloatToFixed6      , FloatToFixed6)
-  ]
+prims =
+  (map (primName &&& identity)
+  [ Verify
+  , Sign
+  , Block
+  , Deployer
+  , Sender
+  , Created
+  , Address
+  , Validator
+  , Sha256
+  , AccountExists
+  , AssetExists
+  , ContractExists
+  , Terminate
+  , Now
+  , Transition
+  , CurrentState
+  , TxHash
+  , Bound
+  , ContractValue
+  , ContractValueExists
+  , ContractState
+  , NovationInit
+  , NovationStop
+  , IsBusinessDayUK
+  , NextBusinessDayUK
+  , IsBusinessDayNYSE
+  , NextBusinessDayNYSE
+  , Fixed1ToFloat
+  , Fixed2ToFloat
+  , Fixed3ToFloat
+  , Fixed4ToFloat
+  , Fixed5ToFloat
+  , Fixed6ToFloat
+  , FloatToFixed1
+  , FloatToFixed2
+  , FloatToFixed3
+  , FloatToFixed4
+  , FloatToFixed5
+  , FloatToFixed6
+  ]) ++ map (second AssetPrimOp) assetPrims
+
+assetPrims :: [(Name, AssetPrimOp)]
+assetPrims =
+  map (assetPrimName &&& identity)
+    [ TransferTo
+    , TransferFrom
+    , CirculateSupply
+    , TransferHoldings
+    , HolderBalance
+    ]
 
 arity :: PrimOp -> Int
 arity = \case
@@ -179,10 +201,6 @@ arity = \case
   AccountExists       -> 1
   AssetExists         -> 1
   ContractExists      -> 1
-  TransferTo          -> 2
-  TransferFrom        -> 3
-  CirculateSupply     -> 2
-  TransferHoldings    -> 4
   Terminate           -> 1
   Now                 -> 0
   Transition          -> 1
@@ -211,6 +229,15 @@ arity = \case
   FloatToFixed4       -> 1
   FloatToFixed5       -> 1
   FloatToFixed6       -> 1
+  AssetPrimOp a       -> assetPrimArity a
+
+assetPrimArity :: AssetPrimOp -> Int
+assetPrimArity = \case
+  TransferTo       -> 2
+  TransferFrom     -> 3
+  CirculateSupply  -> 2
+  TransferHoldings -> 4
+  HolderBalance    -> 2
 
 lookupPrim :: Name -> Maybe PrimOp
 lookupPrim nm = lookup nm prims

@@ -1,0 +1,3 @@
+We have the following graph errors:
+Illegal transition declaration: transition from 'a' to initial state is not allowed.
+Cannot transition from state: 'a' to 'initial' in method 'goBack'.

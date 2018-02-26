@@ -7,14 +7,14 @@ int z = 3;
 bool t = True;
 bool f = True;
 
-asset a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+assetBin a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 account b = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 
 timedelta td = 1y1mo1d1h1m1s;
 datetime dt_future;
 datetime dt_past;
 
-transition initial -> setup;
+transition initial -> terminal;
 
 /* test basic bin ops on TCrypto/TFloat/TInt/TFixed/TDateTime/TDelta types */
 /* TODO: Write comments above each test describing the binop tested */
@@ -42,10 +42,8 @@ f () {
 
   if (t || f) {
     t = False;
-    return x;
   } else {
     f = True;
-    return y;
   };
 
   before (dt_future) {
@@ -66,4 +64,5 @@ f () {
     x = x * 3;
   };
 
+  terminate("bye");
 }

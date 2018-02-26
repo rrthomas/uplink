@@ -1,31 +1,17 @@
 global sig signature;
-global bool isSet = False;
 
-transition initial -> get;
-transition put -> get;
-transition get -> terminal;
+transition initial -> set;
+transition set -> terminal;
 
 @initial
 put(msg x) {
-  if ( !isSet ) {
-      isSet = True;
-      signature = sign(x);
-      transitionTo(:get);
-  } else { 
-    return void;
+  if (sender() == deployer()) {
+    signature = sign(x);
+    transitionTo(:set);
   };
 }
 
-@get
-isSigAvail() {
-  return isSet;
-}
-
-@get
-get() {
-  if (isSet) {
-    return signature;
-  } else {
-    terminate("This is the end.");
-  };
+@set
+end() {
+  terminate("This is the end.");
 }

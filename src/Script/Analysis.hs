@@ -1,273 +1,416 @@
 {-|
 
-Script graph analysis passes.
+Script graph analysis passes. Checks for the following:
+
+ * Validity of transitions: do we transitionTo a state in accordance
+   to a transition declared earlier?
+
+ * Completeness of transitions: do we transitionTo all states we have
+   declarations for?
+
+ * Reachability of the terminal state from any state.
+
+ * Reachability of any state from the initial state.
 
 -}
 
 {-# LANGUAGE Strict #-}
 
 module Script.Analysis (
-  -- ** Branch analysis
-  GraphTransitions,
-  branches,
-  subbranches,
-  checkGraph,
-
-  -- ** FGL
-  CFG,
-  makeGraph,
-  dominators,
-  choices,
-
-  -- ** Transitions
-  transitions,
-  transitionLabels,
-
-  -- ** Definition
-  definitions,
-
-  -- ** Error reporting
-  GraphError(..),
-  prettyError,
-
-  -- ** Testing
-  graphviz,
-  testVis,
-) where
+  -- * Run all graph analyses and report on errors
+  checkGraph
+  -- * Retrieve graph structure info from scripts
+  , actualTransitions
+  , validTransitions
+  , branches
+  , choices
+  , makeGraph
+  -- * Graph analyses
+  , completenessViolations
+  , soundnessViolations
+  , reachability
+  -- * Visualise the graph analyses' results
+  , graphviz
+  , testVis
+  ) where
 
 import Protolude
-import Unsafe
 
 import Script
-import Script.Prim
-import Script.Graph
 import Script.Pretty hiding ((<>))
+import qualified Script.Graph as ScrGraph
+import qualified Script.Prim as Prim
 
-import qualified Data.Map as Map
-import qualified Data.Set as Set
+import Data.Bifunctor (bimap)
+import qualified Data.Graph.Inductive as FGL
 import qualified Data.List as List
+import qualified Data.Tuple as Tuple
+import qualified Data.Text as Text
+import qualified Data.Either as Either
 
-import System.Process (callCommand)
-
-import qualified Data.Graph.Inductive as Graph
-import qualified Data.Graph.Inductive.Query.ArtPoint as Graph
-import qualified Data.Graph.Inductive.Query.Dominators as Graph
-
--------------------------------------------------------------------------------
--- Branch Analysis
--------------------------------------------------------------------------------
-
-branchesMethod :: Method -> [Label]
-branchesMethod = fmap toLabel . concatMap go . unseq . methodBody
-  where
-    go :: LExpr -> [LLit]
-    go (Located l (ECall prim args))
-      | prim == (primName Transition) = argLits (fmap unLoc args)
-      | prim == (primName Terminate) = [LState "terminal" `at` l]
-      | otherwise = []
-    go _ = []
-
-    -- Safe only if run on typechecked programs.
-    toLabel :: LLit -> Label
-    toLabel (Located l (LState label)) = label
-    toLabel _ = panic "Malformed program."
-
--- | Extract the possible branch statements in the AST. Only valid for
--- type-safe programs.
-branches :: Script -> [ (Name, Label, [Label]) ]
-branches (Script defs trans methods) =
-  [(methodName method, unGLabel (methodTag method), branchesMethod method)
-    | method <- methods, isMainGraph (methodTag method)]
-
-subbranches :: Script -> [ (Name, Label, [Label]) ]
-subbranches (Script defs trans methods) =
-  [(methodName method, unGLabel (methodTag method), branchesMethod method)
-    | method <- methods, isSubGraph (methodTag method)]
-
-unGLabel :: GraphLabel -> Label
-unGLabel (Main x) = x
-unGLabel (Subg x) = x
-
-isMainGraph :: GraphLabel -> Bool
-isMainGraph (Main x) = True
-isMainGraph _ = False
-
-isSubGraph :: GraphLabel -> Bool
-isSubGraph = not . isMainGraph
+import qualified System.Process as Process
 
 -------------------------------------------------------------------------------
--- Error Reporting
+-- Run the analyses and report on the errors
 -------------------------------------------------------------------------------
 
+-- | Types of errors that may emerge from the graph checks.
 data GraphError
-  = CannotTransition Label Label
-  | Unreachable Label
+  = MissingTransition Label Label
+  | IllegalTransition Name Label Label
+  | TerminalUnreachable Label
+  | UnreachableFromInitial Label
+  | TransitionToInitial Label
+  | TransitionFromTerminal Label
   | NoEntry
   deriving (Eq, Ord, Show)
 
+instance Pretty [GraphError] where
+  ppr [] = "No graph errors"
+  ppr errs@(_:_) = vcat ("We have the following graph errors:":map ppr errs)
+
 instance Pretty GraphError where
   ppr = \case
-    CannotTransition from to -> "Cannot transition from state: " <> squotes (ppr from) <> " to " <> squotes (ppr to)
-    Unreachable label        -> "Cannot reach state "  <> squotes (ppr label) <> " in graph."
-    NoEntry                  -> "Cannot enter graph state, no valid entry points from 'initial'"
+    MissingTransition from to
+      -> "Missing transition from state: "
+         <> squotes (ppr from)
+         <> " to "
+         <> squotes (ppr to)
+    IllegalTransition methodName from to
+      -> "Cannot transition from state: "
+         <> squotes (ppr from)
+         <> " to "
+         <> squotes (ppr to)
+         <> " in method "
+         <> squotes (ppr methodName)
+         <> "."
+    TerminalUnreachable label
+      -> "Cannot reach terminal state from "
+         <> squotes (ppr label)
+         <> "."
+    UnreachableFromInitial label
+      -> "Cannot reach state "
+         <> squotes (ppr label)
+         <> " from initial state in graph."
+    TransitionToInitial from
+      -> "Illegal transition declaration: transition from "
+         <> squotes (ppr from)
+         <> " to initial state is not allowed."
+    TransitionFromTerminal to
+      -> "Illegal transition declaration: transition from terminal state to: "
+         <> squotes (ppr to)
+         <> " is not allowed."
+    NoEntry
+      -> "Cannot enter graph state, no valid entry points from 'initial'"
 
-prettyError :: GraphError -> Text
-prettyError = Script.Pretty.prettyPrint
-
--------------------------------------------------------------------------------
--- Transition Analysis
--------------------------------------------------------------------------------
-
-type GraphTransitions = [(Label, Label)]
-type GraphBranches = [(Name, Label, [Label])]
-
-isAllowed :: [Transition] -> Label -> Label -> Bool
-isAllowed xs from to = and (fmap (valid from to) xs)
-
-valid :: Label -> Label -> Transition -> Bool
-valid from' to' (Arrow (Step from) (Step to)) = (from == from') && (to == to')
-valid _ _ _ = False
-
-toLabel :: Transition -> [(Label, Label)]
-toLabel = \case
-  Arrow (Step from) (Step to) -> [(from, to)]
-  Arrow Initial (Step a)      -> [(initialLabel, a)]
-  Arrow (Step a) Terminal     -> [(a, terminalLabel)]
-  Arrow Initial Terminal      -> [(initialLabel, terminalLabel)]
-  _                           -> []
-
-transitions :: Script -> [(Label, Label)]
-transitions script = concatMap toLabel (scriptTransitions script)
-
-isConsistent
-  :: [(Label, Label)]            -- ^ Transitions
-  -> GraphBranches               -- ^ Branches
-  -> Either GraphError GraphTransitions
-isConsistent xs ys =
-  if and [Set.member x allowed | x <- branches]
-    then Right xs
-    else Left (inconsistent [x | x <- branches, not (Set.member x allowed) ])
+-- | Perform all analyses on the state graph and report all errors
+-- found. If we do not encounter anything, we return the graph
+checkGraph :: Script -> Either [GraphError] GraphTransitions
+checkGraph scr = case allErrors of
+                   [] -> Right valid
+                   _ -> Left allErrors
   where
-    branches = [(from, to) | (a,from,tos) <- ys, to <- tos]
-    allowed  = Set.fromList xs
-    entry    = entryPoints
+    allErrors
+      = concat
+        [ illegal
+        , unsound
+        , incomplete
+        , notReachable
+        , notReaching
+        , noEntry
+        ]
 
--- XXX: show all violations instead of just the first
-inconsistent :: [(Label, Label)] -> GraphError
-inconsistent ((from,to):xs) = CannotTransition from to
-inconsistent [] = panic "Impossible"
+    actual = actualTransitions scr
+    valid = Either.rights $ validTransitions scr
 
--- | Check for inconsistent transition states.
-checkGraph :: Script -> Either GraphError GraphTransitions
-checkGraph script
-  | not (hasEntry script) = Left NoEntry
-  | otherwise             =  do
-      isConsistent (transitions script) (branches script)
-      isConsistent (transitions script) (subbranches script)
+    illegal = Either.lefts $ validTransitions scr
+
+    unsound
+      = map (\(methodName, src, dest)
+               -> IllegalTransition methodName src dest)
+        $ soundnessViolations actual valid
+
+    incomplete
+      = map (uncurry MissingTransition)
+        $ completenessViolations actual valid
+
+    (notReachable, notReaching)
+      = bimap (map UnreachableFromInitial)
+              (map TerminalUnreachable)
+        $ reachability scr
+
+    noEntry
+      = if hasEntry scr
+        then []
+        else [NoEntry]
+
+-------------------------------------------------------------------------------
+-- Implementation of the graph checks
+-------------------------------------------------------------------------------
+
+type GraphTransition = (Label, Label)
+type GraphTransitions = [GraphTransition]
 
 -- | Check for existence of entry points to the graph.
 hasEntry :: Script -> Bool
-hasEntry script = length (entryPoints script) > 0
+hasEntry = any (\(from, _) -> from == ScrGraph.initialLabel)
+           . Either.rights
+           . validTransitions
 
--- | Get the entry points to the graph, transitions from
--- 'initial' lablel.
-entryPoints :: Script -> [(Label, Label)]
-entryPoints script = [(from, to) | (from, to) <- (transitions script), from == initialLabel]
-
--- | Check for unreachable transition states.
-checkUnreachable :: Script -> Either GraphError GraphTransitions
-checkUnreachable script = Right (transitions script)
+-- | Fish out the transition declarations from the script.
+validTransitions :: Script -> [Either GraphError GraphTransition]
+validTransitions = map toLabel . scriptTransitions
   where
-    reached = Set.fromList (transitionLabels script)
+    toLabel :: Transition -> Either GraphError GraphTransition
+    toLabel = \case
+              Arrow (Step from) (Step to) -> Right (from, to)
+              Arrow Initial (Step a)      -> Right (ScrGraph.initialLabel, a)
+              Arrow (Step a) Terminal     -> Right (a, ScrGraph.terminalLabel)
+              Arrow Initial Terminal      -> Right ( ScrGraph.initialLabel
+                                                   , ScrGraph.terminalLabel
+                                                   )
+              Arrow (Step a) Initial      -> Left (TransitionToInitial a)
+              Arrow Terminal (Step a)     -> Left (TransitionFromTerminal a)
+              _                           -> panic "wut"
 
--------------------------------------------------------------------------------
--- Visualization
--------------------------------------------------------------------------------
-
--- XXX: very very inefficient and unsafe
-
-type CFG = Graph.Gr Label Int
-
--- | All nodes
-transitionLabels :: Script -> [Label]
-transitionLabels script = ordNub $ concatMap go (transitions script)
+-- | Fish out the actual transitions, as we get them from methods and
+-- their "transitionTo" statements, grouped by method name and source
+-- state.
+branches :: Script -> [ (Name, Label, [Label]) ]
+branches (Script _ defs trans methods)
+  = map extractBranch methods
   where
-    go (a,b) = [a,b]
+    extractBranch :: Method -> (Name, Label, [Label])
+    extractBranch method = ( methodName method
+                           , unGLabel (methodTag method)
+                           , branchesMethod method
+                           )
 
--- | Construct the fgl interface for the nodes/edges of the specified
--- transitions and branch points.
-makeGraph :: Script -> CFG
-makeGraph script = Graph.mkGraph nodes edges'
-  where
-    nodes = zip [1..] (transitionLabels script)
-    edges = [(from, to) | (a,from,tos) <- branches script, to <- tos] -- ++ entryPoints script
-
-    nodeMap = Map.fromList (fmap swap nodes)
-
-    edges' = [(nodeIx from, nodeIx to, i) | (i, (from, to)) <- zip [1..] edges]
+    branchesMethod :: Method -> [Label]
+    branchesMethod = fmap toLabel . concatMap go . unseq . methodBody
       where
-        nodeIx x = nodeMap Map.! x
+        go :: LExpr -> [LLit]
+        go (Located l (ECall prim args))
+          | prim == Prim.primName Prim.Transition = argLits (fmap unLoc args)
+          | prim == Prim.primName Prim.Terminate = [LState "terminal" `at` l]
+          | otherwise = []
+        go _ = []
 
-dominators :: CFG -> Int -> [(Graph.Node, [Graph.Node])]
-dominators = Graph.dom
+        -- Safe only if run on typechecked programs.
+        toLabel :: LLit -> Label
+        toLabel (Located l (LState label)) = label
+        toLabel _ = panic "Malformed program."
 
-choices :: CFG -> [Graph.Node]
-choices = Graph.ap
+    unGLabel :: GraphLabel -> Label
+    unGLabel (Main x) = x
+    unGLabel (Subg x) = x
 
--------------------------------------------------------------------------------
--- Defnition Analysis
--------------------------------------------------------------------------------
-
-definitionsMethod :: Method -> [Name]
-definitionsMethod = concatMap go . unseq . methodBody
+-- | Fish out the transitions implied by the methods. As such, we
+-- label each transition.
+actualTransitions :: Script -> [(Name, Label, Label)]
+actualTransitions = concatMap flattenBranch . branches
   where
-    go (Located l (EAssign n args)) = [n]
-    go _ = []
+    flattenBranch (n, src, dests) = map (\dest -> (n, src, dest)) dests
 
--- | Extract all assignment references inside of a block.
-definitions :: Script -> [ (Name, [Name]) ]
-definitions (Script defs trans methods) =
-  [(methodName method, definitionsMethod method) | method <- methods]
+-- | All actual transitions are valid transitions. As it stands
+-- currently, the type checker already checks for soundness
+-- violations. This means that for well-typed scripts, that the
+-- resulting list will be empty.
+soundnessViolations
+  :: [(Name, Label, Label)]
+  -> GraphTransitions
+  -> [(Name, Label, Label)]
+soundnessViolations actual valid
+  = filter (\(_,src,dst) -> (src,dst) `notElem` valid) actual
+
+-- | All valid transitions have at least one actual transition as
+-- their counterpart.
+completenessViolations
+  :: [(Name, Label, Label)]
+  -> GraphTransitions
+  -> GraphTransitions
+completenessViolations actual valid
+  = valid List.\\ map forgetName actual
+  where
+    forgetName (_,src,dst) = (src,dst)
+
+-- | Retrieve all graph nodes where there is more than one outgoing
+-- edge.
+choices :: CFG -> [FGL.Node]
+choices = FGL.ap
+
+type CFG = FGL.Gr Label ()
+
+-- | Create the graph from an FCL script that has passed the
+-- type-checker.
+makeGraph :: Script -> CFG
+makeGraph scr = FGL.mkGraph stateNodes stateEdges
+    where
+      valid = Either.rights $ validTransitions scr
+
+      stateGraph :: FGL.Gr Label ()
+      stateGraph = FGL.mkGraph stateNodes stateEdges
+
+      labels :: [Label]
+      labels = List.nub . concatMap (\(src,dst) -> [src, dst]) $ valid
+
+      stateNodes :: [FGL.LNode Label]
+      stateNodes = zip [1..] labels
+
+      stateEdges :: [FGL.LEdge ()]
+      stateEdges = map (\(src,dst) -> (getIx src, getIx dst, ())) valid
+          where
+            getIx :: Label -> Int
+            getIx lbl = fromMaybe (panic "getIx: impossible")
+                                  (List.lookup lbl (map Tuple.swap stateNodes))
+
+      forgetLabel :: FGL.LNode a -> FGL.Node
+      forgetLabel = fst
+
+-- | If we have performed the soundness and completeness checks, it
+-- does not matter which of the two graphs we perform the reachability
+-- analysis on. For simplicity its sake, we will go for the transition
+-- declarations instead of the implied transitions.
+--
+-- We return a list of nodes which are not reachable from the initial
+-- state and a list of nodes from which the terminal state is not
+-- reachable.
+reachability :: Script -> ([Label],[Label])
+reachability scr = (notReachable, notReaching)
+    where 
+      valid = Either.rights $ validTransitions scr
+
+      stateGraph = makeGraph scr
+
+      labels :: [Label]
+      labels = map snd stateNodes
+
+      stateNodes :: [FGL.LNode Label]
+      stateNodes = FGL.labNodes stateGraph
+
+      forgetLabel :: FGL.LNode a -> FGL.Node
+      forgetLabel = fst
+
+      getLabel :: FGL.Node -> Label
+      getLabel i
+        = case map snd . filter ((== i) . fst) $ stateNodes of
+            [] -> panic "getLabel: impossible"
+            [l] -> l
+            (_:_:_) -> panic "getLabel: impossible"
+
+      notReachable :: [Label]
+      notReachable
+        = filter (/= ScrGraph.initialLabel)
+          $ labels List.\\ map getLabel reachableFromInitial
+
+      notReaching :: [Label]
+      notReaching
+        = filter (/= ScrGraph.terminalLabel)
+          $ labels List.\\ map getLabel reachingToTerminal
+
+      reachableFromInitial :: [FGL.Node]
+      reachableFromInitial
+          = case filter ((== ScrGraph.initialLabel) . snd) stateNodes of
+              []
+                -> map forgetLabel stateNodes
+              [initialNode]
+                -> FGL.suc (FGL.tc stateGraph) (forgetLabel initialNode)
+              (_:_:_)
+                -> panic "reachableFromInitial: impossible"
+      -- More than one initial node, should be impossible.
+
+      reachingToTerminal :: [FGL.Node]
+      reachingToTerminal
+          = case filter ((== ScrGraph.terminalLabel) . snd) stateNodes of
+              []
+                -> map forgetLabel stateNodes
+              [initialNode]
+                -> FGL.pre (FGL.tc stateGraph) (forgetLabel initialNode)
+              (_:_:_)
+                -> panic "reachingToTerminal: impossible"
+      -- More than one terminal node, should be impossible.
 
 -------------------------------------------------------------------------------
--- Visualization
+-- Visualisation of the graph analysis
 -------------------------------------------------------------------------------
 
-graphviz :: (Graph.Graph g, Show a, Show b)
-  => g a b   -- ^ The graph to format
-  -> [Char]  -- ^ The title of the graph
-  -> [Char]
-graphviz g t =
-  let n = Graph.labNodes g
-      e = Graph.labEdges g
-      ns = concatMap sn n
-      es = concatMap se e
-  in "digraph "++t++" {\n"
-          ++ ns
-          ++ es
-      ++"}"
-  where sn (n, a) | sa == ""  = ""
-                  | otherwise = '\t':(show n ++ sa ++ "\n")
-          where sa = sl a
-        se (n1, n2, b) = '\t':(show n1 ++ " -> " ++ show n2 ++ sl b ++ "\n")
+data NodeLabel = NotReachableLabel Label
+               | NotReachingLabel Label
+               | NodeLabel Label
 
-sl :: (Show a) => a -> [Char]
-sl a = let l = sq (show a)
-  in if (l /= "()") then (" [label = " ++ show l ++ "]") else ""
+data EdgeLabel = MissingEdge
+               | IllegalEdge Name
+               | LegalEdge Name
 
-sq :: [Char] -> [Char]
-sq s@[_] = s
-sq ('"':s)
-  | unsafeLast s == '"'  = unsafeInit s
-  | otherwise = s
-sq ('\'':s)
-  | unsafeLast s == '\'' = unsafeInit s
-  | otherwise = s
-sq s = s
+-- | Create a graph from a script with all the information to
+-- visualise the reasons why the script might not have passed the
+-- graph checks.
+createGraph :: Script -> ([NodeLabel], [(EdgeLabel, Label, Label)])
+createGraph scr = (allLabels, allEdges)
+  where
+    valid = Either.rights $ validTransitions scr
+    actual = actualTransitions scr
 
-testVis :: (Show a, Show b) => Graph.Gr a b -> IO ()
-testVis gr = do
-  let dat = graphviz gr "foo"
-  writeFile "output.dot" (toS dat)
-  rc <- callCommand $ "circo -Tpng output.dot -o output.png"
-  pure ()
+    allLabels :: [NodeLabel]
+    allLabels = map classifyLabel
+                . List.nub
+                $ validLabels ++ actualLabels
+      where
+        validLabels = concatMap (\(src,dst) -> [src,dst]) valid
+        actualLabels = concatMap (\(_,src,dst) -> [src,dst]) actual
+        classifyLabel l | l `elem` notReachable = NotReachableLabel l
+                        | l `elem` notReaching = NotReachableLabel l
+                        | otherwise = NodeLabel l
+
+    allEdges :: [(EdgeLabel, Label, Label)]
+    allEdges = map (\(n,src,dst) -> if (n,src,dst) `elem` unsound
+                                    then (IllegalEdge n, src, dst)
+                                    else (LegalEdge n, src, dst)
+                   ) actual
+               ++
+               map (\(src,dst) -> (MissingEdge, src, dst)) missing
+        where
+          missing = completenessViolations actual valid
+          unsound = soundnessViolations actual valid
+
+    (notReachable, notReaching) = reachability scr
+
+-- | Create a graphviz script from an FCL script and visualise the
+-- reasons why it does not pass the graph check, if there are any.
+graphviz
+    :: Script
+    -> Text
+graphviz scr = Text.unlines
+                $ [ "digraph state_machine {" ]
+                ++ nodesTxt
+                ++ edgesTxt
+                ++ [ "}", "" ]
+    where
+      (nodes,edges) = createGraph scr
+
+      nodesTxt :: [Text]
+      nodesTxt = map (\case
+                       NotReachingLabel l -> unLabel l <> " [ shape = doubleoctagon ]"
+                       NotReachableLabel l -> unLabel l <> " [ shape = tripleoctagon ]"
+                       NodeLabel "initial" -> "initial [ shape = point ]"
+                       NodeLabel "terminal" -> "terminal [ shape = doublecircle ]"
+                       NodeLabel l -> unLabel l
+                     ) nodes
+
+      edgesTxt :: [Text]
+      edgesTxt = map (\(edgeLabel, src, dst) -> Text.unwords
+                      [ unLabel src, "->", unLabel dst, edgeLabelTxt edgeLabel ]) edges
+
+      edgeLabelTxt MissingEdge
+          = "[ style = dotted ]"
+      edgeLabelTxt (IllegalEdge l)
+          = "[ label = " <> unName l <> ", style = dashed ]"
+      edgeLabelTxt (LegalEdge l)
+          ="[ label = " <> unName l <> " ]"
+
+-- | Run "circo" on the graphviz output of an FCL script.
+testVis :: Script -> IO ()
+testVis scr = do
+  let dat = graphviz scr
+  writeFile "output.dot" dat
+  Process.callCommand "circo -Tpng output.dot -o output.png"

@@ -256,9 +256,10 @@ instance Ord ECDSA.Signature where
 -- Not deterministic, uses random nonce generation.
 -- WARNING: Vulnerable to timing attacks.
 sign
-  :: ECDSA.PrivateKey
+  :: (MonadRandom m)
+  => ECDSA.PrivateKey
   -> ByteString
-  -> IO ECDSA.Signature
+  -> m ECDSA.Signature
 sign priv msg = do
   k <- generateBetween 1 (n - 1)
   case signWith priv k msg of

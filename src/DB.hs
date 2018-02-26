@@ -32,7 +32,6 @@ import Time
 import qualified Account
 import qualified Ledger
 import qualified Utils
-import qualified Logging as Log
 
 import qualified Consensus.Authority.Params as CAP
 
@@ -68,7 +67,6 @@ initWorld
   -> (m (Either (DBError m) ()) -> IO (Either (DBError m) ()))
   -> IO ()
 initWorld preallocAccsDir runDB = do
-  Log.info "Initializing world state"
   ePreallocatedAccs <- Account.readAccountsFromDir preallocAccsDir
   case ePreallocatedAccs of
     Left err   -> do
@@ -117,7 +115,6 @@ initGenesisBlock
   -> (m (Either (DBError m) ()) -> IO (Either (DBError m) ()))
   -> IO ()
 initGenesisBlock genesisHash genesisTimestamp genPoa runDB = do
-  Log.info "Intializing genesis block..."
   gBlock <- genesisBlock (toS genesisHash) genesisTimestamp genPoa
   eRes <- runDB $ writeBlock gBlock
   case eRes of

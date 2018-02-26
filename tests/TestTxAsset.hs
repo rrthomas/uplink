@@ -16,6 +16,7 @@ import qualified Data.Map as Map
 import qualified Block
 import qualified Config
 import qualified Transaction
+import qualified Metadata
 import qualified Account
 import qualified Ledger
 import qualified Validate
@@ -39,11 +40,11 @@ txAssetTests =
         -- create accounts
         (acc1, keys1) <- run $
           Account.newAccount "GMT" $
-            Account.Metadata $ Map.fromList
+            Metadata.Metadata $ Map.fromList
               [("Num", BS.pack $ show (k :: Int))]
         (acc2, keys2) <- run $
           Account.newAccount "GMT+1" $
-            Account.Metadata $ Map.fromList
+            Metadata.Metadata $ Map.fromList
               [("Num", BS.pack $ show (k+1))]
 
         let Right accWorld = Ledger.addAccount acc2 =<< Ledger.addAccount acc1 initWorld

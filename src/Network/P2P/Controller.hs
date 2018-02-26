@@ -1,7 +1,8 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Network.P2P.Controller (
 
-  peerController,
-  waitController,
+  peerControllerProc,
 
   queryAllPeers,
   queryCapablePeers,
@@ -9,18 +10,14 @@ module Network.P2P.Controller (
   -- ** nsendX using Data.Binary
   nsendPeer,
   nsendPeers,
-  nsendPeersAsync,
   nsendPeersMany,
   nsendCapable,
-  nsendCapableAsync,
 
   -- ** nsendX using Data.Serialize
   nsendPeer',
   nsendPeers',
   nsendPeersMany',
-  nsendPeersAsync',
   nsendCapable',
-  nsendCapableAsync',
 
   listPeers,
   doDiscover,
@@ -35,37 +32,47 @@ import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
 import Control.Distributed.Process.Serializable (Serializable)
 
+import qualified Data.List as List
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
 
 import NodeState
 import Node.Peer
+import qualified Network.P2P.Logging as Log
 import Network.P2P.Service
+import Network.Utils (waitForLocalService, mkNodeId)
+
 import qualified Block
-import qualified Logging as Log
+import qualified Config
+
 
 -------------------------------------------------------------------------------
 -- Peer Controller
 -------------------------------------------------------------------------------
 
 -- | A P2P controller service process.
-peerController
-  :: MonadProcessBase m
-  => [NodeId]
-  -> NodeT m ()
-peerController seeds = do
-  selfPid  <- getSelfPid
-  selfAddr <- NodeState.askSelfAddress
+peerControllerProc
+  :: forall m. MonadProcessBase m
+  => NodeT m ()
+peerControllerProc = do
+
+  -- Construct bootnode processIds
+  cachedPeersNodeIds <- Node.Peer.peersToNodeIds <$> getCachedPeers
+  bootNodeIds <- mkNodeIds . Config.bootnodes =<< askConfig
+
+  let initNodeIds = List.nub $ bootNodeIds ++ cachedPeersNodeIds
 
   -- Add self to list of peers
+  selfPid  <- getSelfPid
+  selfAddr <- NodeState.askSelfAddress
   setPeers $ Set.singleton $ Peer selfPid selfAddr
   register (show PeerController) selfPid
 
   -- Discover boot nodes
-  mapM_ doDiscover seeds
+  mapM_ doDiscover initNodeIds
 
-  Log.info "P2P controller started."
-  controlP $ \runInBase ->
+  controlP $ \runInBase -> do
+    Log.info "P2P controller started."
     forever $ receiveWait
       [ matchIf isPeerDiscover $ runInBase . onDiscover
       , match $ runInBase . onMonitor
@@ -75,30 +82,58 @@ peerController seeds = do
       , match $ runInBase . liftP . onPeerCapable
       ]
 
-waitController
-  :: MonadProcessBase m
-  => Int
-  -> NodeT m a
-  -> NodeT m a
-waitController timeout prc = do
-  res <- whereis (show PeerController)
-  case res of
-    Nothing -> do
-      let timeleft = timeout - 10000
-      if timeleft <= 0
-         then Log.critical "Failed to connect" >> terminate
-         else do liftIO (threadDelay 10000)
-                 waitController timeleft prc
-    Just x -> prc
+  where
+    mkNodeIds :: [ByteString] -> NodeT m [NodeId]
+    mkNodeIds nodeAddrs =
+      fmap concat $
+        forM nodeAddrs $ \nodeAddr -> do
+          eNodeId <- liftBase $ mkNodeId nodeAddr
+          case eNodeId of
+            Left err     -> Log.warning err >> pure []
+            Right nodeId -> pure [nodeId]
 
 -------------------------------------------------------------------------------
 -- Discovery
 -------------------------------------------------------------------------------
 
-doDiscover :: MonadProcessBase m => NodeId -> m ()
+-- | Attempts to discover a node by sending a WhereIsRemoteAsync message to the remote Node.
+--
+-- This _should_ be asynchronous, but if the hostname in the NodeId is
+-- unreachable, then this function will hang indefinitely trying to establish a
+-- connection to the invalid node. To circumvent this behavior, we add a timeout
+-- to kill the discovery process if it takes longer than 2 seconds to establish
+-- a connection to the given nodeId.
+doDiscover :: forall m. MonadProcessBase m => NodeId -> m ()
 doDiscover node = do
-  Log.info $ "Examining node: " <> show node
-  whereisRemoteAsync node (show PeerController)
+    Log.info ("Examining node: " <> show node)
+    doDiscover'
+  where
+    doDiscover' :: m ()
+    doDiscover' = do
+      (sp,rp) <- newChan
+      -- Spawn a discovery process to attempt to discover peer
+      pid <- spawnLocal $ discoveryProc sp
+      -- But only wait for it to respond for 2 seconds
+      mRes <- receiveChanTimeout 2000000 rp
+      case mRes of
+        Nothing -> Log.warning ("Could not reach node: " <> show node)
+        Just _  -> kill pid "Stop discovering peer"
+
+    -- This process is spawned to send a WhereIs message to the potential peer
+    -- process. It waits for a WhereIsReply message, and then forward the
+    -- message to its parent process, the PeerController process to handle the
+    -- message. This is done because wrapping `whereisRemoteAsync` in a a
+    -- seemingly simple timeout is actually _not_ simple.
+    discoveryProc :: SendPort () -> m ()
+    discoveryProc sp = do
+      register "discovery" =<< getSelfPid
+      -- This might hang for a few minutes...
+      whereisRemoteAsync node (show PeerController)
+      -- Expect a reply and forward it to the p2p controller proc
+      reply <- expect :: m WhereIsReply
+      nsend (show PeerController) reply
+      -- alert the parent process that we're finished
+      sendChan sp ()
 
 doRegister :: MonadProcessBase m => Peer -> NodeT m ()
 doRegister peer@(Peer pid addr) = do
@@ -246,14 +281,6 @@ nsendPeersMany service msgs = do
   forM_ peers $ \peer -> do
     mapM_ (nsendPeer service peer) msgs
 
--- | Asynchronous nsendPeers
-nsendPeersAsync
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> a
-  -> m ()
-nsendPeersAsync service = void . spawnLocal . nsendPeers service
-
 -- | Broadcast a message to a service of on nodes currently running it.
 nsendCapable
   :: (MonadProcessBase m, Serializable a)
@@ -266,14 +293,6 @@ nsendCapable service msg = do
   forM_ peers $ \peer -> do
     Log.info $ "Sending msg to " <> (show peer :: Text)
     nsendPeer service peer msg
-
--- | Asynchronous nsendCapable
-nsendCapableAsync
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> a
-  -> m ()
-nsendCapableAsync service = void . spawnLocal . nsendCapable service
 
 -------------------------------------------------------------------------------
 
@@ -305,15 +324,6 @@ nsendPeersMany'
 nsendPeersMany' s msgs =
   nsendPeersMany s $ (map S.encode msgs)
 
--- | Like nsendPeersAsync but serialize with Data.Serialize instead of Data.Binary
-nsendPeersAsync'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> a
-  -> m ()
-nsendPeersAsync' s =
-  nsendPeersAsync s . S.encode
-
 -- | Like nsendCapable but serialize with Data.Serialize instead of Data.Binary
 nsendCapable'
   :: (MonadProcessBase m, S.Serialize a)
@@ -322,15 +332,6 @@ nsendCapable'
   -> m ()
 nsendCapable' s =
   nsendCapable s . S.encode
-
--- | Like nsendCapable but serialize with Data.Serialize instead of Data.Binary
-nsendCapableAsync'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> a
-  -> m ()
-nsendCapableAsync' s =
-  nsendPeersAsync s . S.encode
 
 -------------------------------------------------------------------------------
 -- P2P Discovery Utils
@@ -391,13 +392,13 @@ listPeers = queryAllPeers >>= (liftIO . print)
 -- XXX save/loadPeers functions in NodeState
 -- XXX --------------------------------------------
 
-cachePeers :: MonadBase IO m => Peers -> NodeT m ()
+cachePeers :: (MonadProcess m) => Peers -> NodeT m ()
 cachePeers peers = do
   Log.info "Caching peers..."
   peersFilePath <- NodeState.askPeersFilePath
   liftBase $ writePeers' peersFilePath peers
 
-getCachedPeers :: MonadBase IO m => NodeT m Peers
+getCachedPeers :: (MonadProcess m) => NodeT m Peers
 getCachedPeers = do
   ePeers <- getCachedPeers'
   case ePeers of

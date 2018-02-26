@@ -1,0 +1,6 @@
+In method inc:
+Variable "x" undefined at:
+  - line 20:3
+Stack trace leading up to error:
+  - @inc:inc to @inc
+  - @initial:dontSetX to @inc

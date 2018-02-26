@@ -1,0 +1,3 @@
+Type error at Line 7, Column 8:
+   Pattern match failures:
+       - Duplicate case for: Foo

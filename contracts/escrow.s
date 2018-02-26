@@ -3,16 +3,16 @@
 // sell side
 global account sellerSeller  = '6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc';
 global account sellerBuyer   = 'EUSS9VgTfyv1423JB6zEHF5meyNNGthrsvP3PUUrsKdu';
-global asset sellerAssetSell = '39oS7aToiKTazHDL7hu5ktbBUETRzVFybwGbhwj2DifC';
-global asset sellerAssetBuy  = '37K4VN7vRZ9hUm8tdMj2DQVgPhDixKQsZfNonsCnCgk1';
+global assetDisc sellerAssetSell = '39oS7aToiKTazHDL7hu5ktbBUETRzVFybwGbhwj2DifC';
+global assetDisc sellerAssetBuy  = '37K4VN7vRZ9hUm8tdMj2DQVgPhDixKQsZfNonsCnCgk1';
 global int sellerAmountSell  = 0;
 global int sellerAmountBuy   = 0;
 
 // buy side
 global account buyerSeller  = 'EPkP9xCnPSsM7ffK1oq2GLjFYikJMXKAbtCNKFmi7Ck6';
 global account buyerBuyer   = '5EASMmbppLAbRr2RNfHHzek4wT5vuEP7jAhmdh8amzhn';
-global asset buyerAssetSell = '4sxds4MCJWhTRDbpxb7UP8iAVA27gHuU7t8ckfsyELzp';
-global asset buyerAssetBuy  = 'rgdUJFYM5JLMCAGKpHGFACRntefoS1pgJohvaM2u8Zo';
+global assetDisc buyerAssetSell = '4sxds4MCJWhTRDbpxb7UP8iAVA27gHuU7t8ckfsyELzp';
+global assetDisc buyerAssetBuy  = 'rgdUJFYM5JLMCAGKpHGFACRntefoS1pgJohvaM2u8Zo';
 global int buyerAmountSell  = 0;
 global int buyerAmountBuy   = 0;
 
@@ -25,8 +25,13 @@ global bool payOutDone          = False;
 
 transition initial -> sellerSetup;
 
+@initial
+init() {
+  transitionTo(:sellerSetup);
+}
+
 @sellerSetup
-sellerSetup(account buyer, asset assetSell, asset assetBuy,
+sellerSetup(account buyer, assetDisc assetSell, assetDisc assetBuy,
             int amountSell, int amountBuy) {
   if (!sellerSetupDone) {
     sellerSeller     = sender();
@@ -37,11 +42,11 @@ sellerSetup(account buyer, asset assetSell, asset assetBuy,
     sellerAmountBuy  = amountBuy;
 
     sellerSetupDone  = True;
-  } else { return void; };
+  };
 }
 
 @buyerSetup
-buyerSetup(account seller, asset assetSell, asset assetBuy,
+buyerSetup(account seller, assetDisc assetSell, assetDisc assetBuy,
            int amountSell, int amountBuy) {
   if (!buyerSetupDone) {
     buyerSeller     = seller;
@@ -52,30 +57,26 @@ buyerSetup(account seller, asset assetSell, asset assetBuy,
     buyerAmountBuy  = amountBuy;
 
     buyerSetupDone = True;
-  } else { return void; };
+  };
 }
 
 @transferSell
 transferSell() {
-  if (sender() != sellerSeller) {
-    return void;
-  } else {
+  if (sender() == sellerSeller) {
       if (sellerSetupDone && buyerSetupDone && (!sellerTransferDone)) {
         transferTo(sellerAssetSell, sellerAmountSell);
         sellerTransferDone = True;
-    } else { return void;};
+    };
   };
 }
 
 @transferBuy
 transferBuy() {
-  if (sender() != buyerBuyer) {
-    return void;
-  } else {
+  if (sender() == buyerBuyer) {
       if (sellerSetupDone && buyerSetupDone && (!buyerTransferDone)) {
         transferTo(buyerAssetBuy, buyerAmountBuy);
         buyerTransferDone = True;
-    } else { return void;};
+    };
   };
 }
 

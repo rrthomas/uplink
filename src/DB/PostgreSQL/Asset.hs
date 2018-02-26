@@ -36,6 +36,7 @@ import qualified Data.Text as Text
 import Asset (Asset(..))
 import Address
 import qualified Asset
+import qualified Metadata
 import qualified Time
 
 import DB.PostgreSQL.Error
@@ -56,6 +57,7 @@ data AssetRow = AssetRow
   , assetReference     :: Maybe Asset.Ref
   , assetType          :: Asset.AssetType
   , assetAddress       :: Address
+  , assetMetadata      :: Metadata.Metadata
   } deriving (Show, Generic)
 
 instance ToRow AssetRow
@@ -81,6 +83,7 @@ assetToRowTypes Asset{..} = (assetRow, holdingsRows)
       , assetReference = reference
       , assetType      = assetType
       , assetAddress   = address
+      , assetMetadata  = metadata
       }
 
     holdingsRows =
@@ -98,6 +101,7 @@ rowTypesToAsset (assetRow, holdingsRows) =
       , holdings  = holdings'
       , assetType = DB.PostgreSQL.Asset.assetType assetRow
       , address   = assetAddress assetRow
+      , metadata  = assetMetadata assetRow
       }
   where
     holdings' = Asset.Holdings $ Map.fromList $
@@ -184,7 +188,7 @@ insertAssets conn assets =
 
 insertAssetRow :: Connection -> AssetRow -> IO (Either PostgreSQLError Int64)
 insertAssetRow conn assetRow =
-  executeSafe conn "INSERT INTO assets VALUES (?,?,?,?,?,?,?)" assetRow
+  executeSafe conn "INSERT INTO assets VALUES (?,?,?,?,?,?,?,?)" assetRow
 
 insertHoldingsRows :: Connection -> [HoldingsRow] -> IO (Either PostgreSQLError Int64)
 insertHoldingsRows conn holdingsRows =

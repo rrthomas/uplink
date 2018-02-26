@@ -18,7 +18,7 @@ import Block
 import Asset
 import Script
 import Address
-import Account (Metadata(..))
+import Metadata (Metadata(..))
 import SafeString
 import SafeInteger
 import Transaction
@@ -26,6 +26,7 @@ import Script.Parser
 import Datetime.Types
 import Consensus.Authority.Params
 import qualified Key
+import qualified Fixed
 import qualified Data.Set as Set
 import qualified Script.Pretty as Pretty
 import qualified Datetime.Types as DT
@@ -70,6 +71,9 @@ xpByteString :: PU Text ByteString
 xpByteString =
   xpWrap (encodeUtf8, decodeUtf8) xpText0
 
+xpMetadata :: PU [Node Text Text] Metadata
+xpMetadata =
+  xpWrap (Metadata, unMetadata) $ xpMap "key" "value" xpByteString (xpContent xpByteString)
 
 xpBlock :: PU [Node Text Text] Block
 xpBlock =
@@ -201,6 +205,7 @@ xpValue =
       tag (VTimeDelta _) = 13
       tag (VState _)     = 14
       tag VUndefined     = 15
+      tag (VEnum _)      = 16
       ps = [ xpWrap (VInt, \(VInt v) -> v)
              $ xpElemNodes "VInt" (xpContent xpPrim)
            , xpWrap (VCrypto . toSafeInteger', \(VCrypto v) -> fromSafeInteger v)
@@ -235,44 +240,54 @@ xpValue =
              $ xpElemNodes "VState" (xpContent xpPrim)
            , xpWrap (\_ -> VUndefined, \VUndefined -> ())
              $ xpElemNodes "VUndefined" xpUnit
+           , xpWrap (VEnum . EnumConstr, \(VEnum c) -> unEnumConstr c)
+             $ xpElemNodes "VEnum" (xpContent xpPrim)
         ]
 
 xpTxAsset :: PU [UNode Text] TxAsset
 xpTxAsset =
   xpAlt tag ps
   where
-    tag (CreateAsset _ _ _ _ _) = 0
-    tag (Transfer _ _ _)        = 1
-    tag (Circulate _ _)         = 2
-    tag (Bind  _ _ _)           = 3
-    tag (RevokeAsset _)         = 4
+    tag (CreateAsset _ _ _ _ _ _) = 0
+    tag (Transfer _ _ _)          = 1
+    tag (Circulate _ _)           = 2
+    tag (Bind  _ _ _)             = 3
+    tag (RevokeAsset _)           = 4
 
-    ps = [ xpWrap (\((addr, name, supply, reference), type_) -> CreateAsset addr (SafeString.fromBytes' name) supply (fmap toEnum reference) type_,
-                    \(CreateAsset addr name supply reference type_) -> ((addr, (SafeString.toBytes name), supply, (fmap fromEnum reference)), type_))
-            $ xpElem "CreateAsset"
-              (xp4Tuple
-                (xpAttr "assetAddr" xpPrim)
-                (xpAttr "assetName" xpPrim)
-                (xpAttr "supply" xpPrim)
-                (xpOption $ xpAttr "reference" xpPrim))
-                xpAssetType
-         , xpWrap (\(address, to, balance) -> Transfer address to balance,
-                    \(Transfer address to balance) -> (address, to, balance))
-            $ xpElemAttrs "Transfer"
-              (xpTriple
-                (xpAttr "address" xpAddress)
-                (xpAttr "to" xpPrim)
-                (xpAttr "balance" xpPrim))
-         , xpWrap (\(assetAddr, amount) -> Circulate assetAddr amount,
-                    \(Circulate assetAddr amount) -> (assetAddr, amount))
-            $ xpElemAttrs "Circulate"
-              (xpPair
-                (xpAttr "assetAddr" xpAddress)
-                (xpAttr "amount" xpPrim))
-         , xpWrap (\(assetAddr, contractAddr, bindProof) -> Bind assetAddr contractAddr bindProof,
-                    \(Bind assetAddr contractAddr bindProof) -> (assetAddr, contractAddr, bindProof))
-            $ xpElemAttrs "Bind"
-              (xpTriple
+    getPrec :: AssetType -> Maybe Fixed.PrecN
+    getPrec type_  = case type_ of
+      Fractional p -> Just p
+      _            -> Nothing
+
+    ps = [ xpWrap (\((addr, name, supply, reference, type_, prec), metadata) -> CreateAsset addr (SafeString.fromBytes' name) supply (fmap toEnum reference) type_ metadata,
+                  \(CreateAsset addr name supply reference type_ metadata) -> ((addr, (SafeString.toBytes name), supply, (fmap fromEnum reference), type_, getPrec type_), metadata))
+          $ xpElem "CreateAsset"
+              (xp6Tuple
+              (xpAttr "assetAddr" xpAddress)
+              (xpAttr "assetName" xpPrim)
+              (xpAttr "supply" xpPrim)
+              (xpOption $ xpAttr "reference" xpPrim)
+              (xpAttr "assetType" xpPrim)
+              (xpOption $ xpAttr "assetPrec" xpPrim)
+              )
+              (xpMetadata)
+       , xpWrap (\(address, to, balance) -> Transfer address to balance,
+                  \(Transfer address to balance) -> (address, to, balance))
+          $ xpElemAttrs "Transfer"
+            (xpTriple
+              (xpAttr "address" xpAddress)
+              (xpAttr "to" xpPrim)
+              (xpAttr "balance" xpPrim))
+       , xpWrap (\(assetAddr, amount) -> Circulate assetAddr amount,
+                  \(Circulate assetAddr amount) -> (assetAddr, amount))
+          $ xpElemAttrs "Circulate"
+            (xpPair
+              (xpAttr "assetAddr" xpAddress)
+              (xpAttr "amount" xpPrim))
+       , xpWrap (\(assetAddr, contractAddr, bindProof) -> Bind assetAddr contractAddr bindProof,
+                  \(Bind assetAddr contractAddr bindProof) -> (assetAddr, contractAddr, bindProof))
+          $ xpElemAttrs "Bind"
+            (xpTriple
                 (xpAttr "assetAddr" xpAddress)
                 (xpAttr "contractAddr" xpAddress)
                 (xpAttr "bindProof" xpPrim))
@@ -281,23 +296,23 @@ xpTxAsset =
             (xpAttr "address" xpAddress)
       ]
 
-xpAssetType :: PU [UNode Text] AssetType
-xpAssetType =
-  xpAlt tag ps
-  where
-    tag Discrete = 0
-    tag (Fractional _) = 1
-    tag Binary = 2
-    ps = [xpWrap (\_ -> Discrete, \Discrete -> ())
-           $ xpElemNodes "Discrete" xpUnit
+{-xpAssetType :: PU (Attributes Text [Char]) AssetType-}
+{-xpAssetType =-}
+  {-xpAlt tag ps-}
+  {-where-}
+    {-tag Discrete = 0-}
+    {-tag (Fractional _) = 1-}
+    {-tag Binary = 2-}
+    {-ps = [xpWrap (\_ -> Discrete, \Discrete -> ())-}
+           {-$ xpAttr "Discrete" xpUnit-}
 
-        , xpWrap (Fractional, \(Fractional prec) -> prec)
-          $ xpElemAttrs "Fractional"
-            (xpAttr "prec" xpPrim)
+        {-, xpWrap (Fractional, \(Fractional prec) -> prec)-}
+          {-$ xpElemAttrs "Fractional"-}
+            {-(xpAttr "prec" xpPrim)-}
 
-        , xpWrap (\_ -> Binary, \Binary -> ())
-           $ xpElemNodes "Binary" xpUnit
-      ]
+        {-, xpWrap (\_ -> Binary, \Binary -> ())-}
+           {-$ xpElemNodes "Binary" xpUnit-}
+      {-]-}
 
 xpTxAccount :: PU [UNode Text] TxAccount
 xpTxAccount =
@@ -305,13 +320,13 @@ xpTxAccount =
   where
     tag (CreateAccount _ _ _) = 0
     tag (RevokeAccount _) = 1
-    ps = [ xpWrap (\((pubkey, timezone), metadata) -> CreateAccount pubkey timezone (Metadata metadata),
-           \(CreateAccount pubkey timezone metadata) -> ((pubkey, timezone), unMetadata metadata))
+    ps = [ xpWrap (\((pubkey, timezone), metadata) -> CreateAccount pubkey timezone metadata,
+           \(CreateAccount pubkey timezone metadata) -> ((pubkey, timezone), metadata))
           $ xpElem "CreateAccount"
             (xpPair
               (xpAttr "pubkey" xpPrim)
               (xpAttr "timezone" xpPrim))
-            (xpMap "key" "value" xpByteString (xpContent xpByteString))
+            xpMetadata
          , xpWrap (RevokeAccount, \(RevokeAccount address) -> address)
           $ xpElemAttrs "RevokeAccount"
             (xpAttr "address" xpAddress)

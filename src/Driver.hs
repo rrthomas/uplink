@@ -48,13 +48,13 @@ import qualified MemPool
 import qualified Contract
 import qualified Storage
 import qualified TxLog
-import qualified Logging as Log
 import qualified Consensus.Authority.Params as CAP
 import qualified Consensus.Authority.State  as CAS
 import qualified Script.Pretty as Pretty
 import qualified Script.Analysis as Anal
 import qualified Script.Compile as Compile
 import qualified Script.Typecheck as Typecheck
+import qualified System.Console.ANSI as ANSI
 import System.Directory
 import qualified System.Exit
 
@@ -90,7 +90,7 @@ driver
   -> IO ()
 driver (Chain cmd) opts (config @ Config {..}) = do
 
-  Log.info (toS (Utils.ppShow config))
+  logInfo (toS (Utils.ppShow config))
 
   -- Read/Validate Chain config
   -- ==========================
@@ -101,13 +101,8 @@ driver (Chain cmd) opts (config @ Config {..}) = do
   pool <- Entropy.createEntropyPool
   seed <- Entropy.getEntropyFrom pool 128 :: IO ByteString
 
-  -- Setup Logging
-  -- =============
-  let logLevel = if verbose then "DEBUG" else loggingLevel
-  Log.configureLogging logLevel logfile
-
   when nonetwork $ do
-    Log.info "Not connecting because --no-network"
+    logInfo "Not connecting because --no-network"
     System.Exit.exitSuccess
 
   -- Setup Node Data Files
@@ -177,9 +172,6 @@ driver (Chain cmd) opts (config @ Config {..}) = do
   --   depending on the backend specified by the user in Config
   -- ==========================================================
 
-  -- Channel for RPC server to send messages to P2P server
-  rpcToP2PChan <- Chan.newChan
-
   case storageBackend of
 
     -- PostgreSQL Backend
@@ -201,6 +193,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
               Right connPool -> do
                 -- Initialize Genesis Block & World with Validator Accounts
                 let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
+                logInfo "Intializing genesis block..."
                 DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runPostgresT'
                 DB.initWorld preallocated runPostgresT'
                 Utils.putGreen "Successfully intialized Uplink Postgres Database."
@@ -218,19 +211,22 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       nodeEnv <- mkNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
+      -- Create the cloud haskell local node
+      localNode <- P2P.createLocalNode config
+
       -- Launch RPC Server
       Utils.putGreen "Starting RPC server..."
       forkIO $
         RPC.rpcServer
           config
-          rpcToP2PChan
           (runPostgresT' . runNodeT')
+          localNode
           (Just connPool)
 
       -- Launch P2P Server
       Utils.putGreen "Starting P2P processes..."
-      P2P.p2p config rpcToP2PChan $
-        runPostgresT' . runNodeT'
+      runProcess localNode . runPostgresT' . runNodeT' $
+          P2P.p2p config
 
     -- LevelDB Backend
     -----------------------
@@ -239,7 +235,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       case eDatabase of
         Left err       -> Utils.dieRed $ toS err
         Right database -> do
-
+          logInfo $ "Using existing database at: " <> toS path
           let runLevelDBT' = DB.LevelDB.runLevelDBT database
 
           case cmd of
@@ -247,6 +243,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
             Init _ -> do
 
               -- Initialize Genesis Block & World with Validator Accounts
+              logInfo "Intializing genesis block..."
               DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runLevelDBT'
               DB.initWorld preallocated runLevelDBT'
 
@@ -262,19 +259,17 @@ driver (Chain cmd) opts (config @ Config {..}) = do
           nodeEnv <- mkNodeEnv world genesisBlock lastBlock
           let runNodeT' = NodeState.runNodeT nodeEnv
 
+          -- Create the cloud haskell local node
+          localNode <- P2P.createLocalNode config
+
           -- Launch RPC Server
           Utils.putGreen "Starting RPC server..."
-          forkIO $
-            RPC.rpcServer
-              config
-              rpcToP2PChan
-              (runLevelDBT' . runNodeT')
-              Nothing
+          forkIO $ RPC.rpcServer config (runLevelDBT' . runNodeT') localNode Nothing
 
           -- Launch P2P Server
           Utils.putGreen "Starting P2P processes..."
-          P2P.p2p config rpcToP2PChan $
-            runLevelDBT' . runNodeT'
+          runProcess localNode . runLevelDBT' . runNodeT' $
+            P2P.p2p config
 
 driver (Script cmd) opts (config @ Config {..}) =
   case storageBackend of
@@ -333,10 +328,12 @@ driver (Data cmd) opts (config @ Config {..}) = do
 driver Console opts config = do
     let host = Config.hostname config
     let port = Config.port config
-    remote <- mkNodeId $ toS $ host <> ":" <> show port
+    eRemote <- mkNodeId $ toS $ host <> ":" <> show port
 
-    localNode <- P2P.createLocalNode "localhost" "" (Just DPN.initRemoteTable)
-    runConsoleProcs localNode remote
+    localNode <- P2P.createLocalNode' "localhost" "" (Just DPN.initRemoteTable)
+    case eRemote of
+      Left err -> Utils.dieRed err
+      Right remote -> runConsoleProcs localNode remote
   where
     runConsoleProcs :: DPN.LocalNode -> NodeId -> IO ()
     runConsoleProcs localNode cmdProcNodeId = do
@@ -407,8 +404,8 @@ driverScript cmd opts (config @ Config {..}) =
           Utils.putGreen "Definitions:"
           putStrLn $ Pretty.printList (Script.scriptTransitions script)
 
-          Utils.putGreen "Transitions:"
-          Utils.ppDump $ Anal.transitions script
+          Utils.putGreen "Valid transitions:"
+          Utils.ppDump $ Anal.validTransitions script
 
           Utils.putGreen "Branch Points:"
           Utils.ppDump $ Anal.branches script
@@ -416,7 +413,7 @@ driverScript cmd opts (config @ Config {..}) =
           Utils.putGreen "Choice Points:"
           Utils.ppDump $ Anal.choices (Anal.makeGraph script)
 
-          Anal.testVis (Anal.makeGraph script)
+          Anal.testVis script
 
     -- compile
     Opts.CompileScript scriptFile localStorageFile -> liftBase $ do
@@ -546,37 +543,37 @@ driverData cmd opts (config @ Config {..}) =
     Opts.LoadAsset fp addr -> do
       blob <- liftBase $ BSL.readFile fp
       case A.decode blob of
-        Nothing -> Log.info "Could not read Asset JSON"
+        Nothing -> logInfo "Could not read Asset JSON"
         Just asset -> do
           ledger <- DB.readWorld
           let world = do
                 world <- first show ledger
                 first show $ Ledger.addAsset addr asset world
           case world of
-            Left err -> Log.info $ "Load Asset: " <> err
+            Left err -> logInfo $ "Load Asset: " <> err
             Right world' -> do
               DB.writeAsset asset
               eRes <- DB.syncWorld world'
               case eRes of
-                Left err -> Log.warning $ show err
+                Left err -> logWarning $ show err
                 Right _  -> pure ()
 
     Opts.LoadAccount fp -> do
       blob <- liftBase $ BSL.readFile fp
       case A.decode blob of
-        Nothing -> Log.info "Could not read Account JSON"
+        Nothing -> logInfo "Could not read Account JSON"
         Just acc -> do
           ledger <- DB.readWorld
           let world = do
                 world <- first show $ ledger
                 first show $ Ledger.addAccount acc world
           case world of
-            Left err -> Log.info $ "Load Asset: " <> err
+            Left err -> logInfo $ "Load Asset: " <> err
             Right world' -> do
               DB.writeAccount acc
               eRes <- DB.syncWorld world'
               case eRes of
-                Left err -> Log.warning $ show err
+                Left err -> logWarning $ show err
                 Right _  -> pure ()
 
     Opts.Export fp -> do
@@ -587,3 +584,17 @@ driverData cmd opts (config @ Config {..}) =
           _ -> putText "Could not read database"
   where
     display v = putStrLn $ A.encodePretty v
+
+--------------------------------------------------------------------------------
+-- Logging
+--------------------------------------------------------------------------------
+
+-- Note that this module has its own logging functionality, as the
+-- functions in this module are called before the logging process has
+-- been spawned.
+
+logInfo :: MonadBase IO m => Text -> m ()
+logInfo = liftBase . putStrLn
+
+logWarning :: MonadBase IO m => Text -> m ()
+logWarning = liftBase . Utils.withColor ANSI.Yellow putStrLn

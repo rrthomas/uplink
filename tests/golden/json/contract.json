@@ -1,9 +1,13 @@
 {
-    "script": "global int x = 0;\n\ntransition initial -> set;\ntransition set -> get;\n\n@get\ngetX() {\n  return x;\n}\n\n@set\nsetX() {\n  x = 42;\n  transitionTo(:get);\n  return void;\n}",
+    "script": "enum E {\nFoo, Bar\n};\nglobal int x = 0;\nglobal enum E y = `Foo;\n\ntransition initial -> set;\ntransition set -> get;\n\n@initial\nsetY() {\n  y = `Bar;\n  transitionTo(:set);\n}\n\n@get\ngetX() { }\n\n@set\nsetX() {\n  x = 42;\n  transitionTo(:get);\n}",
     "state": "initial",
     "address": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
     "owner": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
     "storage": {
+        "g": {
+            "tag": "VEnum",
+            "contents": "Foo"
+        },
         "a": {
             "tag": "VInt",
             "contents": 3
@@ -29,10 +33,19 @@
             "contents": 42
         }
     },
+    "localStorage": {
+        "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve": {
+            "f": {
+                "tag": "VCrypto",
+                "contents": 42
+            }
+        }
+    },
     "methods": [
+        "setY",
         "getX",
         "setX"
     ],
-    "terminated": false,
+    "localStorageVars": [],
     "timestamp": 1231006505
 }

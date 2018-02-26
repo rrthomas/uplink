@@ -16,6 +16,7 @@ import Protolude hiding (Overflow, Underflow, DivideByZero)
 
 import Data.Serialize (Serialize)
 
+import Contract (InvalidMethodName)
 import Script (Name)
 import Script.Graph (GraphState(..), Label)
 
@@ -25,7 +26,7 @@ data EvalFail
   | AddressIntegrity ByteString         -- ^ Address does not exist
   | ContractIntegrity ByteString        -- ^ Contract does not exist
   | AccountIntegrity ByteString         -- ^ Account does not exist
-  | NoSuchMethod Name                   -- ^ Name lookup failure
+  | InvalidMethodName InvalidMethodName -- ^ Name lookup failure
   | SignFailure ByteString              -- ^ Failed to sign message
   | DateFailure ByteString              -- ^ Datetime failure
   | TerminalState                       -- ^ Execution is in terminal state.
@@ -40,7 +41,8 @@ data EvalFail
   | Impossible ByteString               -- ^ Internal error
   | HugeInteger ByteString              -- ^ SafeInteger bounds exceeded
   | HugeString ByteString               -- ^ SafeString bounds exceeded
-  deriving (Eq, Ord, Show, Generic, Serialize, NFData)
+  | NoSuchPrimOp Name                   -- ^ Prim op name lookup fail
+  deriving (Eq, Show, Generic, Serialize, NFData)
 
 
 
@@ -50,7 +52,7 @@ errorCode = \case
   AddressIntegrity {}  -> 1
   ContractIntegrity {} -> 2
   AccountIntegrity {}  -> 3
-  NoSuchMethod {}      -> 4
+  InvalidMethodName {} -> 4
   SignFailure {}       -> 5
   DateFailure {}       -> 6
   TerminalState {}     -> 7
@@ -65,3 +67,4 @@ errorCode = \case
   Impossible {}        -> 16
   HugeInteger {}       -> 17
   HugeString {}        -> 18
+  NoSuchPrimOp {}      -> 19

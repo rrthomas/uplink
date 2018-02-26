@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <transactionHeaders>
-    <CreateAsset assetAddr="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve" assetName="&quot;test&quot;" supply="1000" reference="4">
-        <Discrete/>
+    <CreateAsset assetAddr="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve" assetName="&quot;test&quot;" supply="1000" reference="4" assetType="Discrete">
+        <key value="Company">Adjoint Inc.</key>
     </CreateAsset>
 </transactionHeaders>

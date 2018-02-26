@@ -1,4 +1,8 @@
 {
+    "g": {
+        "tag": "VEnum",
+        "contents": "Foo"
+    },
     "a": {
         "tag": "VInt",
         "contents": 3

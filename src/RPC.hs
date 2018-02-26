@@ -26,6 +26,9 @@ import Protolude hiding (sourceLine, sourceColumn, catch)
 import Control.Monad.Base (MonadBase, liftBase)
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Exception.Lifted (catch)
+import Control.Distributed.Process.Lifted.Class
+import Control.Distributed.Process.Lifted (Process, ProcessId, WhereIsReply(..), whereis, expectTimeout)
+import Control.Distributed.Process.Node.Lifted (runProcess, LocalNode)
 
 import DB
 import DB.PostgreSQL
@@ -53,6 +56,7 @@ import qualified Transaction as Tx
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Network.P2P.Cmd as Cmd
+import qualified Network.P2P.Simulate as Sim
 
 import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
 import Data.Aeson.Types (typeMismatch)
@@ -67,6 +71,9 @@ import Control.Distributed.Process (nodeAddress, processNodeId)
 import Network.Transport (endPointAddressToByteString)
 
 import qualified Control.Concurrent.Chan as Chan
+
+import Network.Utils as NUtils
+import Network.P2P.Service as Service
 
 import Network
 import Network.HTTP.Client
@@ -118,16 +125,23 @@ scottyTLS logger port key cert runDBInIO =
 
 rpcServer
   :: MonadIOReadDB m
-  => Config.Config
-  -> Chan.Chan Cmd.Cmd
-  -> (NodeT m Warp.Response -> IO Warp.Response)
-  -> Maybe ConnectionPool
+  => Config.Config                               -- ^ Config for running RPC server
+  -> (NodeT m Warp.Response -> IO Warp.Response) -- ^ Continuation so Scotty knows how to run NodeT computations
+  -> LocalNode                                   -- ^ Cloud haskell node to spawn processes on
+  -> Maybe ConnectionPool                        -- ^ Connection Pool for Postgres DB functions
   -> IO ()
-rpcServer config chan runInIO mConnPool = do
+rpcServer config runInIO localNode mConnPool = do
 
     let rpcPort = Config.rpcPort config
     let key     = Config.rpcKey config
     let cert    = Config.rpcCrt config
+
+    -- Discover Tasks process to relay Cmd msgs to
+    runProcess localNode $ void $ do
+      NUtils.findLocalService Tasks 1000000
+    -- Discover Simulation process ot relay Simulation msgs to
+    runProcess localNode $ void $ do
+      NUtils.findLocalService Simulation 1000000
 
     -- XXX Move from Stdout to a log file (set in Config?)
     WL.withStdoutLogger $ \appLogger ->
@@ -141,11 +155,11 @@ rpcServer config chan runInIO mConnPool = do
         if Config.rpcSsl config
           then
             scottyTLS appLogger rpcPort key cert runInIO $
-              rpcApi chan mConnPool
+              rpcApi mConnPool localNode
           else do
             sock <- listenOn $ PortNumber (fromIntegral rpcPort)
             WS.scottySocketT (opts appLogger) sock runInIO $
-              rpcApi chan mConnPool
+              rpcApi mConnPool localNode
   where
     catchFailedSocketBind port a =
       catch a $ \(SomeException err) ->
@@ -179,10 +193,10 @@ post_ route action =
 
 rpcApi
   :: MonadIOReadDB m
-  => Chan.Chan Cmd.Cmd
-  -> Maybe ConnectionPool -- Connection to PostgresDB to run DB Queries
+  => Maybe ConnectionPool -- Connection to PostgresDB to run DB Queries
+  -> LocalNode
   -> RpcT m ()
-rpcApi chan mConnPool = do
+rpcApi mConnPool localNode = do
 
     --------------------------------------------------
     -- RPC Command API
@@ -197,12 +211,8 @@ rpcApi chan mConnPool = do
           case A.eitherDecode reqBody of
             Left err -> jsonParseErr $ toS err
             Right val -> do
-              resp <- lift $ handleRPCCmd chan mConnPool val
+              resp <- lift $ handleRPCCmd mConnPool localNode val
               WS.json $ toJSON resp
-
-    --------------------------------------------------
-    -- RPC Query API
-    --------------------------------------------------
 
     ---------------------------
     -- Status API
@@ -218,6 +228,7 @@ rpcApi chan mConnPool = do
         , "commit"  .= Version.commit
         , "dirty"   .= Version.dirty
         ]
+
     ---------------------------
     -- Blocks API
     ---------------------------
@@ -273,8 +284,7 @@ rpcApi chan mConnPool = do
     ---------------------------
 
     post_ "/assets" $ do
-      assetsWithAddrs <- lift getAssetsWithAddrs
-      jsonRPCRespM $ map (uncurry $ Asset.assetWithAddrJSON) assetsWithAddrs
+      jsonRPCRespM =<< lift getAssets
 
     post_ "/assets/:addr" $ do
       addr <- Address.fromRaw <$> WS.param "addr"
@@ -382,6 +392,20 @@ rpcApi chan mConnPool = do
           eTx <- lift $ lift $ getTransaction blockIdx txIdx
           either (jsonNotFoundErr . show) jsonRPCRespM eTx
 
+    ---------------------------
+    -- Contract Simulation API
+    ---------------------------
+
+    post_ "/simulation/create" $
+      jsonRPCRespOK -- XXX TODO
+
+    post_ "/simulation/update"
+      jsonRPCRespOK -- XXX TODO
+
+    post_ "/simulation/query"
+      jsonRPCRespOK -- XXX TODO
+
+
 -- | Construct a RPC response from a serializeable structure
 jsonRPCRespM :: (Monad m, ToJSON a) => a -> WS.ActionT Text m ()
 jsonRPCRespM = WS.json . RPCResp . toJSON
@@ -421,8 +445,8 @@ getAccounts = NodeState.withLedgerState $ pure . Map.elems . Ledger.accounts
 getAccount :: MonadBase IO m => Address.Address -> NodeT m (Either Text Account.Account)
 getAccount addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAccount addr
 
-getAssetsWithAddrs :: MonadBase IO m => NodeT m [(Address.Address, Asset.Asset)]
-getAssetsWithAddrs = NodeState.withLedgerState $ pure . Map.toList . Ledger.assets
+getAssets :: MonadBase IO m => NodeT m [Asset.Asset]
+getAssets = NodeState.withLedgerState $ pure . Map.elems . Ledger.assets
 
 getAsset :: MonadBase IO m => Address.Address -> NodeT m (Either Text Asset.Asset)
 getAsset addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAsset addr
@@ -497,75 +521,94 @@ queryAllRPC mkUrl = do
 -- Command
 -------------------------------------------------------------------------------
 
+-- | Handles an RPC Cmd, usually issuing the command to the Cmd process. If the
+-- msg is a SimulateMsg, the message is sent to the simulation process.
 handleRPCCmd
-  :: MonadBase IO m
-  => Chan Cmd.Cmd
-  -> Maybe ConnectionPool
+  :: MonadBaseControl IO m
+  => Maybe ConnectionPool
+  -> LocalNode
   -> RPCCmd
   -> NodeT m RPCResponse
-handleRPCCmd chan mConnPool rpcCmd = do
-  (mP2PCmd, rpcResp) <- case rpcCmd of
+handleRPCCmd mConnPool localNode rpcCmd = do
 
-    Transaction tx -> do
-      liftBase $ putText $
-        "RPC Recieved Transaction:\n\t" <> show tx
+    rpcRespMVar <- liftBase newEmptyMVar
+    let putMVar' = liftBase . putMVar rpcRespMVar
+    case rpcCmd of
 
-      validationRes <- NodeState.withLedgerState $ \worldState ->
-        return $ first show $ do
-          Validate.validateTransactionOrigin worldState tx
-          Validate.verifyTransaction worldState tx
+      Transaction tx -> do
+        liftBase $ putText $
+          "RPC Recieved Transaction:\n   " <> show tx
+        runProcess localNode $ do
+          eRes <- Cmd.commTasksProc $ Cmd.Transaction tx
+          liftBase $ putMVar rpcRespMVar RPCRespOK
 
-      let p2pCmd = Cmd.Transaction tx
-      case validationRes of
-        Left err -> return (Nothing, txErr err)
-        Right _ -> return (Just p2pCmd, RPCRespOK)
+      Query textQ -> do
+        liftBase $ putText $
+          "RPC Recieved Query:\n   " <> show textQ
+        putMVar' =<<
+          case mConnPool of
+            Nothing -> pure $ RPCRespError $
+              Internal "Cannot query a LevelDB database"
+            Just connPool ->
+              case parseQuery textQ of
+                Left err ->
+                  pure $ RPCRespError (SelectParse err)
+                Right q  -> do
+                  eQueryRes <- liftBase $
+                    Pool.withResource connPool $
+                      flip runSelect q
+                  pure $
+                    case eQueryRes of
+                      Left err ->
+                        RPCRespError $ SelectError (show err)
+                      Right qres ->
+                        RPCResp (toJSON qres)
 
-    Query textQ ->
-      case mConnPool of
-        Nothing -> pure $ (Nothing,) $
-          RPCRespError $ Internal "Cannot query a LevelDB database"
-        Just connPool ->
-          case parseQuery textQ of
-            Left err ->
-              pure $ (Nothing,) $
-                RPCRespError (SelectParse err)
-            Right q  -> do
-              eQueryRes <- liftBase $
-                Pool.withResource connPool $
-                  flip runSelect q
-              pure $ (Nothing,) $
-                case eQueryRes of
-                  Left err ->
-                    RPCRespError $ SelectError (show err)
-                  Right qres ->
-                    RPCResp (toJSON qres)
+      -- | Issue a Simulate msg to the Simulation process
+      Simulate simMsg -> do
+        liftBase $ putText $
+          "RPC Recieved Query:\n   " <> show simMsg
+        runProcess localNode $ do
+          eRes <- Sim.commSimulationProc simMsg
+          liftBase $ putMVar rpcRespMVar $
+            case eRes of
+              Left err  -> RPCRespError $ SimulationError $ show err
+              Right simRes ->
+                case simRes of
+                  Sim.CreateSimulationSuccess _ -> RPCResp $ toJSON simRes
+                  Sim.UpdateSimulationSuccess   -> RPCRespOK
+                  Sim.QuerySimulationSuccess _  -> RPCResp $ toJSON simRes
 
-    Test testCmd -> do
-      isTestNode <- NodeState.isTestNode
-      if not isTestNode then
-        return (Nothing, notTestNodeErr)
-      else handleTestRPCCmd testCmd
+      Test testCmd -> do
+        isTestNode <- NodeState.isTestNode
+        putMVar' =<<
+          if not isTestNode then
+            pure notTestNodeErr
+          else do
+            handleTestRPCCmd testCmd
+            pure RPCRespOK
 
-  case mP2PCmd of
-    Nothing -> return ()
-    Just p2pCmd -> liftBase $ writeChan chan p2pCmd
+    liftBase $ readMVar rpcRespMVar
 
-  return rpcResp
+  where
 
-handleTestRPCCmd :: MonadBase IO m => TestRPCCmd -> NodeT m (Maybe Cmd.Cmd, RPCResponse)
-handleTestRPCCmd testRPCCmd = do
-  let p2pCmd = case testRPCCmd of
+    handleTestRPCCmd :: MonadBase IO m => TestRPCCmd -> NodeT m ()
+    handleTestRPCCmd testRPCCmd = do
+      let p2pCmd = case testRPCCmd of
 
-        SaturateNetwork nTxs nSecs ->
-          Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
+            SaturateNetwork nTxs nSecs ->
+              Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
 
-        ResetMemPools ->
-          Cmd.Test $ Cmd.ResetMemPools
+            ResetMemPools ->
+              Cmd.Test $ Cmd.ResetMemPools
 
-        ResetDB addr sig ->
-          Cmd.Test $ Cmd.ResetDB addr sig
+            ResetDB addr sig ->
+              Cmd.Test $ Cmd.ResetDB addr sig
 
-  return (Just p2pCmd, RPCRespOK)
+      runProcess localNode $ do
+        putText "RPC: Issuing a test cmd to tasks process"
+        eRes <- Cmd.commTasksProc p2pCmd
+        putText $ "Tasks process response: " <> show eRes
 
 -------------------------------------------------------------------------------
 -- Protocol
@@ -575,8 +618,9 @@ handleTestRPCCmd testRPCCmd = do
 data RPCCmd
   = Transaction Tx.Transaction
   | Query Text
+  | Simulate Sim.SimulationMsg
   | Test TestRPCCmd
-  deriving (Eq, Show, Generic)
+  deriving (Generic)
 
 data TestRPCCmd
   = SaturateNetwork
@@ -595,7 +639,7 @@ data RPCResponse
   = RPCResp { contents :: A.Value }
   | RPCRespError RPCResponseError
   | RPCRespOK
-  deriving (Eq, Show, Generic, A.ToJSON, A.FromJSON)
+  deriving (Generic, A.ToJSON, A.FromJSON)
 
 -- | An RPC response error
 data RPCResponseError
@@ -611,7 +655,8 @@ data RPCResponseError
   | SelectParse Text
   | NotTestNode
   | NotFound Text
-  deriving (Eq, Show, Generic, A.FromJSON)
+  | SimulationError Text
+  deriving (Generic, A.FromJSON)
 
 invalidParam :: Text -> RPCResponse
 invalidParam = RPCRespError . InvalidParam
@@ -649,8 +694,9 @@ instance FromJSON RPCCmd where
     method <- v .: "method"
     case method :: Text of
       "Transaction" -> Transaction <$> v .: "params"
-      "Query" -> Query <$> v .: "params"
-      "Test" -> Test <$> v .: "params"
+      "Query"       -> Query       <$> v .: "params"
+      "Simulate"    -> Simulate    <$> v .: "params"
+      "Test"        -> Test        <$> v .: "params"
       invalid -> typeMismatch "RPCCmd" $ A.String invalid
 
   parseJSON invalid = typeMismatch "RPCCmd" invalid
@@ -726,6 +772,10 @@ instance ToJSON RPCResponseError where
     [ "errorType" .= ("NotFound" :: Text)
     , "errorMsg"  .= ("Not Found: " <> msg :: Text)
     ]
+  toJSON (SimulationError msg) = object
+    [ "errorType" .= ("SimulationError" :: Text)
+    , "errorMsg"  .= msg
+    ]
 
 -- | Deserialize RPC command (stateful)
 decodeRpc :: LByteString -> Either [Char] RPCCmd
@@ -734,15 +784,6 @@ decodeRpc = A.eitherDecode
 -- | Serialize RPC response
 encodeRpc :: RPCResponse -> LByteString
 encodeRpc = A.encode
-
--- | Encode an Address and Contract as a JSON object
-contractWithAddrJSON :: Contract.Contract -> A.Value
-contractWithAddrJSON contract = object
-    [ "address"  .= decodeUtf8 (Address.rawAddr addr)
-    , "contract" .= contract
-    ]
-  where
-    addr = Derivation.addrContract contract
 
 -------------------------------------------------------------------------------
 -- Helpers

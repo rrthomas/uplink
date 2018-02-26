@@ -64,7 +64,6 @@ module Reference (
   testStorage,
   testGlobalStorage,
   testLocalStorage,
-  testHashStorage,
 
   -- ** Script
   defX,
@@ -139,8 +138,10 @@ import qualified Data.Serialize as S
 import Account
 import Address
 import Asset
+import Metadata
 import Block
 import Contract
+import Fixed
 import Ledger
 import Hash
 import Encoding
@@ -257,6 +258,7 @@ testCreateAsset = TxAsset CreateAsset {
   , supply    = 1000
   , reference = Just Asset.Token
   , assetType = Asset.Discrete
+  , metadata = testMetadata
   }
 
 testCreateContract :: TransactionHeader
@@ -412,7 +414,7 @@ testBlockHash = do
 -------------------------------------------------------------------------------
 
 testBalance :: Text
-testBalance = displayType (Fractional 6) 42
+testBalance = displayType (Fractional Prec6) 42
 
 mkTestAsset
   :: ByteString
@@ -427,6 +429,7 @@ mkTestAsset name supply ref typ = Asset{..}
     holdings = mempty
     assetType = typ
     reference = Just ref
+    metadata = testMetadata
 
     address =
       Derivation.addrAsset
@@ -452,7 +455,7 @@ testAsset2 =
   where
     name = "usd"
     supply = 100
-    assetType = Fractional 2
+    assetType = Fractional Prec2
     reference = USD
 
 -- | A test asset with holdings!
@@ -506,9 +509,15 @@ testAccount2 = Account
   { publicKey   = testPub2
   , address     = Address.deriveAddress testPub2
   , timezone    = "America/Boston"
-  , metadata    = Metadata $
-      Map.fromList [ ("Company", "Adjoint Inc.") ]
+  , metadata    = testMetadata
   }
+
+-------------------------------------------------------------------------------
+-- Metadata
+-------------------------------------------------------------------------------
+testMetadata = Metadata $
+  Map.fromList [ ("Company", "Adjoint Inc.") ]
+
 
 -------------------------------------------------------------------------------
 -- Contract
@@ -539,6 +548,7 @@ testStorage = Map.fromList [
   , ("d", VAddress testAddr)
   , ("e", VVoid)
   , ("f", VCrypto $ SI.toSafeInteger' 42)
+  , ("g", VEnum (EnumConstr "Foo"))
   ]
 
 testGlobalStorage :: GlobalStorage
@@ -551,9 +561,6 @@ testLocalStorage = LocalStorage crypto
     f (VCrypto _) = True
     f _           = False
 
-testHashStorage :: (Int, Schema)
-testHashStorage = (hashStorage testStorage, Storage.storageSchema testStorage)
-
 -------------------------------------------------------------------------------
 -- Script
 -------------------------------------------------------------------------------
@@ -561,20 +568,33 @@ testHashStorage = (hashStorage testStorage, Storage.storageSchema testStorage)
 testLocated :: a -> Located a
 testLocated = Located NoLoc
 
+enumE :: EnumDef
+enumE = EnumDef (testLocated $ "E") [ testLocated $ EnumConstr "Foo"
+                                    , testLocated $ EnumConstr "Bar"
+                                    ]
+
 defX :: Def
 defX = GlobalDef TInt "x" (testLocated $ LInt 0)
+
+defY :: Def
+defY = GlobalDef (TEnum "E")
+                 "y"
+                 (testLocated . LConstr . EnumConstr $ "Foo")
+
+setY :: Method
+setY = Method (Main "initial") "setY" [] $ eseq NoLoc $
+  [ testLocated $ EAssign "y" (testLocated $ ELit $ testLocated (LConstr . EnumConstr $ "Bar"))
+  , testLocated $ ECall "transitionTo" [(testLocated $ ELit $ testLocated (LState "set"))]
+  ]
 
 setX :: Method
 setX = Method (Main "set") "setX" [] $ eseq NoLoc $
   [ testLocated $ EAssign "x" (testLocated $ ELit $ testLocated (LInt 42))
   , testLocated $ ECall "transitionTo" [(testLocated $ ELit $ testLocated (LState "get"))]
-  , testLocated $ ERet (testLocated $ ELit $ testLocated $ LVoid)
   ]
 
 getX :: Method
-getX = Method (Main "get") "getX" [] $ eseq NoLoc $ [
-    testLocated $ ERet (testLocated $ EVar $ testLocated "x")
-  ]
+getX = Method (Main "get") "getX" [] $ eseq NoLoc $ []
 
 transX :: [Transition]
 transX = [
@@ -583,7 +603,7 @@ transX = [
   ]
 
 testScript :: Script
-testScript = Script [defX] transX [getX, setX]
+testScript = Script [enumE] [defX, defY] transX [setY, getX, setX]
 
 testCode :: ByteString
 testCode =

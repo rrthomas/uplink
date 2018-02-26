@@ -6,17 +6,12 @@
 
 NAME=uplink
 
-#echo '%_signature     gpg2
-#%_gpg_path      ~/.gnupg
-#%_gpg_name      Stephen Diehl <stephen@adjoint.io>
-#%_gpgbin        /usr/bin/gpg2' > ~/.rpmmacros
 echo '%_signature     gpg2
 %_gpg_path      ~/.gnupg
-%_gpg_name      Alex Gremm <agremm@posteo.de>
+%_gpg_name      Stephen Diehl <stephen@adjoint.io>
 %_gpgbin        /usr/bin/gpg2' > ~/.rpmmacros
 
-#togo configure -n "Stephen Diehl" -e "stephen@adjoint.io"
-togo configure -n "Alex Gremm" -e "agremm@posteo.de"
+togo configure -n "Stephen Diehl" -e "stephen@adjoint.io"
 cd $NAME
 mkdir -p root/usr/local/bin
 mkdir -p root/etc/init

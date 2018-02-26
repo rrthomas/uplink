@@ -15,7 +15,8 @@ Peer to peer network interface.
 module Network.P2P (
   -- ** Server
   p2p,
-  createLocalNode
+  createLocalNode,
+  createLocalNode'
 ) where
 
 import Protolude hiding (newChan, catch)
@@ -40,7 +41,6 @@ import qualified Network.Transport.InMemory as Mem
 import Network.BSD (getHostName, getHostByName, hostAddress)
 
 import qualified Data.Binary as Binary
-import qualified Data.List as L
 import qualified Data.Text as T
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -68,17 +68,18 @@ import qualified Node.Peer
 import qualified Transaction
 import qualified Console
 import qualified Console.Config
-import qualified Logging as Log
 
-import Network.Utils (mkNodeId, extractNodeId)
-import Network.P2P.Controller
-import Network.P2P.Service (Service(..))
 import qualified Network.P2P.Cmd as Cmd
-import qualified Network.P2P.Message as Message
 import qualified Network.P2P.Consensus as P2PConsensus
+import qualified Network.P2P.Simulate as Simulate
+import Network.P2P.Controller
+import qualified Network.P2P.Logging as Log
+import qualified Network.P2P.Message as Message
+import Network.P2P.Service (Service(..))
+import Network.Utils (mkNodeId, extractNodeId, waitForLocalService, waitForLocalService')
 
 -------------------------------------------------------------------------------
--- Initialization
+-- Node Creation
 -------------------------------------------------------------------------------
 
 data Mode
@@ -86,28 +87,21 @@ data Mode
   | TCP
   deriving (Eq, Show)
 
--- | Starts the peer controller service process
-initPeerController
-  :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
-  => Config.Config
-  -> NodeT m ()
-initPeerController config = do
+-- | Creates a local TCP cloud haskell node using from Config
+createLocalNode :: Config.Config -> IO DPN.LocalNode
+createLocalNode config =
+    createLocalNode' hostname port (Just DPN.initRemoteTable)
+  where
+    hostname = toS $ Config.hostname config
+    port     = show $ Config.port config
 
-  -- Construct bootnode processIds
-  cachedPeersNodeIds <- Node.Peer.peersToNodeIds <$> getCachedPeers
-  bootNodeIds <- liftBase $ mapM mkNodeId $ Config.bootnodes config
-  let initNodeIds = List.nub $ bootNodeIds ++ cachedPeersNodeIds
-
-  -- Initialize p2p networking controller with known nodes
-  peerController initNodeIds
-
--- | Creates tcp local node which used by 'bootstrap'
-createLocalNode
+-- | Creates a local TCP cloud haskell node
+createLocalNode'
   :: HostName
   -> ServiceName
   -> Maybe RemoteTable
   -> IO DPN.LocalNode
-createLocalNode host port mRemoteTable = do
+createLocalNode' host port mRemoteTable = do
   let transport = TCP
   let rTable = fromMaybe DPN.initRemoteTable mRemoteTable
   case transport of
@@ -120,7 +114,6 @@ createLocalNode host port mRemoteTable = do
       mtransport <- TCP.createTransport host port (const (host,port)) TCP.defaultTCPParameters
       case mtransport of
         Left err        -> do
-          Log.warning (show err)
           liftIO $ Utils.dieRed "Could not bind socket on port. Now I die..."
         Right transport -> DPN.newLocalNode transport rTable
 
@@ -138,7 +131,6 @@ createLocalNode host port mRemoteTable = do
     +---> p2p:controller      |
     +---> test/messaging      |
     +---> tasks  <------------+
-    +---> logger
     +---> consensus
 
 -}
@@ -147,30 +139,18 @@ createLocalNode host port mRemoteTable = do
 p2p
   :: (MonadReadWriteDB m, MonadProcessBase m)
   => Config.Config
-  -> Chan.Chan Cmd.Cmd -- ^ RPC to P2P channel
-  -> (NodeT m () -> Process ())
-  -> IO ()
-p2p config chan runNodeTtoProcess = do
-
-  -- Create cloud haskell node
-  let hostname = toS $ Config.hostname config
-  let port     = show $ Config.port config
-  let remoteTable = DPN.initRemoteTable
-  node <- createLocalNode hostname port (Just remoteTable)
-
+  -> NodeT m ()
+p2p config = do
   -- Init Peer controller
-  DPN.forkProcess node $ runNodeTtoProcess $
-    initPeerController config
-
+  spawnLocal peerControllerProc
   -- Run main process
-  DPN.runProcess node $ runNodeTtoProcess $
-    waitController 1000000 $ mainProcess chan
+  waitForLocalService' PeerController 1000000 mainProcess
 
 mainProcess
   :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
-  => Chan.Chan Cmd.Cmd
-  -> NodeT m ()
-mainProcess chan = do
+  => NodeT m ()
+mainProcess = do
+  register "main" =<< getSelfPid
 
   isTestNode <- NodeState.isTestNode
   let msgService = if isTestNode then TestMessaging else Messaging
@@ -178,6 +158,9 @@ mainProcess chan = do
 
   -- Unregister old logging process (?)
   unregister (show Logger)
+  loggingRules <- Config.loggingRules <$> askConfig
+  spawnLocal (Log.loggerProc loggingRules)
+    >>= register (show Logger)
 
   if isTestNode
     then Log.info "Node is running in test mode."
@@ -190,41 +173,72 @@ mainProcess chan = do
   mConsProc <-
     if isValidatingNode
       then do
-        let consProc = do
-              Log.info "I am a validating node, according to the genesis block."
-              P2PConsensus.consensusProc msgService
+        let consProc = P2PConsensus.consensusProc msgService
         pure $ Just (Consensus, consProc)
       else -- Non validating nodes do not need consensus process
         return Nothing
 
   -- Construct Process to be supervised
-  let procList = maybeToList mConsProc ++        -- Consensus Proc
-        [ (Tasks, tasksProc msgService chan)     -- Cmd Proc
-        , (msgService, messagingProc msgService) -- Messaging Proc
-        , (Logger, lift loggerProc)              -- Logging Proc
+  let procList = maybeToList mConsProc ++                -- Consensus Proc
+        [ (Tasks, Cmd.tasksProc msgService)              -- Cmd Proc
+        , (msgService, Message.messagingProc msgService) -- Messaging Proc
+        , (Simulation, Simulate.simulationProc)          -- Contract Simulation Proc
         ]
 
   -- Spawn Supervisor Process
   supervisorPid <- spawnLocal $ supervisorProc procList
 
-  -- Join Network:
-  void $ spawnLocal $ do
-    -- Wait a few seconds for processes to boot fully
-    liftIO $ threadDelay 3000000
+  -- Join Network after waiting for Messaging proc to spawn:
+  Log.info "Joining the Uplink network..."
+  mres <- waitForLocalService msgService 3000000 $ do
     -- Submit CreateAccount Tx to network if new account
-    unless isValidatingNode $
-      submitNewNodeAccountTx msgService
+    if isValidatingNode
+      then Log.info "I am a validating node, according to the genesis block."
+      else submitNewNodeAccountTx msgService
     -- Join the network by asking for next block
     lastBlockIdx <- Block.index <$> NodeState.getLastBlock
     getBlockAtIdx1Msg <- Message.mkGetBlockAtIdxMsg $ lastBlockIdx + 1
     nsendPeers' msgService getBlockAtIdx1Msg
 
-  -- Don't terminate main process
-  forever $ liftIO $
-    threadDelay 1000000
+  case mres of
+    Nothing -> do
+      Log.critical "Failed to join network. Terminating."
+      terminate
+    Just _  ->
+      -- Don't terminate main process
+      forever $ liftIO $
+        threadDelay 1000000
+
+  where
+    submitNewNodeAccountTx :: Service -> NodeT m ()
+    submitNewNodeAccountTx msgService = do
+      -- If node is new to network,
+      -- submit CreateAccount transaction
+      accountType <- NodeState.askAccountType
+      case accountType of
+        NodeState.Existing -> return ()
+        NodeState.New      -> do
+          nodeAcc <- NodeState.askAccount
+          let pub      = Key.unHexPub $ Key.hexPub $ Account.publicKey nodeAcc
+              tz       = Account.timezone nodeAcc
+              md       = Account.metadata nodeAcc
+              accTxHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
+          newAccTx <- Cmd.newTransaction accTxHdr
+          Cmd.nsendTransaction msgService newAccTx
 
 -------------------------------------------------------------------------------
 -- Supervisor Processes
+--
+-- This process "manages" all Uplink processes, spawning them initially and
+-- monitoring them throughout the lifetime of the uplink node. If a process
+-- crashes, it reports the reason for the crash, unregisters the process name,
+-- and cleans up accordingly, finally spawning another copy of the process in
+-- it's place.
+--
+-- This was commissioned after some processes were silently dying when fatal
+-- exceptions werent being caught. Now, if a process throws an unexpected,
+-- uncaught exception, the crash will be discovered, reported, and the process
+-- will be brough back to life by the supervisor process.
 -------------------------------------------------------------------------------
 
 data ServiceInfo m where
@@ -244,6 +258,7 @@ supervisorProc
   => [(Service, NodeT m ())]
   -> NodeT m ()
 supervisorProc procs = do
+    register "supervisor" =<< getSelfPid
     -- Spawn all processes
     procInfos <- mapM (uncurry spawnService) procs
     -- Create MVar for managing live processes
@@ -269,10 +284,9 @@ supervisorProc procs = do
           unmonitor mref -- unmonitor the unrecognized process
         Just servInfo@(ServiceInfo s mref proc) -> do
           let servName = show s
-          Log.warning $ "[Supervisor] " <> servName <> " died:\n    " <> show died
           -- Fully kill the process
+          Log.warning $ "[Supervisor] " <> servName <> " service died. Cleaning up..."
           killService oldPid servInfo
-          Log.warning $ "[Supervisor] Cleaning up service: " <> servName
           -- Start new instance of same process
           (newPid, newServInfo) <- spawnService s proc
           Log.warning $ "[Supervisor] Spawned new service: " <> servName
@@ -292,7 +306,7 @@ supervisorProc procs = do
 -- monitoring it. The child process spawned will report
 -- `ProcessMonitorNotification`s to the process that calls this function.
 spawnService
-  :: MonadProcessBase m
+  :: (MonadProcessBase m)
   => Service
   -> NodeT m ()
   -> NodeT m (ProcessId, ServiceInfo m)
@@ -333,79 +347,3 @@ killService pid (ServiceInfo service mref _) = do
   Log.warning killMsg
   kill pid $ toS killMsg
   unmonitor mref
-
--------------------------------------------------------------------------------
-
--- | Interserver communication from RPC, that can execute Cmd items in the
--- CloudHaskell process.
-tasksProc
-  :: forall m. (MonadProcessBase m, DB.MonadReadWriteDB m)
-  => Service
-  -> Chan.Chan Cmd.Cmd
-  -> NodeT m ()
-tasksProc service chan = do
-    spawnLocal rpcHandler
-    controlP $ \runInBase ->
-      forever $ receiveWait
-        [ match $ runInBase . onConsoleMsg ]
-  where
-    -- XXX RPC server can probably use cloud haskell primitives too, instead of
-    -- passing Chan Cmd to this process and RPC server
-    rpcHandler :: NodeT m ()
-    rpcHandler =
-      forever $ do
-        cmd <- liftIO $ Chan.readChan chan
-        Log.info $ "Recieved Cmd from RPC:\n\t" <> show cmd
-
-        void $ Cmd.handleCmd service cmd
-
-    onConsoleMsg :: (Cmd.Cmd, SendPort Cmd.CmdResult) -> NodeT m ()
-    onConsoleMsg (cmd, sp) = do
-      Log.info $ "Recieved Cmd from CLI:\n\t" <> show cmd
-      res <- Cmd.handleCmd service cmd
-      sendChan sp res
-
-loggerProc :: MonadProcessBase m => m ()
-loggerProc = forever $ do
-    (time, pid, msg) <- liftP expectLogMsg
-    -- Using loging infastructure
-    let line = show pid ++ " " ++ msg
-    Log.info (toS line)
-  where
-   expectLogMsg :: Process ([Char], ProcessId, [Char])
-   expectLogMsg = expect
-
--- | Message handling service
--- Expects a bytestring because the canonical serialization library used in this
--- software is Data.Serialize, whereas in order to use cloud haskell's `match`
--- function to receive typed values, a Data.Binary instance must be written.
-messagingProc
-  :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
-  => Service
-  -> NodeT m ()
-messagingProc service = do
-    NodeEnv nodeConfig nodeState <- ask
-    controlP $ \runInBase ->
-      forever $ receiveWait
-        [ match $ runInBase . handleMessage' ]
-  where
-    handleMessage' :: ByteString -> NodeT m ()
-    handleMessage' = Message.handleMessage service
-
--------------------------------------------------------------------------------
-
-submitNewNodeAccountTx :: MonadProcessBase m => Service -> NodeT m ()
-submitNewNodeAccountTx msgService = do
-  -- If node is new to network,
-  -- submit CreateAccount transaction
-  accountType <- NodeState.askAccountType
-  case accountType of
-    NodeState.Existing -> return ()
-    NodeState.New      -> do
-      nodeAcc <- NodeState.askAccount
-      let pub      = Key.unHexPub $ Key.hexPub $ Account.publicKey nodeAcc
-          tz       = Account.timezone nodeAcc
-          md       = Account.metadata nodeAcc
-          accTxHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
-      newAccTx <- Cmd.newTransaction accTxHdr
-      Cmd.nsendTransaction msgService newAccTx

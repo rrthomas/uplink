@@ -11,6 +11,7 @@ module Utils (
   ppDump,
   ppDumpM,
 
+  withColor,
   putRed,
   putGreen,
   dieRed,
@@ -31,6 +32,8 @@ module Utils (
   parsePrompt,
   yesOrNoPrompt,
 
+  duplicates,
+
   -- Error handling
   panicImpossible,
 ) where
@@ -39,6 +42,7 @@ import Protolude
 import Data.Time.Clock
 import Data.Time.Clock.POSIX
 import Data.List (partition)
+import qualified Data.List as List
 import qualified Time
 import qualified Numeric as N
 import qualified Data.ByteArray as BA
@@ -73,19 +77,26 @@ ppDump x = putStrLn (ppShow x)
 ppDumpM :: Show a => IO a -> IO ()
 ppDumpM m = m >>= \x -> putStrLn (ppShow x)
 
+--------------------------------------------------------------------------------
+
+clearColor :: IO ()
+clearColor = setSGR []
+
+setColor :: Color -> IO ()
+setColor color = setSGR [SetColor Foreground Vivid color]
+
+withColor :: Color -> (a -> IO ()) -> a -> IO ()
+withColor color f a =
+  setColor color >> f a >> clearColor
+
 -- | Print red text
 putRed :: Text -> IO ()
-putRed msg = do
-  setSGR [SetColor Foreground Vivid Red]
-  putStrLn msg
-  setSGR []
+putRed = withColor Red putStrLn
 
 -- | Print green text
 putGreen :: Text -> IO ()
-putGreen msg = do
-  setSGR [SetColor Foreground Vivid Green]
-  putStrLn msg
-  setSGR []
+putGreen =
+  withColor Green putStrLn
 
 -- | Half exit with faillure and message.
 dieRed :: Text -> IO a
@@ -93,13 +104,19 @@ dieRed msg = do
   putRed msg
   exitFailure
 
-waitUntil :: Time.Timestamp -> IO ()
+--------------------------------------------------------------------------------
+
+-- | Waits until the specified timestamp (microseconds). If the time to wait
+-- until is earlier than "now", return immediately.
+waitUntil :: Time.Timestamp -> IO Int64
 waitUntil t = do
   t' <- Time.now
   let tdiff = t - t'
-  when (tdiff > 0) $ do
-    putStrLn $ ("Delaying for " <> show tdiff <> "us" :: Text)
-    threadDelay (fromIntegral tdiff)
+  if (tdiff > 0)
+    then do
+      threadDelay (fromIntegral tdiff)
+      pure tdiff
+    else pure 0
 
 delayedReplicateM_
   :: MonadIO m
@@ -207,6 +224,12 @@ parsePrompt msg p = do
       print err
       parsePrompt msg p
     (Right v) -> return v
+
+-- | Return a list of duplicates in a list. (Resulting list only has
+-- one occurrence of every item that has duplicates.)
+duplicates :: Eq a => [a] -> [a]
+duplicates xs = List.nub (xs List.\\ List.nub xs)
+
 -------------------------------------------------------------------------------
 -- Impossible Errors
 -------------------------------------------------------------------------------

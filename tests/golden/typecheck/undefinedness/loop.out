@@ -1,0 +1,7 @@
+[ ( Name { unName = "start" } , Sig [] TVoid )
+, ( Name { unName = "one" } , Sig [] TVoid )
+, ( Name { unName = "two" } , Sig [] TVoid )
+, ( Name { unName = "three" } , Sig [] TVoid )
+, ( Name { unName = "four" } , Sig [ TInt ] TVoid )
+, ( Name { unName = "exit" } , Sig [] TAny )
+]

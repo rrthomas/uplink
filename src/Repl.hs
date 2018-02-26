@@ -47,8 +47,10 @@ import qualified Delta
 import qualified Block
 import qualified Account
 import qualified Address
+import qualified Contract
 
 import qualified Script.Eval as Eval
+import qualified Script.Error as Error
 import qualified Script.Prim as Prim
 import qualified Script.Typecheck as TC
 import qualified Script.Pretty as Pretty
@@ -66,12 +68,14 @@ exec
   -> Eval.EvalCtx
   -> Eval.EvalState
   -> IO (Either Eval.EvalFail (Value, Eval.EvalState))
-exec sc@(Script _ graph ms) name args ctx state = do
+exec sc@(Script _ _ graph ms) name args ctx state = do
   -- XXX Typecheck method args ([Located Expr])
   Eval.runEvalM ctx state $ do
-   vals <- mapM Eval.evalLExpr args
-   {-print vals-}
-   Eval.eval sc name vals
+    vals <- mapM Eval.evalLExpr args
+    {-print vals-}
+    case Script.lookupMethod name sc of
+      Nothing -> throwError $ Error.InvalidMethodName $ Contract.MethodDoesNotExist name
+      Just method -> Eval.evalMethod method vals
 
 -------------------------------------------------------------------------------
 -- REPL
@@ -184,12 +188,14 @@ replLoop sigs script ievalCtx ievalState verbose =
                 else do
                   when verbose $ do
                     let store = Eval.tempStorage $ evalState
+                        enumInfo = Script.createEnumInfo (Script.scriptEnums script)
+
                     putText $ "    TempStorage = "
-                    putStrLn $ Pretty.render $ SStorage.dumpStorage store
+                    putStrLn $ Pretty.render $ SStorage.dumpStorage enumInfo store
 
                     let store = Eval.globalStorage $ evalState
                     putText $ "    GlobalStorage = "
-                    putStrLn $ Pretty.render $ SStorage.dumpStorage store
+                    putStrLn $ Pretty.render $ SStorage.dumpStorage enumInfo store
 
                     putText $ "    SubgraphLock = "
                     putStrLn $ Pretty.print $ fst (Eval.sideLock evalState)

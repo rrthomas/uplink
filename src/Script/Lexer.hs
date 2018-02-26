@@ -13,6 +13,8 @@ module Script.Lexer (
   identifier,
   name,
   label,
+  enumConstr,
+  locEnumConstr,
   locName,
   opToken,
   unOpToken,
@@ -24,6 +26,7 @@ module Script.Lexer (
   semi,
   comma,
   commaSep,
+  commaSep1,
   semiSep,
   semiSep1,
   symbol,
@@ -44,8 +47,11 @@ import Data.Functor.Identity (Identity)
 import qualified Data.Text as T
 import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
 
-import Script (Name(..), Loc(..), Located(..), LName, Label(..), BinOp(..), UnOp(..))
+import Script (Name(..), Loc(..), Located(..), LName, Label(..), BinOp(..), UnOp(..), EnumConstr(..), LEnumConstr)
 import qualified Script.Token as Token
+
+import qualified SafeString as SS
+import qualified Data.Text.Encoding as Text
 
 -------------------------------------------------------------------------------
 -- Lexer
@@ -86,6 +92,13 @@ label = Label <$> identifier
 
 locName :: Parser LName
 locName = mkLocated name
+
+enumConstr :: Parser EnumConstr
+enumConstr = EnumConstr  . SS.fromBytes' . Text.encodeUtf8 <$> identifier
+  <?> "enum constructor"
+
+locEnumConstr :: Parser LEnumConstr
+locEnumConstr = mkLocated enumConstr
 
 unOpToken :: UnOp -> T.Text
 unOpToken Not = Token.not
@@ -136,6 +149,10 @@ comma = Tok.comma lexer
 commaSep :: Parser a -> Parser [a]
 commaSep xs = Tok.commaSep lexer xs
   <?> "comma seperated list"
+
+commaSep1 :: Parser a -> Parser [a]
+commaSep1 xs = Tok.commaSep1 lexer xs
+  <?> "non-empty comma seperated list"
 
 semiSep :: Parser a -> Parser [a]
 semiSep xs = Tok.semiSep lexer xs

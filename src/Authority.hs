@@ -34,6 +34,7 @@ import qualified Key
 import qualified Time
 import qualified Utils
 import qualified Account
+import qualified Metadata
 import qualified Address
 import qualified Encoding
 
@@ -44,7 +45,7 @@ import qualified Encoding
 -- | Create account data for
 authorityDir :: FilePath -> IO (Either Text ())
 authorityDir dbpath = do
-  let meta = Account.Metadata $ Map.fromList [("validator", "true")]
+  let meta = Metadata.Metadata $ Map.fromList [("validator", "true")]
   (account, acctKeys) <- Account.newAccount "GMT" meta
 
   Utils.putGreen "Writing account"

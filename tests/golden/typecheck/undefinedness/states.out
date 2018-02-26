@@ -1,0 +1,29 @@
+In method initA:
+Variable "a" undefined at:
+  - line 52:7
+Variable "b" undefined at:
+  - line 52:11
+Variable "c" undefined at:
+  - line 52:3
+Stack trace leading up to error:
+  - @stateA:initA to @terminal
+  - @initial:goA to @stateA
+In method initA:
+Variable "a" undefined at:
+  - line 52:7
+Variable "c" undefined at:
+  - line 52:3
+Stack trace leading up to error:
+  - @stateA:initA to @terminal
+  - @stateB:initB to @stateA
+  - @initial:goB to @stateB
+In method initA:
+Variable "a" undefined at:
+  - line 52:7
+Variable "c" undefined at:
+  - line 52:3
+Stack trace leading up to error:
+  - @stateA:initA to @terminal
+  - @stateB:initB to @stateA
+  - @stateB:loop to @stateB
+  - @initial:goB to @stateB

@@ -1,11 +1,20 @@
 [ ( Name { unName = "setDate" } , Sig [] TVoid )
 , ( Name { unName = "initialize" } , Sig [] TVoid )
-, ( Name { unName = "setX" } , Sig [ TInt , TFloat ] TFloat )
-, ( Name { unName = "getX" } , Sig [] (TFixed Prec2) )
-, ( Name { unName = "f" } , Sig [ TInt , TBool ] TInt )
-, ( Name { unName = "g" } , Sig [ TAsset , TAccount ] TVoid )
-, ( Name { unName = "circulate" } , Sig [ TAsset , TInt ] TVoid )
+, ( Name { unName = "confirm" } , Sig [] TVoid )
+, ( Name { unName = "settle" } , Sig [] TVoid )
+, ( Name { unName = "finalize" } , Sig [] TVoid )
+, ( Name { unName = "setX" } , Sig [ TInt , TFloat ] TVoid )
+, ( Name { unName = "fixX" } , Sig [] TVoid )
+, ( Name { unName = "fixY" } , Sig [] TVoid )
+, ( Name { unName = "update" } , Sig [] TVoid )
+, ( Name { unName = "f" } , Sig [ TInt , TBool ] TVoid )
+, ( Name { unName = "g" }
+  , Sig [ TAsset TDiscrete , TAccount ] TVoid
+  )
+, ( Name { unName = "circulate" }
+  , Sig [ TAsset (TFractional Prec2) , TFixed Prec2 ] TVoid
+  )
 , ( Name { unName = "transfer" }
-  , Sig [ TAsset , TAccount , TAccount , TInt ] TAny
+  , Sig [ TAsset TBinary , TAccount , TAccount , TBool ] TAny
   )
 ]

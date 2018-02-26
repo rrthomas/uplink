@@ -49,7 +49,7 @@ data Delta
 
   -- Evaluation failures
   | Failure EvalFail
-  deriving (Eq, Ord, Show, Generic, NFData)
+  deriving (Eq, Show, Generic, NFData)
 
 data AssetOp
   = TransferTo {

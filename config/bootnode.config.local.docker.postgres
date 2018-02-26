@@ -36,11 +36,9 @@ storage
 
 logging
 {
-  verbose      = true
-  logfile      = "/var/log/uplink/debug.log"
-
-  # DEBUG INFO NOTICE WARNING ERROR CRITICAL ALERT EMERGENCY
-  loglevel     = "WARNING"
+  rules = [ ["*", "*", "stdout", "no colors"]
+          , ["*", "*", "/var/log/uplink/debug.log", "no colors"]
+	  ]
 }
 
 rpc

@@ -21,7 +21,6 @@ module Script.Eval (
   evalLLit,
   evalLExpr,
   evalMethod,
-  lookupMethod,
   insertTempVar,
 
   -- ** Evaluation state
@@ -38,6 +37,7 @@ import Protolude hiding (DivideByZero, Overflow, Underflow)
 
 import Prelude (read)
 
+import Fixed
 import Script
 import SafeInteger
 import SafeString as SS
@@ -47,17 +47,17 @@ import Ledger (World)
 import Storage
 import Contract (Contract, LocalStorageVars(..))
 import Derivation (addrContract')
-import Account (publicKey, readKeys)
+import Account (Account,  address, publicKey)
 import Script.Init (initLocalStorageVars)
 import Script.Prim (PrimOp(..))
 import Script.Error as Error
 import Script.Graph (GraphState(..), terminalLabel, initialLabel)
 import Address (Address, rawAddr)
 import Utils (panicImpossible)
+import qualified Asset
 import qualified Delta
 import qualified Contract
 import qualified Hash
-import qualified Time
 import qualified Key
 import qualified Ledger
 import qualified Script.Storage
@@ -68,19 +68,16 @@ import qualified Datetime as DT
 import Datetime.Types (within, Interval(..), add, sub, subDeltas, scaleDelta)
 
 import Data.Fixed (Fixed(..), showFixed)
-import Data.Hashable
-import Data.Serialize (Serialize)
+import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Aeson as A
 import qualified Data.Serialize as S
-import qualified Data.List as List
 
-import Control.Monad.State
-import Control.Monad.Catch
 import qualified Control.Exception as E
-import Data.Time.Clock.POSIX (getCurrentTime)
-import Data.Time.Calendar (fromGregorianValid)
+import qualified Control.Monad.Catch as Catch
+import Control.Monad.State
+import qualified Crypto.Random as Crypto (SystemDRG, getSystemDRG)
+import qualified Crypto.Random.Types as Crypto (MonadRandom(..), MonadPseudoRandom, withDRG)
 
 -------------------------------------------------------------------------------
 -- Execution State
@@ -266,16 +263,47 @@ lookupVar var = do
 -- Interpreter Monad
 -------------------------------------------------------------------------------
 
+type RandomM = Crypto.MonadPseudoRandom Crypto.SystemDRG
+
+-- | Initialize the random number generator and run the monadic
+-- action.
+runRandom :: RandomM a -> IO a
+runRandom m = do
+  gen <- Crypto.getSystemDRG
+  return . fst . Crypto.withDRG gen $ m
+
 -- | EvalM monad
-type EvalM = ReaderT EvalCtx (StateT EvalState (ExceptT Error.EvalFail IO))
+type EvalM = ReaderT EvalCtx (StateT EvalState (ExceptT Error.EvalFail RandomM))
+
+instance Crypto.MonadRandom EvalM where
+  getRandomBytes = lift . lift . lift . Crypto.getRandomBytes
 
 -- | Run the evaluation monad.
 execEvalM :: EvalCtx -> EvalState -> EvalM a -> IO (Either Error.EvalFail EvalState)
-execEvalM evalCtx evalState = runExceptT . flip execStateT evalState . flip runReaderT evalCtx
+execEvalM evalCtx evalState
+  = handleArithError
+  . runRandom
+  . runExceptT
+  . flip execStateT evalState
+  . flip runReaderT evalCtx
 
 -- | Run the evaluation monad.
 runEvalM :: EvalCtx -> EvalState -> EvalM a -> IO (Either Error.EvalFail (a, EvalState))
-runEvalM evalCtx evalState = runExceptT . flip runStateT evalState . flip runReaderT evalCtx
+runEvalM evalCtx evalState
+  = handleArithError
+  . runRandom
+  . runExceptT
+  . flip runStateT evalState
+  . flip runReaderT evalCtx
+
+handleArithError :: IO (Either Error.EvalFail a) -> IO (Either Error.EvalFail a)
+handleArithError m = do
+   res <- Catch.try $! m
+   case res of
+    Left E.Overflow              -> return . Left $ Overflow
+    Left E.Underflow             -> return . Left $ Underflow
+    Left (e :: E.ArithException) -> return . Left $ Impossible "Arithmetic exception"
+    Right val                    -> pure val
 
 -------------------------------------------------------------------------------
 -- Evaluation
@@ -286,8 +314,6 @@ evalLExpr :: LExpr -> EvalM Value
 evalLExpr (Located _ e) = case e of
 
   ESeq a b        -> evalLExpr a >> evalLExpr b
-
-  ERet a          -> evalLExpr a
 
   ELit llit       -> pure $ evalLLit llit
 
@@ -386,7 +412,7 @@ evalLExpr (Located _ e) = case e of
 
   -- This logic handles the special cases of operating over homomorphic
   -- crypto-text.
-  EBinOp (Located _ op) a b -> handleArithError $ do
+  EBinOp (Located _ op) a b -> do
     valA <- evalLExpr a
     valB <- evalLExpr b
     let binOpFail = panicInvalidBinOp op valA valB
@@ -508,7 +534,7 @@ evalLExpr (Located _ e) = case e of
 
   ECall f args   -> do
     case Prim.lookupPrim f of
-      Nothing -> throwError $ NoSuchMethod f
+      Nothing -> throwError $ NoSuchPrimOp f
       Just prim -> evalPrim prim args
 
   EBefore dt e -> do
@@ -541,7 +567,18 @@ evalLExpr (Located _ e) = case e of
       then evalLExpr e1
       else evalLExpr e2
 
+  ECase scrut ms -> do
+    VEnum c <- evalLExpr scrut
+    evalLExpr (match ms c)
+
   ENoOp       -> noop
+
+match :: [Match] -> EnumConstr -> LExpr
+match ps c
+  = fromMaybe (panicImpossible $ Just "Cannot match constructor")
+  $ List.lookup (PatLit c)
+  $ map (\(Match pat body) -> (locVal pat, body))
+  $ ps
 
 -- | Evaluate a binop and two Fractional Num args
 evalBinOpF :: (Fractional a, Ord a) => BinOp -> (a -> Value) -> a -> a -> EvalM Value
@@ -558,15 +595,6 @@ evalBinOpF Script.GEqual constr a b = pure $ VBool (a >= b)
 evalBinOpF Script.Lesser constr a b = pure $ VBool (a < b)
 evalBinOpF Script.Greater constr a b = pure $ VBool (a > b)
 evalBinOpF bop c a b = panicInvalidBinOp bop (c a) (c b)
-
-handleArithError :: EvalM Value -> EvalM Value
-handleArithError m = do
-   res <- Control.Monad.Catch.try $! m
-   case res of
-    Left E.Overflow              -> throwError $ Overflow
-    Left E.Underflow             -> throwError $ Underflow
-    Left (e :: E.ArithException) -> throwError $ Impossible "Arithmetic exception"
-    Right val                    -> pure val
 
 evalPrim :: PrimOp -> [LExpr] -> EvalM Value
 evalPrim ex args = case ex of
@@ -641,9 +669,7 @@ evalPrim ex args = case ex of
     let [msgExpr] = args
     (VMsg msg) <- evalLExpr msgExpr
     privKey <- currentPrivKey <$> ask -- XXX               V gen Random value?
-    sig <- liftIO $
-      Key.getSignatureRS <$>
-        Key.sign privKey (SS.toBytes msg)
+    sig <- Key.getSignatureRS <$> Key.sign privKey (SS.toBytes msg)
     case bimap toSafeInteger toSafeInteger sig of
       (Right safeR, Right safeS) -> return $ VSig (safeR,safeS)
       otherwise -> throwError $
@@ -675,98 +701,16 @@ evalPrim ex args = case ex of
     world <- gets worldState
     return $ VBool $ Ledger.contractExists contractAddr world
 
-  -- From Account to Contract
-  Prim.TransferTo  -> do
-    let [assetExpr,holdingsExpr] = args
-
-    senderAddr <- currentTxIssuer <$> ask
-    contractAddr <- currentAddress <$> ask
-    assetAddr <- getAssetAddr assetExpr
-    (VInt holdings) <- evalLExpr holdingsExpr
-
-    -- Modify the world (perform the transfer)
-    world <- gets worldState
-    case Ledger.transferAsset assetAddr senderAddr contractAddr holdings world of
-      Left err -> throwError $ AssetIntegrity $ show err
-      Right newWorld -> setWorld newWorld
-
-    -- Emit the delta denoting the world state modification
-    emitDelta $ Delta.ModifyAsset $
-      Delta.TransferTo assetAddr holdings senderAddr contractAddr
-
-    noop
-
-  -- From Contract to Account
-  Prim.TransferFrom  -> do
-    let [assetExpr,holdingsExpr,accExpr] = args
-
-    contractAddr <- currentAddress <$> ask
-    assetAddr <- getAssetAddr assetExpr
-    accAddr <- getAccountAddr accExpr
-    (VInt holdings) <- evalLExpr holdingsExpr
-
-    -- Modify the world (perform the transfer)
-    world <- gets worldState
-    case Ledger.transferAsset assetAddr contractAddr accAddr holdings world of
-      Left err -> throwError $ AssetIntegrity $ show err
-      Right newWorld -> setWorld newWorld
-
-    -- Emit the delta denoting the world state modification
-    emitDelta $ Delta.ModifyAsset $
-      Delta.TransferFrom assetAddr holdings accAddr contractAddr
-
-    noop
-
-  -- Circulate the supply of an Asset to the Asset issuer's holdings
-  CirculateSupply -> do
-    let [assetExpr, amountExpr] = args
-
-    assetAddr <- getAssetAddr assetExpr
-    VInt amount <- evalLExpr amountExpr
-
-    -- Perform the circulation
-    world <- gets worldState
-    txIssuer <- asks currentTxIssuer
-    case Ledger.circulateAsset assetAddr txIssuer amount world of
-      Left err -> throwError $ AssetIntegrity $ show err
-      Right newWorld -> setWorld newWorld
-
-    noop
-
-  -- From Account to Account
-  TransferHoldings -> do
-    let [fromExpr,assetExpr,holdingsExpr,toExpr] = args
-
-    assetAddr <- getAssetAddr assetExpr
-    fromAddr <- getAccountAddr fromExpr
-    toAddr <- getAccountAddr toExpr
-    VInt holdings <- evalLExpr holdingsExpr
-
-    -- Modify the world (perform the transfer)
-    world <- gets worldState
-    case Ledger.transferAsset assetAddr fromAddr toAddr holdings world of
-      Left err -> throwError $ AssetIntegrity $ show err
-      Right newWorld -> setWorld newWorld
-
-    -- Emit the delta denoting the world state modification
-    emitDelta $ Delta.ModifyAsset $
-      Delta.TransferHoldings fromAddr assetAddr holdings toAddr
-
-    noop
-
   Verify         -> do
     let [accExpr,sigExpr,msgExpr] = args
-    accAddr <- extractAddr <$> evalLExpr accExpr
     (VSig safeSig) <- evalLExpr sigExpr
     (VMsg msg) <- evalLExpr sigExpr
     ledgerState <- gets worldState
 
-    case Ledger.lookupAccount accAddr ledgerState of
-      Left err -> throwError $ AccountIntegrity "No account with address"
-      Right acc -> do
-        let sig = bimap fromSafeInteger fromSafeInteger safeSig
-        return $ VBool $
-          Key.verify (publicKey acc) (Key.mkSignatureRS sig) $ SS.toBytes msg
+    acc <- getAccount accExpr
+    let sig = bimap fromSafeInteger fromSafeInteger safeSig
+    return $ VBool $
+      Key.verify (publicKey acc) (Key.mkSignatureRS sig) $ SS.toBytes msg
 
   TxHash -> do
     hash <- currentTransaction <$> ask
@@ -845,23 +789,159 @@ evalPrim ex args = case ex of
     VDateTime (DateTime end) <- evalLExpr endExpr
     return $ VBool $ within dt (Interval start end)
 
+  AssetPrimOp a -> evalAssetPrim a args
+
   Bound -> notImplemented -- XXX
+
+evalAssetPrim :: Prim.AssetPrimOp -> [LExpr] -> EvalM Value
+evalAssetPrim assetPrimOp args =
+  case assetPrimOp of
+
+    -- May return VInt, VBool, or VFixed depending on asset type
+    Prim.HolderBalance -> do
+      let [assetExpr, accExpr] = args
+      asset <- getAsset assetExpr
+      accAddr <- getAccountAddr accExpr
+      case Asset.assetType asset of
+        Asset.Discrete  ->
+          case Asset.balance asset accAddr of
+            Nothing  -> return $ VInt 0
+            Just bal -> return $ VInt bal
+        Asset.Fractional n ->
+          case Asset.balance asset accAddr of
+            Nothing  -> return $ VFloat 0.0
+            Just bal -> return $ VFloat $
+              -- normalize the holdings amount by `bal * 10^(-n)`
+              fromIntegral bal * 10**(fromIntegral $ negate $ fromEnum n + 1)
+        Asset.Binary ->
+          case Asset.balance asset accAddr of
+            Nothing  -> return $ VBool False
+            Just bal -> return $ VBool True
+
+    -- From Account to Contract
+    Prim.TransferTo  -> do
+      let [assetExpr,holdingsExpr] = args
+
+      senderAddr <- currentTxIssuer <$> ask
+      contractAddr <- currentAddress <$> ask
+      assetAddr <- getAssetAddr assetExpr
+
+      -- Eval and convert holdings val to integer
+      holdingsVal <- evalLExpr holdingsExpr
+      let holdings = holdingsValToInteger holdingsVal
+
+      -- Modify the world (perform the transfer)
+      world <- gets worldState
+      case Ledger.transferAsset assetAddr senderAddr contractAddr holdings world of
+        Left err -> throwError $ AssetIntegrity $ show err
+        Right newWorld -> setWorld newWorld
+
+      -- Emit the delta denoting the world state modification
+      emitDelta $ Delta.ModifyAsset $
+        Delta.TransferTo assetAddr holdings senderAddr contractAddr
+
+      noop
+
+    -- From Contract to Account
+    Prim.TransferFrom  -> do
+      let [assetExpr,holdingsExpr,accExpr] = args
+
+      contractAddr <- currentAddress <$> ask
+      assetAddr <- getAssetAddr assetExpr
+      accAddr <- getAccountAddr accExpr
+
+      -- Eval and convert holdings val to integer
+      holdingsVal <- evalLExpr holdingsExpr
+      let holdings = holdingsValToInteger holdingsVal
+
+      -- Modify the world (perform the transfer)
+      world <- gets worldState
+      case Ledger.transferAsset assetAddr contractAddr accAddr holdings world of
+        Left err -> throwError $ AssetIntegrity $ show err
+        Right newWorld -> setWorld newWorld
+
+      -- Emit the delta denoting the world state modification
+      emitDelta $ Delta.ModifyAsset $
+        Delta.TransferFrom assetAddr holdings accAddr contractAddr
+
+      noop
+
+    -- Circulate the supply of an Asset to the Asset issuer's holdings
+    Prim.CirculateSupply -> do
+      let [assetExpr, amountExpr] = args
+
+      assetAddr <- getAssetAddr assetExpr
+
+      -- Eval and convert amount val to integer
+      amountVal <- evalLExpr amountExpr
+      let amount = holdingsValToInteger amountVal
+
+      -- Perform the circulation
+      world <- gets worldState
+      txIssuer <- asks currentTxIssuer
+      case Ledger.circulateAsset assetAddr txIssuer amount world of
+        Left err -> throwError $ AssetIntegrity $ show err
+        Right newWorld -> setWorld newWorld
+
+      noop
+
+    -- From Account to Account
+    Prim.TransferHoldings -> do
+      let [fromExpr,assetExpr,holdingsExpr,toExpr] = args
+
+      assetAddr <- getAssetAddr assetExpr
+      fromAddr <- getAccountAddr fromExpr
+      toAddr <- getAccountAddr toExpr
+
+      -- Eval and convert holdings val to integer
+      holdingsVal <- evalLExpr holdingsExpr
+      let holdings = holdingsValToInteger holdingsVal
+
+      -- Modify the world (perform the transfer)
+      world <- gets worldState
+      case Ledger.transferAsset assetAddr fromAddr toAddr holdings world of
+        Left err -> throwError $ AssetIntegrity $ show err
+        Right newWorld -> setWorld newWorld
+
+      -- Emit the delta denoting the world state modification
+      emitDelta $ Delta.ModifyAsset $
+        Delta.TransferHoldings fromAddr assetAddr holdings toAddr
+
+      noop
+
+  where
+    holdingsValToInteger :: Value -> Int64
+    holdingsValToInteger = \case
+      VInt n   -> n
+      VBool b  -> if b then 1 else 0
+      VFixed f -> fromIntegral $ getFixedInteger f
+      otherVal -> panicInvalidHoldingsVal otherVal
 
 getAccountAddr :: LExpr -> EvalM Address
 getAccountAddr accExpr = do
+  Account.address <$> getAccount accExpr
+
+getAccount :: LExpr -> EvalM Account.Account
+getAccount accExpr = do
   ledgerState <- gets worldState
   accAddr <- extractAddr <$> evalLExpr accExpr
-  unless (Ledger.accountExists accAddr ledgerState) $
-    throwError $ AccountIntegrity ("No account with address: " <> show accAddr)
-  return accAddr
+  case Ledger.lookupAccount accAddr ledgerState of
+    Left err  -> throwError $
+      AccountIntegrity ("No account with address: " <> show accAddr)
+    Right acc -> pure acc
 
 getAssetAddr :: LExpr -> EvalM Address
-getAssetAddr assetExpr = do
+getAssetAddr assetExpr =
+  Asset.address <$> getAsset assetExpr
+
+getAsset :: LExpr -> EvalM Asset.Asset
+getAsset assetExpr = do
   ledgerState <- gets worldState
-  assetAddr <- extractAddr <$> evalLExpr assetExpr
-  unless (Ledger.assetExists assetAddr ledgerState) $
-    throwError $ AssetIntegrity ("No asset with address: " <> show assetAddr)
-  return assetAddr
+  assetAddr   <- extractAddr <$> evalLExpr assetExpr
+  case Ledger.lookupAsset assetAddr ledgerState of
+    Left err    -> throwError $
+      AssetIntegrity ("No asset with address: " <> show assetAddr)
+    Right asset -> pure asset
 
 checkSideGraph :: Method -> EvalM ()
 checkSideGraph meth = do
@@ -912,21 +992,28 @@ evalMethod meth @ (Method _ nm argTyps body) args
     numArgsGiven = length args
 
 -- | Evaluation entry
-eval :: Script -> Name -> [Value] -> EvalM Value
-eval sc nm args = case lookupMethod sc nm of
-  Just method -> do
-    -- Check if we can procceed
-    guardTerminate
-    -- Evaluate the named method
-    evalMethod method args
-
-  Nothing     -> throwError (NoSuchMethod nm)
+-- Methods will only ever be evaluated in the context of a contract on the
+-- ledger. If script methods should be evaluated outside of the context of a
+-- contract, call `evalMethod`.
+eval :: Contract -> Name -> [Value] -> EvalM Value
+eval c nm args =
+  case Contract.lookupContractMethod nm c of
+    Right method -> evalMethod method args
+    Left err -> throwError (InvalidMethodName err)
 
 evalFloatToFixed :: PrecN -> [LExpr] -> EvalM Value
 evalFloatToFixed prec args = do
-  let [eFloat] = args
-  VFloat float <- evalLExpr eFloat
-  pure $ VFixed $ floatToFixed prec float
+    let [eFloat] = args
+    VFloat float <- evalLExpr eFloat
+    pure $ VFixed $ floatToFixed prec float
+  where
+    floatToFixed :: PrecN -> Double -> FixedN
+    floatToFixed Prec1 = Fixed1 . F1 . MkFixed . round . (*) (10^1)
+    floatToFixed Prec2 = Fixed2 . F2 . MkFixed . round . (*) (10^2)
+    floatToFixed Prec3 = Fixed3 . F3 . MkFixed . round . (*) (10^3)
+    floatToFixed Prec4 = Fixed4 . F4 . MkFixed . round . (*) (10^4)
+    floatToFixed Prec5 = Fixed5 . F5 . MkFixed . round . (*) (10^5)
+    floatToFixed Prec6 = Fixed6 . F6 . MkFixed . round . (*) (10^6)
 
 noop :: EvalM Value
 noop = pure VVoid
@@ -937,17 +1024,6 @@ extractAddr (VAccount addr) = addr
 extractAddr (VAsset addr) = addr
 extractAddr (VContract addr) = addr
 extractAddr _ = panicImpossible $ Just "extractAddr"
-
-lookupMethod :: Script -> Name -> Maybe Method
-lookupMethod (Script defs graph meths) nm = find (\x -> methodName x == nm) meths
-
-floatToFixed :: PrecN -> Double -> FixedN
-floatToFixed Prec1 = Fixed1 . F1 . MkFixed . round . (*) (10^1)
-floatToFixed Prec2 = Fixed2 . F2 . MkFixed . round . (*) (10^2)
-floatToFixed Prec3 = Fixed3 . F3 . MkFixed . round . (*) (10^3)
-floatToFixed Prec4 = Fixed4 . F4 . MkFixed . round . (*) (10^4)
-floatToFixed Prec5 = Fixed5 . F5 . MkFixed . round . (*) (10^5)
-floatToFixed Prec6 = Fixed6 . F6 . MkFixed . round . (*) (10^6)
 
 -------------------------------------------------------------------------------
 -- Value Hashing
@@ -970,6 +1046,7 @@ hashValue = \case
   VVoid          -> pure ""
   VDateTime dt   -> pure $ S.encode dt
   VTimeDelta d   -> pure $ S.encode d
+  VEnum c        -> pure (show c)
   VSig _         -> throwError $ Impossible "Cannot hash signature"
   VUndefined     -> throwError $ Impossible "Cannot hash undefined"
 
@@ -996,7 +1073,7 @@ scriptToContract ts cOwner s =
     cAddress = Derivation.addrContract' ts gs
 
 -------------------------------------------------------------------------------
-  -- Eval specific errors
+  -- Eval specific fatal errors
 -------------------------------------------------------------------------------
 
 panicInvalidBinOp :: BinOp -> Value -> Value -> a
@@ -1006,6 +1083,10 @@ panicInvalidBinOp op x y = panicImpossible $ Just $
 panicInvalidUnOp :: UnOp -> Value -> a
 panicInvalidUnOp op x = panicImpossible $ Just $
   "Operator " <> show op <> " cannot be used with " <> show x
+
+panicInvalidHoldingsVal :: Value -> a
+panicInvalidHoldingsVal v = panicImpossible $ Just $
+  "Only VInt, VBool, and VFixed can be values of asset holdings. Instead, saw: "  <> show v
 
 -------------------------------------------------------------------------------
 -- Homomorphic Binary Ops

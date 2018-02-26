@@ -96,15 +96,7 @@ validateBlock ctx world block = do
 -- Transaction Validation w/ Respect to World State
 -------------------------------------------------------------------------------
 
-{-
-
-* Timestamp is within threshold and valid
-* Signature is valid
-* TxHeader is valid with respect to world state
-* Issuer address exists & is valid
-
--}
--- | Validate a transaction based on world state
+-- | Validate a transaction based on world state (Issuer address exists & is valid)
 validateTransactionOrigin :: World -> Transaction -> Either Tx.InvalidTransaction ()
 validateTransactionOrigin world tx@Transaction{..} =
     case Tx.header tx of
@@ -311,12 +303,12 @@ applyTxAsset tx txAsset = do
 
   case txAsset of
 
-    Tx.CreateAsset addr name supply mRef atyp -> do
+    Tx.CreateAsset addr name supply mRef atyp metadata -> do
       let assetAddr = D.addrAsset (toBytes name) origin supply mRef atyp txTimestamp
       if assetAddr /= addr
         then throwInvalidTxAsset $ Tx.DerivedAddressesDontMatch assetAddr addr
         else do
-          let asset = createAsset (toBytes name) origin supply mRef atyp txTimestamp assetAddr
+          let asset = createAsset (toBytes name) origin supply mRef atyp txTimestamp assetAddr metadata
           case Ledger.addAsset addr asset world of
             Left err -> throwInvalidTxAsset $ Tx.AssetError err
             Right newworld -> putWorld newworld
@@ -412,7 +404,7 @@ applyTxContract tx txContract = do
 
     Tx.CreateContract addr scriptSS -> do
       let scriptText = decodeUtf8 $ SafeString.toBytes scriptSS
-          eContract = Script.Init.createContract issuer addr ts scriptText
+          eContract = Script.Init.createContractWithAddr issuer addr ts scriptText
       case eContract of
         Left err -> throwTxContract $ Tx.InvalidContract $ toS err
         Right contract -> do
@@ -435,6 +427,7 @@ applyTxContract tx txContract = do
     -- XXX Implement SyncLocal
     Tx.SyncLocal _ _ -> return ()
   where
+    -- Validate method name being called
     processCallInputs
       :: Contract.Contract
       -> ByteString
@@ -442,15 +435,14 @@ applyTxContract tx txContract = do
       -> Either Tx.InvalidTxContract Script.Method
     processCallInputs c methodNmBS args = do
       let methodNm = Script.Name $ decodeUtf8 methodNmBS
-      let methods = Script.scriptMethods $ Contract.script c
-      case find ((==) methodNm . Script.methodName) methods of
-        Nothing -> Left $ Tx.MethodDoesNotExist methodNm
-        Just method -> do
+          enums = Script.createEnumInfo . Script.scriptEnums . Contract.script $ c
+      case Contract.lookupContractMethod methodNm c of
+        Left err     -> Left $ Tx.InvalidMethodName err
+        Right method -> do
           -- Typecheck method w/ supplied args
           first Tx.InvalidCallArgType $
-            TC.tcMethod method args
-          return method
-
+            TC.tcMethod enums method args
+          Right method
     applyCall
       :: Contract.Contract -- Contract from which to exec method
       -> Script.Method     -- Method to eval

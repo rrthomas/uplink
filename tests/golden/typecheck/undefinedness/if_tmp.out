@@ -1,0 +1,9 @@
+In method exitTwo:
+Variable "a" undefined at:
+  - line 34:7
+Variable "b" undefined at:
+  - line 34:3
+Stack trace leading up to error:
+  - @stateB:exitTwo to @terminal
+  - @myInitial:init to @stateB
+  - @initial:go to @myInitial

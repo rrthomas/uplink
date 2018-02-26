@@ -17,6 +17,7 @@ import Test.Tasty.HUnit hiding (assert)
 import Test.Tasty.QuickCheck
 import Test.QuickCheck.Monadic
 
+import Fixed
 import qualified SafeInteger as SI
 import qualified SafeString as SS
 import qualified Key
@@ -126,12 +127,12 @@ binaryTests =
     , testProperty "FixedN Serialization" $ \(n' :: SI.SafeInteger) ->
         let n = SI.fromSafeInteger n'
             serializeTest f = Right f == S.decode (S.encode f)
-            f1 = Script.mkFixed Script.Prec1 n
-            f2 = Script.mkFixed Script.Prec2 n
-            f3 = Script.mkFixed Script.Prec3 n
-            f4 = Script.mkFixed Script.Prec4 n
-            f5 = Script.mkFixed Script.Prec5 n
-            f6 = Script.mkFixed Script.Prec6 n
+            f1 = mkFixed Prec1 n
+            f2 = mkFixed Prec2 n
+            f3 = mkFixed Prec3 n
+            f4 = mkFixed Prec4 n
+            f5 = mkFixed Prec5 n
+            f6 = mkFixed Prec6 n
         in and [ serializeTest f1
                , serializeTest f2
                , serializeTest f3

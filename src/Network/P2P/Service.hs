@@ -26,6 +26,7 @@ The main services run by all nodes are:
   Tasks
   PeerController
   Messaging
+  Simulation
 
 Services run by some nodes:
   TestMessaging
@@ -40,6 +41,7 @@ data Service
   | Consensus       -- ^ Consensus process for new block creation
   | Messaging       -- ^ Message handling process
   | TestMessaging   -- ^ TestMessage handling process
+  | Simulation      -- ^ Simulate smart contract method evalution
   deriving (Eq, Ord, Generic, Binary, Serializable, Serialize)
 
 instance Show Service where
@@ -49,3 +51,4 @@ instance Show Service where
   show Consensus = "consensus"
   show Messaging = "comm"
   show TestMessaging = "test-comm"
+  show Simulation = "simulation"

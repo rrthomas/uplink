@@ -12,7 +12,6 @@ Account data structures and serialization.
 module Account (
   -- ** Types
   Account(..),
-  Metadata(..),
   newAccount,
   createAccount,
   createAccountDir,
@@ -57,7 +56,7 @@ import qualified Key
 import qualified Hash
 import qualified Utils
 import qualified Address
-import qualified Logging as Log
+import Metadata (Metadata(..), parseMetadata)
 import Data.Aeson ((.=), (.:))
 import Data.Aeson.Types (typeMismatch)
 import qualified Data.Map as Map
@@ -96,20 +95,11 @@ import System.Posix.Files
 -- 4. A ISO timezone code
 -- 5. An arbitray key-value metadata store of personal information (name,
 -- company, geography, etc)
-newtype Metadata = Metadata
-  { unMetadata :: Map ByteString ByteString }
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
-
-instance Monoid Metadata where
-  mempty = Metadata mempty
-  (Metadata m1) `mappend` (Metadata m2) =
-    Metadata $ m1 <> m2
-
 data Account = Account
   { publicKey   :: Key.PubKey
   , address     :: Address.Address
   , timezone    :: ByteString
-  , metadata    :: Metadata
+  , metadata    :: Metadata.Metadata
   } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
 
 -- | Validate the integrity of acccount information
@@ -382,7 +372,7 @@ readAccountsFromDir dir = do
           forM accDirs $ \accDir -> do
             eAcc <- readAccountData $ dir </> accDir
             case eAcc of
-              Left err -> Log.warning $ show err
+              Left err -> Utils.dieRed err
               Right _  -> pure ()
             pure $ fst <$> eAcc
 
@@ -409,7 +399,7 @@ instance A.FromJSON Account where
       pubKey
       addr
       (encodeUtf8 timezone)
-      (parseMetadata metadata)
+      (Metadata.parseMetadata metadata)
 
   parseJSON invalid = typeMismatch "Account" invalid
 
@@ -420,43 +410,6 @@ instance Binary.Binary Account where
     case S.decode bs of
       (Right tx) -> return tx
       (Left err) -> fail err
-
-instance S.Serialize Metadata where
-  put (Metadata m) = do
-    let len = Map.size m
-    S.putWord16be $ Utils.toWord16 len
-    go $ sortBy (\a b -> compare (fst a) (fst b)) $ Map.toList m
-
-    where
-      go [] = return ()
-      go ((k,v):xs) = do
-        S.putWord16be $ Utils.toWord16 $ BS.length k
-        S.putByteString k
-        S.putWord16be $ Utils.toWord16 $ BS.length v
-        S.putByteString v
-        go xs
-  get = do
-      len <- S.getWord16be
-      go [] 0 len
-    where
-      go acc i len
-        | i == len = return $ Metadata $ Map.fromList acc
-        | otherwise = do
-          keyLen <- S.getWord16be
-          key    <- S.getBytes $ Utils.toInt keyLen
-          valLen <- S.getWord16be
-          val    <- S.getBytes $ Utils.toInt valLen
-          go ((key, val) : acc) (i+1) len
-
-instance A.ToJSON Metadata where
-  toJSON (Metadata metadata) = A.toJSON $
-    map decodeUtf8 $ Map.mapKeys decodeUtf8 metadata
-
-instance A.FromJSON Metadata where
-  parseJSON = fmap parseMetadata . A.parseJSON
-
-parseMetadata :: Map Text Text -> Metadata
-parseMetadata keys = Metadata $ map encodeUtf8 (Map.mapKeys encodeUtf8 $ keys)
 
 -- | Binary serialize account
 encodeAccount :: Account -> ByteString
@@ -478,17 +431,6 @@ readAccount fp =
 -------------------------------------------------------------------------------
 -- Postgres DB
 -------------------------------------------------------------------------------
-
-instance ToField Metadata where
-  toField = EscapeByteA . S.encode . Map.toList . unMetadata
-
-instance FromField Metadata where
-  fromField f mdata = do
-    bs <- fromField f mdata
-    case fmap Map.fromList . S.decode <$> bs of
-      Nothing               -> returnError UnexpectedNull f ""
-      Just (Left err)       -> returnError ConversionFailed f err
-      Just (Right metadata) -> return $ Metadata metadata
 
 instance FromRow Account
 instance ToRow Account

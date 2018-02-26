@@ -1,0 +1,2 @@
+We have the following graph errors:
+Cannot transition from state: 'initial' to 'bad' in method 'init'.

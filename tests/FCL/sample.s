@@ -3,18 +3,19 @@ global fixed3 f = 1.234f;
 global fixed2 q;
 local int y = 7;
 local float v;
-asset z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+assetFrac5 z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 contract c = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; 
 account a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 
 datetime dt;
 
-transition initial -> setup;
+transition initial -> setX;
+transition setX -> update;
+transition update -> setX;
+transition setX -> setup;
+transition update -> setup;
 transition setup -> confirmation;
 transition confirmation -> settlement;
-transition initial -> getX;
-transition setX -> getX;
-transition getX -> setX;
 transition settlement -> terminal;
 
 transition initial -> circulated;
@@ -27,7 +28,22 @@ setDate() {
 
 @initial
 initialize () {
-  transitionTo(:getX);
+  transitionTo(:setX);
+}
+
+@setup
+confirm () {
+  transitionTo(:confirmation);
+}
+
+@confirmation
+settle () {
+  transitionTo(:settlement);
+}
+
+@settlement
+finalize () {
+  transitionTo(:terminal);
 }
 
 @setX
@@ -36,48 +52,54 @@ setX (int j, float k) {
   y = y * j;
   f = 2.516f + f;
   x = fixed3ToFloat(floatToFixed3(k)) + x;
-  transitionTo(:getX);
-  return x;
+  transitionTo(:update);
 }
 
-@getX
-getX () {
+@setX
+fixX () {
+  transitionTo(:setup);
+}
+
+@update
+fixY () {
+  transitionTo(:setup);
+}
+
+@update
+update () {
   j = 10 + 7 * 10;
   k = j;
   l = k;
   m = 1.23f + 4.56f - 7.89f * 9.87f / 65.43f;
   q = m + 1.00f + floatToFixed2(x);
   transitionTo(:setX);
-  return q;
 }
 
 @f
 f (int j, bool k) { 
   if (k) {
-    return j;
   } else {
-    return -1;
   };
 }
 
+
+
 @g
-g (asset f, account t) {
+g (assetDisc f, account t) {
   if (assetExists(f) && accountExists(t)) {
     transferTo(f, 20);
     transferFrom(f, 20, t);
-  } else {
-    return void; 
   };
 }
 
 @initial
-circulate(asset a, int amount) {
+circulate(assetFrac2 a, fixed2 amount) {
   circulate(a,amount);
   transitionTo(:circulated);
 }
 
 @circulated
-transfer(asset a, account from, account to, int amount) {
+transfer(assetBin a, account from, account to, bool amount) {
   transferHoldings(from,a,amount,to);
   terminate("finished transfer");
 }

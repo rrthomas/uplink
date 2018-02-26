@@ -1,17 +1,15 @@
 global int x = 0 ;
 
-transition initial -> get;
-transition get -> terminal;
+transition initial -> set;
+transition set -> terminal;
 
-@get
-getX () {
+@set
+end () {
   terminate("Now I die.");
-  return x;
 }
 
 @initial
 setX () {
   x = 42;
-  transitionTo(:get);
-  return void;
+  transitionTo(:set);
 }

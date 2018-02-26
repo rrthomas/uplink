@@ -450,25 +450,37 @@ handleOpts o@Opts {..} = do
       Version  -> putStrLn banner
 
   -- Load Config from command line fallbacking to 'defaultConfig'
-  c@Config.Config {} <- Config.errorHandler $
-    Config.handleConfig silent (maybe Config.defaultConfig identity _config)
+  c@Config.Config {}
+    <- Config.handleConfig silent (maybe Config.defaultConfig identity _config)
 
   backend <- mapM Config.getStorageBackend _storageBackend
   -- Load config falling back to defaults.
-  let config @ Config.Config {..} = c {
-    Config.configFile  = _config      `fallback` Config.defaultConfig
-  , Config.nonetwork   = _nonetwork   `fallback` (Config.nonetwork c)
-  , Config.port        = _port        `fallback` (Config.port c)
-  , Config.rpcPort     = _rpcPort     `fallback` (Config.rpcPort c)
-  , Config.chainConfigFile = _chainConfig   `fallback` (Config.chainConfigFile c)
-  , Config.hostname    = _hostname    `fallback` (Config.hostname c)
-  , Config.bootnodes   = fromMaybe [] _bootnodes ++ Config.bootnodes c
-  , Config.storageBackend = backend   `fallback` (Config.storageBackend c)
-  , Config.verbose     = _verbose     `fallback` (Config.verbose c)
-  , Config.rpcReadOnly = _rpcReadOnly `fallback` (Config.rpcReadOnly c)
-  , Config.testMode    = _testMode    `fallback` (Config.testMode c)
-  , Config.nodeDataDir = _nodeDir     `fallback` (Config.nodeDataDir c)
-  }
+  let config @ Config.Config {..}
+        = Config.toggleVerbosity _verbose
+          $ c
+            { Config.configFile
+                = _config      `fallback` Config.defaultConfig
+            , Config.nonetwork
+              = _nonetwork   `fallback` (Config.nonetwork c)
+            , Config.port
+              = _port        `fallback` (Config.port c)
+            , Config.rpcPort
+              = _rpcPort     `fallback` (Config.rpcPort c)
+            , Config.chainConfigFile
+              = _chainConfig   `fallback` (Config.chainConfigFile c)
+            , Config.hostname
+              = _hostname    `fallback` (Config.hostname c)
+            , Config.bootnodes
+              = fromMaybe [] _bootnodes ++ Config.bootnodes c
+            , Config.storageBackend
+              = backend   `fallback` (Config.storageBackend c)
+            , Config.rpcReadOnly
+              = _rpcReadOnly `fallback` (Config.rpcReadOnly c)
+            , Config.testMode
+              = _testMode    `fallback` (Config.testMode c)
+            , Config.nodeDataDir
+              = _nodeDir     `fallback` (Config.nodeDataDir c)
+            }
 
   Driver.driver (Opts._command o) o config
 

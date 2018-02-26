@@ -1,0 +1,7 @@
+In method init:
+Variable "a" undefined at:
+  - line 8:14
+Variable "z" undefined at:
+  - line 8:3
+Stack trace leading up to error:
+  - @initial:init to @terminal

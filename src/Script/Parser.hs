@@ -60,8 +60,10 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
 
+import Fixed
 import Script
 import Address
+import Asset (AssetType(..))
 import Script.Lexer as Lexer
 import Script.Pretty hiding (parens)
 import qualified SafeString as SS
@@ -133,6 +135,7 @@ lit =  fixedLit
    <|> datetimeLit
    <|> msgLit
    <|> voidLit
+   <|> enumConstrLit
    <?> "literal"
 
 locLit :: Parser LLit
@@ -285,6 +288,9 @@ voidLit :: Parser Lit
 voidLit = LVoid <$ try (reserved Token.void)
  <?> "void literal"
 
+enumConstrLit :: Parser Lit
+enumConstrLit = LConstr <$> try (symbol "`" *> Lexer.enumConstr)
+
 -------------------------------------------------------------------------------
 -- Types
 -------------------------------------------------------------------------------
@@ -302,6 +308,7 @@ type_ =  intType
      <|> msgType
      <|> dateType
      <|> timedeltaType
+     <|> enumType
      <?> "type"
 
 intType :: Parser Type
@@ -337,7 +344,22 @@ accountType :: Parser Type
 accountType = TAccount <$ try (reserved Token.account)
 
 assetType :: Parser Type
-assetType = TAsset <$ try (reserved Token.asset)
+assetType = do
+    atype <- parseAssetBinary
+         <|> parseAssetDiscrete
+         <|> parseAssetFrac
+    pure $ TAsset atype
+  where
+    parseAssetBinary   = TBinary <$ try (reserved Token.assetBin)
+    parseAssetDiscrete = TDiscrete <$ try (reserved Token.assetDis)
+    parseAssetFrac     =
+      fmap TFractional $
+            (Prec1 <$ try (reserved Token.assetFrac1))
+        <|> (Prec2 <$ try (reserved Token.assetFrac2))
+        <|> (Prec3 <$ try (reserved Token.assetFrac3))
+        <|> (Prec4 <$ try (reserved Token.assetFrac4))
+        <|> (Prec5 <$ try (reserved Token.assetFrac5))
+        <|> (Prec6 <$ try (reserved Token.assetFrac6))
 
 contractType :: Parser Type
 contractType = TContract <$ try (reserved Token.contract)
@@ -353,6 +375,9 @@ dateType = TDateTime <$ try (reserved Token.datetime)
 
 timedeltaType :: Parser Type
 timedeltaType = TTimeDelta <$ try (reserved Token.timedelta)
+
+enumType :: Parser Type
+enumType = TEnum <$> try (reserved Token.enum *> Lexer.name)
 
 -------------------------------------------------------------------------------
 -- Definitions
@@ -535,12 +560,12 @@ parensLExpr :: Parser LExpr
 parensLExpr = parens expr
 
 nonLocExpr :: Parser Expr
-nonLocExpr =  returnExpr
-          <|> assignExpr
+nonLocExpr =  assignExpr
           <|> beforeExpr
           <|> afterExpr
           <|> betweenExpr
           <|> ifElseExpr
+          <|> caseExpr
           <|> callExpr
           <|> litExpr
           <|> varExpr
@@ -552,13 +577,6 @@ litExpr = ELit <$> locLit
 varExpr :: Parser Expr
 varExpr = EVar <$> locName
  <?> "variable"
-
-returnExpr :: Parser Expr
-returnExpr = do
-  try $ reserved Token.return
-  lexpr <- expr
-  pure $ ERet lexpr
- <?> "return statement"
 
 assignExpr :: Parser Expr
 assignExpr = do
@@ -618,6 +636,23 @@ betweenExpr = do
   return $ EBetween start end e
  <?> "between guard statement"
 
+caseExpr :: Parser Expr
+caseExpr = do
+  try $ reserved Token.case_
+  scrutinee <- parensLExpr
+  symbol Token.lbrace
+  matches <- many1 (Match <$> pattern_
+                          <* reserved Token.rarrow
+                          <*> (block <|> expr)
+                          <* semi)
+  symbol Token.rbrace
+  return $ ECase scrutinee matches
+
+pattern_ :: Parser LPattern
+pattern_ = do
+  loc <- location
+  Located loc . PatLit <$> try (symbol "`" *> Lexer.enumConstr)
+
 -- | Parses 0 or more expressions delimited by ';'
 block :: Parser LExpr
 block = (braces $ do
@@ -658,15 +693,27 @@ transition = do
  <?> "transition"
 
 -------------------------------------------------------------------------------
+-- Enumeration type definition
+-------------------------------------------------------------------------------
+
+enumDef :: Parser EnumDef
+enumDef = do
+  reserved Token.enum
+  lname <- Lexer.locName
+  constrs <- braces $ commaSep1 Lexer.locEnumConstr
+  return $ EnumDef lname constrs
+
+-------------------------------------------------------------------------------
 -- Script
 -------------------------------------------------------------------------------
 
 script :: Parser Script
 script = do
+  enums <- endBy enumDef semi
   defns <- endBy def semi
   graph <- endBy transition semi
   methods <- many method
-  return $ Script defns graph methods
+  return $ Script enums defns graph methods
  <?> "script"
 
 -------------------------------------------------------------------------------

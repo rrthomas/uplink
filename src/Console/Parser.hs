@@ -120,10 +120,10 @@ assetTypeParser =
     binaryParser     = string "Binary"   *> pure Binary
     fractionalParser = do
       string "Fractional"
-      int <- fromInteger <$> integer
-      when (int `notElem` [1..6]) $
-        parserFail "Fractional asset denominations must be between 1 and 7"
-      pure $ Fractional int
+      mPrec <- readMaybe . toS <$> literal
+      case mPrec of
+        Nothing   -> parserFail "Fractional asset denominations must be between 1 and 7"
+        Just prec -> pure $ Fractional prec
 
 addressParser :: Parser Address
 addressParser = do

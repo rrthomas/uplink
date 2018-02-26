@@ -1,43 +1,38 @@
 global int x;
 global int y;
-global bool yDone = False;
-global bool xDone = False;
 
-transition initial -> set;
-transition set -> set;
-transition set -> get;
-transition get -> terminal;
+transition initial -> xIsSet;
+transition initial -> yIsSet;
+transition xIsSet -> bothSet;
+transition yIsSet -> bothSet;
+transition bothSet -> terminal;
 
 @initial
-entry() {
-  transitionTo(:set);
-}
-
-@set
-setX () {
+setX() {
   x = 10;
-  xDone = True;
-  if (yDone) {
-    transitionTo(:get);
-  } else {
-    transitionTo(:set);
-  };
+  transitionTo(:xIsSet);
 }
 
-@set
-setY () {
+@yIsSet
+setX2() {
+  x = 10;
+  transitionTo(:bothSet);
+}
+
+@initial
+setY() {
   y = 20;
-  yDone = True;
-  if (xDone) {
-    transitionTo(:get);
-  } else {
-    transitionTo(:set);
-  };
+  transitionTo(:yIsSet);
 }
 
-@get
-getZ () {
+@xIsSet
+setY2() {
+  y = 20;
+  transitionTo(:bothSet);
+}
+
+@bothSet
+setZ () {
   z = x+y;
   terminate("Now I die");
-  return z;
 }

@@ -42,14 +42,15 @@ import qualified Storage
 import qualified Address
 import qualified Encoding
 
-import Script (Script, Name(..), Type, mapType, Located)
+import Script (Script, Name(..), Type, Located)
 import qualified Script
 import Script.Typecheck (Sig)
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Script.Analysis as Anal
+import qualified Script.Duplicate as Dupl
 import qualified Script.Typecheck as Typecheck
-import qualified Utils
+import qualified Script.Undefinedness as Undef
 import Data.Bifunctor (first, second)
 import Data.Serialize as S
 import qualified Data.Text as T
@@ -68,6 +69,8 @@ data Pass
   = Parse
   | Graph
   | Typecheck
+  | DuplCheck
+  | UndefCheck
   deriving (Eq, Show)
 
 -- | A stage in the compiler.
@@ -86,8 +89,10 @@ compileFile fpath = do
 compile :: Text -> Either Text ([(Name,Sig)], Script)
 compile body = do
   ast  <- stage Parse (Parser.parseScript body)
+  _    <- stage DuplCheck (Dupl.duplicateCheck ast)
   sigs <- stage Typecheck (Typecheck.signatures ast)
   gr   <- stage Graph (Anal.checkGraph ast)
+  _    <- stage UndefCheck (Undef.undefinednessAnalysis ast)
   pure (sigs, ast)
 
 -- | Compile returning either the parser errors
@@ -130,14 +135,17 @@ loadStorageFile fpath = do
 loadStorage :: Text -> (Either Text Storage.Storage)
 loadStorage body = first toS $ A.eitherDecode (toS body)
 
-storageToTypes :: Storage.Storage -> Map.Map Name Type
-storageToTypes s = Map.mapKeys (\(Storage.Key v) -> Name (toS v)) $ map mapType s
-
 verifyStorage :: Storage.Storage -> Script -> Either (Map.Map Name (Type, Type)) ()
 verifyStorage store script = if null errors then Right () else Left errors
   where
+    enumInfo = Script.createEnumInfo (Script.scriptEnums script)
+
+    valueType v = case Script.mapType enumInfo v of
+                    Nothing -> Script.TAny
+                    Just ty -> ty
+
     storeLocals  = Map.mapKeys
-        (\(Storage.Key v) -> Script.Name (toS v)) $ Map.map Script.mapType store
+        (\(Storage.Key v) -> Script.Name (toS v)) $ Map.map valueType store
 
     scriptLocals = Map.fromList
         [(name, ty) | Script.LocalDefNull ty (Script.Located _ name) <- Script.scriptDefs script ]

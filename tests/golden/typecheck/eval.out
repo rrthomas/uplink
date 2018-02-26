@@ -59,4 +59,6 @@
 , ModifyGlobal Name { unName = "x" } (VInt 6)
 , ModifyGlobal Name { unName = "y" } (VInt (-2))
 , ModifyGlobal Name { unName = "x" } (VInt 18)
+, ModifyState GraphTerminal
+, Terminate "bye"
 ]

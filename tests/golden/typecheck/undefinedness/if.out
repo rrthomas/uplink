@@ -1,0 +1,6 @@
+In method notCrash:
+Variable "a" undefined at:
+  - line 25:12
+Stack trace leading up to error:
+  - @stateA:notCrash to @terminal
+  - @initial:init to @stateA

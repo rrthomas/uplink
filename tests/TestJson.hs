@@ -34,6 +34,10 @@ jsonTests = testGroup "JSON Serializer Golden tests"
       contractFile
       (pure (encodePretty (Reference.testContract Reference.testTimestamp)))
 
+    , goldenVsString "JSON Asset"
+      assetFile
+      (pure (encodePretty (Reference.testAsset1)))
+
     , goldenVsString "JSON Storage"
       storageFile
       (pure (encodePretty Reference.testStorage))
@@ -74,6 +78,7 @@ jsonTests = testGroup "JSON Serializer Golden tests"
     contractFile          = "tests/golden/json/contract.json"
     storageFile           = "tests/golden/json/storage.json"
     blockFile             = "tests/golden/json/block.json"
+    assetFile             = "tests/golden/json/asset.json"
 
     -- Transactions
     bindFile              = "tests/golden/json/bind.json"

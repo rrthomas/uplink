@@ -1,4 +1,5 @@
-transition initial -> get;
+transition initial -> set;
+transition set -> terminal;
 
 @initial
 everything (
@@ -12,5 +13,10 @@ everything (
   , datetime h
   , void i
 ) {
-  return void;
+  transitionTo(:set);
+}
+
+@set
+nothing () {
+  terminate("bye");
 }

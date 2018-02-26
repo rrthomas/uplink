@@ -15,6 +15,7 @@ CREATE TABLE assets (
   reference     varchar,
   assetType     varchar NOT NULL,
   address       varchar PRIMARY KEY,
+  metadata      bytea   NOT NULL,
 
   CONSTRAINT assets_supply_check CHECK (supply >= 0)
 );

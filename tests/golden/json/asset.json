@@ -1,0 +1,16 @@
+{
+    "holdings": {},
+    "issuedOn": 1231006505,
+    "supply": 100000,
+    "reference": "Security",
+    "address": "CDM695p7uP1WirDjZE65UuwxYRYtTLfq9UYCSUoR5hco",
+    "name": "hamburgers",
+    "metadata": {
+        "Company": "Adjoint Inc."
+    },
+    "assetType": {
+        "tag": "Discrete",
+        "contents": null
+    },
+    "issuer": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
+}

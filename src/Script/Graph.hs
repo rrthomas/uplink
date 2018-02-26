@@ -33,7 +33,8 @@ import Database.PostgreSQL.Simple.FromField
 import Script.Pretty
 import qualified Script.Token as Token
 
-import Data.Aeson (ToJSON(..))
+import Data.Aeson (Value(..), ToJSON(..), FromJSON(..))
+import Data.Aeson.Types (typeMismatch)
 import Data.Serialize (Serialize, put, get, putWord8, getWord8)
 import Data.String (IsString(..))
 
@@ -119,6 +120,14 @@ instance ToJSON GraphState where
     GraphInitial         -> let (Label initial) = initialLabel in toJSON initial
     GraphLabel (Label l) -> toJSON l
     GraphTerminal        -> let (Label terminal) = terminalLabel in toJSON terminal
+
+instance FromJSON GraphState where
+  parseJSON (String s)
+    | (Label $ toS s) == initialLabel  = pure GraphInitial
+    | (Label $ toS s) == terminalLabel = pure GraphTerminal
+    | otherwise  = pure $ GraphLabel $ Label $ toS s
+  parseJSON invalid = typeMismatch "GraphState" invalid
+
 
 instance ToField GraphState where
   toField = \case

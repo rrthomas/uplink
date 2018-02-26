@@ -1,0 +1,10 @@
+[ ( Name { unName = "start" } , Sig [] TVoid )
+, ( Name { unName = "leftOrRight" }
+  , Sig [ TEnum Name { unName = "direction" } ] TVoid
+  )
+, ( Name { unName = "fromBtoD" } , Sig [] TVoid )
+, ( Name { unName = "fromCtoD" }
+  , Sig [ TEnum Name { unName = "direction" } ] TVoid
+  )
+, ( Name { unName = "stop" } , Sig [] TAny )
+]

@@ -42,6 +42,7 @@ dirty = "unknown"
 version :: [Char]
 version = V.showVersion Paths.version
 
+
 branch :: [Char]
 branch = $(gitBranch)
 

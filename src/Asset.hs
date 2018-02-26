@@ -15,8 +15,6 @@ module Asset (
   Asset(..),
   AssetError(..),
   AssetType(..),
-  assetTypeToTuple,
-  tupleToAssetType,
 
   Ref(..),
   validateAsset,
@@ -46,7 +44,6 @@ module Asset (
   getAssetType,
   putRef,
   getRef,
-  assetWithAddrJSON, -- XXX not needed
 
   -- ** Save/Load Asset
   saveAsset,
@@ -59,8 +56,10 @@ import Protolude hiding (put, get, putByteString)
 import Time (Timestamp)
 import Address (Address, rawAddr, fromRaw)
 import qualified Key
+import qualified Metadata
 import qualified Hash
 import qualified Time
+import qualified Fixed
 import qualified Utils
 import qualified Address
 
@@ -124,7 +123,8 @@ data Asset = Asset
   , reference :: Maybe Ref  -- ^ Reference unit
   , assetType :: AssetType  -- ^ Asset type
   , address   :: Address    -- ^ Asset address
-  } deriving (Eq, Ord, Show, Generic, NFData, Serialize)
+  , metadata  :: Metadata.Metadata   -- ^ Asset address
+  } deriving (Eq, Show, Generic, NFData, Serialize)
 
 -- | An asset reference is metadata assigning a off-chain reference quantity to
 -- a single unit of an on-chain asset.
@@ -151,29 +151,10 @@ instance FromField Ref where
 -- | Type of an asset's value. Underlying value is always a Int64, but this
 -- informs the representation and range of valid values.
 data AssetType
-  = Discrete          -- ^ Discrete (Non-zero integer value)
-  | Fractional Int    -- ^ Fractional (Fixed point decimal value)
-  | Binary            -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
-  deriving (Eq, Ord, Show, Read, Generic, NFData, Hash.Hashable)
-
--- | Used for serializing asset types
-assetTypeToTuple :: AssetType -> (Int16, Maybe Int16)
-assetTypeToTuple atyp =
-  case atyp of
-    Discrete     -> (0,Nothing)
-    Fractional n -> (1, Just $ fromIntegral n)
-    Binary       -> (2,Nothing)
-
--- | Used for deserializing asset types
-tupleToAssetType :: (Int16, Maybe Int16) -> Either Text AssetType
-tupleToAssetType (c,mPrec) =
-  case c of
-    0 -> Right Discrete
-    1 -> case mPrec of
-           Nothing   -> Left "A positive integer must be supplied as a precision value for Fractional AssetTypes"
-           Just prec -> Right $ Fractional $ fromIntegral prec
-    2 -> Right Binary
-    n -> Left $ "The number " <> show n <> " is an invalid constructor flag for AssetType"
+  = Discrete               -- ^ Discrete (Non-zero integer value)
+  | Fractional Fixed.PrecN -- ^ Fractional (Fixed point decimal value)
+  | Binary                 -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
+  deriving (Eq, Ord, Show, Read, Generic, NFData, Hashable, Hash.Hashable)
 
 instance ToField AssetType where
   toField = toField . (show :: AssetType -> [Char])
@@ -201,13 +182,6 @@ validateAsset Asset{..} = do
 -- Serialization
 -------------------------------------------------------------------------------
 
--- XXX REMOVE, unnecessary now (need to change SDK)
-assetWithAddrJSON :: Address.Address -> Asset -> A.Value
-assetWithAddrJSON addr asset = object
-  [ "address" .= decodeUtf8 (rawAddr addr)
-  , "asset"   .= asset
-  ]
-
 instance ToJSON Asset where
   toJSON asset = object
     [ "name"      .= decodeUtf8 (name asset)
@@ -218,6 +192,7 @@ instance ToJSON Asset where
     , "reference" .= reference asset
     , "assetType" .= assetType asset
     , "address"   .= address asset
+    , "metadata"  .= metadata asset
     ]
 
 instance FromJSON Asset where
@@ -230,6 +205,7 @@ instance FromJSON Asset where
     reference <- v .: "reference"
     assetType <- v .: "assetType"
     address   <- v .: "address"
+    metadata  <- v .: "metadata"
     return Asset{..}
 
   parseJSON invalid = typeMismatch "Asset" invalid
@@ -270,28 +246,23 @@ getRef = do
 
 -------------------------------------------------------------------------------
 
--- | XXX "type" and "precison" tags are from Python SDK being difficult
--- to work with. usual Uplink convention is "tag" and "contents"
 instance ToJSON AssetType where
-  toJSON (Fractional n) = object
-    ["tag" .= ("Fractional" :: Text), "contents" .= n]
+  toJSON (Fractional prec) = object
+    ["tag" .= ("Fractional" :: Text), "contents" .= (fromEnum prec + 1)]
   toJSON Discrete = object
     ["tag" .= ("Discrete" :: Text), "contents" .= A.Null]
   toJSON Binary = object
     ["tag" .= ("Binary" :: Text), "contents" .= A.Null]
 
--- | XXX "type" and "precison" tags are from Python SDK being difficult
--- to work with. usual Uplink convention is "tag" and "contents"
 instance FromJSON AssetType where
   parseJSON (A.Object v) = do
     constr <- v .: "tag"
-    mPrec <- v .:? "contents"
     case constr :: [Char] of
       "Discrete"   -> pure Discrete
       "Binary"     -> pure Binary
-      "Fractional" -> case mPrec of
-        Nothing -> fail "Fractional AssetType must have 'contents' field."
-        Just n  -> pure $ Fractional n
+      "Fractional" -> do
+        prec <- v .: "contents"
+        pure $ Fractional prec
       invalid -> fail $ invalid ++ " is not a valid AssetType"
 
   parseJSON invalid = typeMismatch "AssetType" invalid
@@ -304,30 +275,22 @@ getAssetType :: Get AssetType
 getAssetType = do
   len <- getWord16be
   str <- getBytes (Utils.toInt len)
-  if | str == "Discrete" -> pure Discrete
-     | str == "Binary" -> pure Binary
-     | str == "Fractional" -> do
-        n <- getWord64be
-        if n > 0 && n < 8
-          then pure $ Fractional $ Utils.toInt n
-          else fail $ "Invalid precision for fractional asset."
+  if | str == "Discrete"   -> pure Discrete
+     | str == "Binary"     -> pure Binary
+     | str == "Fractional" -> Fractional <$> get
      | otherwise -> fail $ "Cannot decode asset type : " <> toS str
 
 putAssetType :: AssetType -> PutM ()
 putAssetType Discrete = putWord16be 8 >> putByteString "Discrete"
 putAssetType Binary   = putWord16be 6 >> putByteString "Binary"
-putAssetType (Fractional n) = do
+putAssetType (Fractional prec) = do
     putWord16be 10
     putByteString "Fractional"
-    putWord64be $ Utils.toWord64 n
+    put prec
 
 -------------------------------------------------------------------------------
 -- Printing
 -------------------------------------------------------------------------------
-
--- | 8 digits
-maxPrec :: Int
-maxPrec = 7
 
 -- | 9223372036854775807
 maxBalance :: Int64
@@ -346,9 +309,7 @@ displayType :: AssetType -> Balance -> Text
 displayType ty bal = case ty of
   Discrete        -> show bal
   Binary          -> if bal > 0 then "held" else "not-held"
-  Fractional prec
-    | prec < maxPrec -> toS $ showFFloat (Just prec) (fromIntegral bal) ""
-    | otherwise      -> panic "Invalid precision. "
+  Fractional prec -> toS $ showFFloat (Just $ (+1) $ fromEnum prec) (fromIntegral bal) ""
 
 -------------------------------------------------------------------------------
 -- Operations over Assets
@@ -426,9 +387,10 @@ createAsset
   -> AssetType
   -> Time.Timestamp
   -> Address
+  -> Metadata.Metadata
   -> Asset
-createAsset name holder supply mRef assetType ts addr =
-  Asset name holder ts supply mempty mRef assetType addr
+createAsset name holder supply mRef assetType ts addr metadata =
+  Asset name holder ts supply mempty mRef assetType addr metadata
 
 -------------------------------------------------------------------------------
 -- Export / Import

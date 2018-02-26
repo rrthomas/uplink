@@ -27,7 +27,6 @@ module Storage (
   decodeLocalStorage,
   encodeStorage,
   storageSize,
-  storageSchema,
 
   -- ** Validation
   validKey,
@@ -94,9 +93,6 @@ instance Monoid LocalStorage where
   mempty = LocalStorage Map.empty
   (LocalStorage m1) `mappend` (LocalStorage m2) = LocalStorage (m1 <> m2)
 
-storageSchema :: Storage -> [(Key, Type)]
-storageSchema = fmap (fmap Script.mapType) . Map.toList
-
 storageSize :: Storage -> Int
 storageSize = Map.size
 
@@ -162,6 +158,7 @@ instance ToJSON Value where
      VDateTime n  -> object ["tag" .= ("VDateTime" :: Text), "contents" .= toJSON n]
      VTimeDelta n -> object ["tag" .= ("VTimeDelta" :: Text), "contents" .= toJSON n]
      VState n     -> object ["tag" .= ("VState" :: Text), "contents" .= toJSON n]
+     VEnum c      -> object ["tag" .= ("VEnum" :: Text), "contents" .= toJSON c]
      VUndefined   -> object ["tag" .= ("VUndefined" :: Text), "contents" .= A.Null]
 
 instance FromJSON GlobalStorage where
@@ -205,6 +202,7 @@ instance FromJSON Value where
         "VCrypto"   -> VCrypto   <$> o .: "contents"
         "VFixed"    -> VFixed    <$> o .: "contents"
         "VMsg"      -> VMsg      <$> o .: "contents"
+        "VEnum"     -> VEnum     <$> o .: "contents"
         "VVoid"     -> pure VVoid
         _           -> typeMismatch "Cannot parse object." v
 

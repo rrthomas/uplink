@@ -71,13 +71,14 @@ import SafeInteger (SafeInteger, fromSafeInteger)
 
 import Asset (Asset, Balance, putAssetType, getAssetType, putRef, getRef)
 import Address (Address, putAddress, getAddress)
-import Account (Metadata(..))
+import Metadata (Metadata(..))
 import Datetime.Types
 import qualified Key
 import qualified Time
 import qualified Hash
 import qualified Asset
 import qualified Address
+import qualified Contract
 import qualified Encoding
 import qualified Ledger
 import qualified Storage
@@ -88,6 +89,7 @@ import qualified Script
 import Script (Value(..))
 import qualified Script.Init
 import qualified Script.Eval
+import qualified Script.Graph as Graph
 import qualified Script.Typecheck
 
 import qualified Data.Text as T
@@ -159,6 +161,7 @@ data TxAsset
     , supply    :: Int64                      -- ^ Asset supply
     , reference :: Maybe Asset.Ref            -- ^ Asset reference
     , assetType :: Asset.AssetType            -- ^ Asset type
+    , metadata  :: Metadata                   -- ^ Arbitrary additional metadata
   }
 
   | Transfer {
@@ -284,8 +287,9 @@ getTxAsset 1003 = do
        | True     -> fail $ show ref <>
            " is not a valid CreateAsset reference prefix."
   assetType <- getAssetType
+  md <- get
   pure $ TxAsset $
-    CreateAsset addr name supply mRef assetType
+    CreateAsset addr name supply mRef assetType md
 getTxAsset 1004 = do
   asset <- getAddress
   to    <- getAddress
@@ -343,7 +347,7 @@ instance Serialize TxContract where
 
 instance Serialize TxAsset where
   put txa = case txa of
-    CreateAsset addr name supply mRef assetType -> do
+    CreateAsset addr name supply mRef assetType md -> do
       putWord16be 1003
       putAddress addr
       SafeString.putSafeString name
@@ -356,6 +360,7 @@ instance Serialize TxAsset where
           putRef ref
 
       putAssetType assetType
+      put md
 
     Transfer asset to bal -> do
       putWord16be 1004
@@ -493,7 +498,7 @@ instance ToJSON TxContract where
     ]
 
 instance ToJSON TxAsset where
-  toJSON (CreateAsset addr name supply ref assetType) = object
+  toJSON (CreateAsset addr name supply ref assetType md) = object
     [ "tag"      .= ("CreateAsset" :: Text)
     , "contents" .= object
         [ "assetAddr" .= addr
@@ -501,6 +506,7 @@ instance ToJSON TxAsset where
         , "supply"    .= supply
         , "reference" .= ref
         , "assetType" .= assetType
+        , "metadata"  .= md
         ]
     ]
   toJSON (Transfer asset to bal) = object
@@ -543,6 +549,7 @@ instance FromJSON TxAsset where
             <*> c .: "supply"
             <*> c .:? "reference"
             <*> c .: "assetType"
+            <*> c .: "metadata"
 
        | tagV == "Bind" -> do
           c <- v .: "contents"
@@ -577,7 +584,7 @@ instance FromJSON TxContract where
           addr   <- c .: "address"
           ts     <- c .: "timestamp"
           owner  <- c .: "owner"
-          case Script.Init.createContract addr owner ts (toS (SafeString.toBytes script)) of
+          case Script.Init.createContractWithAddr owner addr ts (toS (SafeString.toBytes script)) of
             Left err -> fail (toS err)
             Right contract -> pure (CreateContract addr script)
 
@@ -730,7 +737,7 @@ data InvalidTxAsset
 data InvalidTxContract
   = InvalidContract [Char]
   | ContractError Ledger.ContractError
-  | MethodDoesNotExist Script.Name
+  | InvalidMethodName Contract.InvalidMethodName
   | InvalidCallArgType Script.Typecheck.TypeErrInfo
   | EvalFail Script.Eval.EvalFail
   deriving (Show, Eq, Generic, S.Serialize)

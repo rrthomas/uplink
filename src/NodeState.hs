@@ -126,7 +126,7 @@ import qualified Address
 import qualified Block
 import qualified Config
 import qualified Key
-import qualified Logging as Log
+import qualified Network.P2P.Logging as Log
 import qualified DB
 import qualified Ledger
 import qualified Transaction as Tx
@@ -186,7 +186,7 @@ initNodeState w ps mp itxp poa blk = do
 
 -- | Resets all of NodeState except for peers
 resetNodeState
-  :: MonadReadDB m
+  :: (MonadProcess m, MonadReadDB m)
   => NodeT m ()
 resetNodeState = do
   resetLedger
@@ -314,7 +314,7 @@ setLedger :: MonadBase IO m => Ledger.World -> NodeT m ()
 setLedger ledger' = modifyNodeState_ ledger $ const $ pure ledger'
 
 -- | Reset the ledger to it's initial state with preallocated accounts
-resetLedger :: MonadBase IO m => NodeT m ()
+resetLedger :: MonadProcess m => NodeT m ()
 resetLedger = do
   eAccs <- loadPreallocatedAccs
   let eFreshWorld = first show .
@@ -530,8 +530,6 @@ applyBlock block =
 
           -- Write Deltas collected during applyBlock to TxLog
           let blockIdx = Block.index block
-
-          -- Write the entire block's transacction list to TxLog in database
           txLogFile <- askTxLogFilePath
           liftBase $ forM_ (Map.toList deltasMap) $ \(addr,deltas) ->
             TxLog.writeDeltas txLogFile (fromIntegral blockIdx) addr deltas

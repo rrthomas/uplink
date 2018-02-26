@@ -1,0 +1,3 @@
+We have the following graph errors:
+Illegal transition declaration: transition from terminal state to: 'a' is not allowed.
+Cannot transition from state: 'terminal' to 'a' in method 'revive'.

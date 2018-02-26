@@ -25,28 +25,32 @@ jobs:
           name: Install system deps
           command: |
             echo "deb http://apt.postgresql.org/pub/repos/apt/ jessie-pgdg main" >> /etc/apt/sources.list.d/pgdg.list
+
             apt-get update
-            apt-get install -y wget sudo
+            apt-get install -y wget sudo unzip pkg-config zip g++ zlib1g-dev unzip python rpm
             wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
             apt-get update
             apt-get install -y libleveldb-dev leveldb-doc openssh-client expat libexpat1-dev libpq-dev postgresql-9.5 xz-utils make
+            wget https://github.com/bazelbuild/bazel/releases/download/0.9.0/bazel-0.9.0-installer-linux-x86_64.sh
+            chmod +x bazel-0.9.0-installer-linux-x86_64.sh
+            sudo ./bazel-0.9.0-installer-linux-x86_64.sh
       - run:
           name: install dockerize
           command: wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && tar -C /usr/local/bin -xzvf dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz && rm dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
           environment:
             DOCKERIZE_VERSION: v0.3.0
       - run:
-          name: Wait for DB 
+          name: Wait for DB
           command: dockerize -wait tcp://localhost:5432 -timeout 1m
       - run:
           name: Setup PostgresDB
-          command: sudo -i -u postgres psql -h localhost -p 5432 -c "CREATE USER uplink_test_user WITH CREATEDB CREATEROLE SUPERUSER PASSWORD 'uplink_test_user';" 
+          command: sudo -i -u postgres psql -h localhost -p 5432 -c "CREATE USER uplink_test_user WITH CREATEDB CREATEROLE SUPERUSER PASSWORD 'uplink_test_user';"
       - run:
           name: Install haskell dependencies
           command: |
              stack upgrade
              mv /root/.local/bin/stack /usr/local/bin/stack
-             stack install --no-docker --only-dependencies -j2 --system-ghc
+             stack install --no-docker --only-dependencies -j2 --system-ghc --
       - save_cache:
           key: uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
           paths:
@@ -55,11 +59,14 @@ jobs:
       - run:
           name: Build uplink
           command: |
+            ./tools/mksettings.sh
             stack build --no-docker --system-ghc --test --copy-bins
       - run:
           name: Copy uplink binary to local dir
           command: |
             cp `which uplink` .
+            ./release.sh `git show -s --format=%h`
+
       - persist_to_workspace:
           root: .
           paths:
@@ -68,6 +75,7 @@ jobs:
             - uplink
             - config/
             - dist/
+            - release/
             - docker-compose.yml
             - docker-compose.integration-tests.yml
             - docker-compose.testnet.yml
@@ -98,8 +106,9 @@ jobs:
             git clone git@github.com:adjoint-io/uplink-sdk-py.git
       - run:
           name: Run python sdk integration tests
-          command: docker-compose -f docker-compose.integration-tests.yml run integration-tests-sdk-py
-
+          command: |
+            docker-compose -f docker-compose.integration-tests.yml run integration-tests-sdk-py
+            
       - persist_to_workspace:
           root: .
           paths:
@@ -117,31 +126,6 @@ jobs:
           paths:
             - uplink.tar
 
-  build-distro-packages:
-    <<: *defaults
-    docker:
-      - image: ruby
-    steps:
-      - attach_workspace:
-          at: ~/uplink
-      - run:
-          name: Install fpm + package tools
-          command: |
-            gem install fpm
-            apt-get update && apt-get install -y --no-install-recommends rpm bsdtar zip
-
-      - run:
-          name: Build packages
-          command: |
-            cd ~/uplink/dist
-            make
-
-      - persist_to_workspace:
-          root: .
-          paths:
-            - .git/
-            - dist/
-
   push-distro-packages:
     <<: *defaults
     docker:
@@ -156,7 +140,7 @@ jobs:
       - deploy:
           name: Push distro packages to github releases
           command: |
-            cd ~/uplink/dist
+            cd ~/uplink/release/`git show -s --format=%h`/
             ghr -t $GITHUB_TOKEN -u $CIRCLE_PROJECT_USERNAME -r $CIRCLE_PROJECT_REPONAME --replace `git show -s --format=%h` .
 
 
@@ -230,23 +214,12 @@ workflows:
           requires:
             - build
 
-      - build-distro-packages:
+      - push-distro-packages:
           requires:
             - build-image-run-integration-tests
           filters:
             branches:
               only: master
-            tags:
-              only: /(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/
-
-      - push-distro-packages:
-          requires:
-            -  build-distro-packages
-          filters:
-            branches:
-              only: master
-            tags:
-              only: /(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/
 
 
       - deploy:

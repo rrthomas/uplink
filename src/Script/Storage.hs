@@ -21,7 +21,7 @@ import Script.Pretty
 import qualified Data.Map as Map
 
 initStorage :: Script -> GlobalStorage
-initStorage (Script defns graph _) = GlobalStorage $
+initStorage (Script _ defns graph _) = GlobalStorage $
     foldl' buildStores Map.empty defns
   where
     buildStores :: Storage -> Def -> Storage
@@ -40,21 +40,25 @@ initStorage (Script defns graph _) = GlobalStorage $
     toVCrypto TInt (VInt n) = VCrypto $ toSafeInteger' n
     toVCrypto t     v       = convAddr t v
 
-    convAddr TAccount (VAddress addr)  = VAccount addr
-    convAddr TAsset (VAddress addr)    = VAsset addr
-    convAddr TContract (VAddress addr) = VContract addr
-    convAddr _          x              = x
+    convAddr TAccount (VAddress addr)   = VAccount addr
+    convAddr (TAsset _) (VAddress addr) = VAsset addr
+    convAddr TContract (VAddress addr)  = VContract addr
+    convAddr _          x               = x
 
 -- | Pretty print storage map
-dumpStorage :: Map Key Value -> Doc
-dumpStorage store =
+dumpStorage :: EnumInfo -> Map Key Value -> Doc
+dumpStorage enumInfo store =
   if Map.null store
     then indent 8 "<empty>"
     else
       indent 8 $
       vcat [
           ppr k                         -- variable
-          <+> ":" <+> ppr (mapType v)   -- type
+          <+> ":" <+> pprTy v  -- type
           <+> "=" <+> ppr v             -- value
           | (k,v) <- Map.toList store
         ]
+  where
+    pprTy v = case mapType enumInfo v of
+                Nothing -> "<<unknown constructor>>"
+                Just ty -> ppr ty

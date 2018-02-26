@@ -34,7 +34,7 @@ import qualified Block
 import qualified NodeState
 import qualified Time
 import qualified Validate as V
-import qualified Logging as Log
+import qualified Network.P2P.Logging as Log
 
 import Network.P2P.Service (Service(..))
 import qualified Network.P2P.Message as Msg
@@ -66,6 +66,7 @@ consensusProc
   => Service
   -> NodeT m ()
 consensusProc msgService = do
+    register "consensusproc" =<< getSelfPid
     Log.info "Consensus process started."
 
     spawnLocal blockGenProc
@@ -94,16 +95,16 @@ consensusProc msgService = do
           NodeState.withLedgerState $ \world ->
             liftIO $ V.validateBlock applyCtx world block
 
+      let blkIdxStr = show $ Block.index block
+          mkErrorMsg c err = mconcat
+            [ "[", c, "]", " Block ", blkIdxStr, " invalid:\n    ", show err]
+
       case ledgerValid of
-        Left err ->
-          Log.warning $
-            "[Ledger] Block invalid:\n    " <> show err
-        Right _ -> do
+        Left err -> Log.warning $ mkErrorMsg "Ledger" err
+        Right _  -> do
           eBlockSig <- C.signBlock block
           case eBlockSig of
-            Left err ->
-              Log.warning $
-                "[Consensus] Block invalid:\n    " <> show err
+            Left err -> Log.warning $ mkErrorMsg "Consensus" err
             Right blockSig' -> do
 
               -- Construct BlockSig message
@@ -131,7 +132,8 @@ consensusProc msgService = do
 blockGenProc
   :: forall m. (MonadWriteDB m, MonadProcessBase m)
   => NodeT m ()
-blockGenProc =
+blockGenProc = do
+    register "blockgenproc" =<< getSelfPid
     forever blockGenProc'
   where
     blockGenProc' :: NodeT m ()
@@ -144,38 +146,39 @@ blockGenProc =
       -- last block was generated will far exceed the block period. This will
       -- cause this function to loop without waiting any time at all. A default
       -- wait of 3 seconds [arbitrary] is forced here.
-      loginfo "Waiting to create next block..."
-      liftIO $ waitToGenNextBlock 3000000 lastBlock
+      waitedFor <- liftIO $ waitToGenNextBlock 3000000 lastBlock
+      when (waitedFor > 0) $
+        Log.info $ "Waiting to generate next block for " <> show waitedFor <> "us..."
 
       -- Attempt to generate a new block
-      loginfo $ "Trying to create block "
+      Log.info $ "Trying to create block "
         <> show (Block.index lastBlock + 1)
       eBlock <- C.generateBlock
       case eBlock of
-        Left err    -> logwarning $ show err
+        Left err    -> Log.warning $ show err
         Right block -> do
 
-          loginfo $ "Successfully made block..."
+          Log.info $ "Successfully made block..."
 
           -- Send SignBlock Msgs to all peers
           selfPid <- getSelfPid
           let signBlockMsg = (SignBlockMsg block, selfPid)
           validatorPeers <- NodeState.getValidatorPeers
 
-          loginfo $ "Sending block to all validators to sign..."
+          Log.info $ "Sending block to all validators to sign..."
           forM_ validatorPeers $ \(Peer peerPid addr) -> do
             let peerNodeId = processNodeId peerPid
             P2P.nsendPeer Service.Consensus peerNodeId signBlockMsg
 
     -- Wait to generate next block dictated by previous blocks's blockPeriod
-    waitToGenNextBlock :: Int64 -> Block.Block -> IO ()
+    waitToGenNextBlock :: Int64 -> Block.Block -> IO Int64
     waitToGenNextBlock nms lastBlock = do
       let lastBlockTs = Block.timestamp $ Block.header lastBlock
       let blockPeriod = CAP.blockPeriod $ Block.getConsensus lastBlock
-      let nextBlockTs = lastBlockTs + (secondsToMicroseconds blockPeriod) -- in microsecs
+      let nextBlockTs = lastBlockTs + blockPeriod -- in microsecs
 
       -- Wait just a bit longer to prevent all generating nodes from making blocks all at once
-      randMicroSecs <- randomRIO (1000000, secondsToMicroseconds $ blockPeriod `div` 3)
+      randMicroSecs <- randomRIO (1000000, blockPeriod `div` 3)
       let timeToWaitUntil = nextBlockTs + randMicroSecs
 
       -- If timeToWaitUntil is earlier than "now", wait a default
@@ -184,15 +187,6 @@ blockGenProc =
       if timeToWaitUntil <= currentTs
         then Utils.waitUntil $ currentTs + nms
         else Utils.waitUntil timeToWaitUntil
-
-    secondsToMicroseconds = (*) 1000000
-
-    logPref logf = logf . (<>) "[Consensus - blockGenProc] "
-
-    loginfo, logwarning :: Text -> NodeT m ()
-    loginfo    = liftIO . logPref Log.info
-    logwarning = liftIO . logPref Log.warning
-
 
 -------------------------------------------------------------------------------
 -- Serialization

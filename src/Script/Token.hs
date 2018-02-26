@@ -15,9 +15,16 @@ default (Text)
 global   = "global"
 local    = "local"
 asset    = "asset"
+assetBin = "assetBin"
+assetDis = "assetDisc"
+assetFrac1 = "assetFrac1"
+assetFrac2 = "assetFrac2"
+assetFrac3 = "assetFrac3"
+assetFrac4 = "assetFrac4"
+assetFrac5 = "assetFrac5"
+assetFrac6 = "assetFrac6"
 account  = "account"
 contract = "contract"
-return   = "return"
 true     = "True"
 false    = "False"
 void     = "void"
@@ -37,12 +44,14 @@ datetime = "datetime"
 timedelta = "timedelta"
 any      = "any"
 state    = "state"
+enum     = "enum"
 
 if_      = "if"
 else_    = "else"
 before   = "before"
 after    = "after"
 between  = "between"
+case_    = "case"
 
 assign   = "="
 mult     = "*"
@@ -84,12 +93,18 @@ boolUnops  = [not]
 keywords = [
     global
   , local
-  , asset
+  , assetBin
+  , assetDis
+  , assetFrac1
+  , assetFrac2
+  , assetFrac3
+  , assetFrac4
+  , assetFrac5
+  , assetFrac6
   , contract
   , account
   , sig
   , msg
-  , return
   , true
   , false
   , float
@@ -109,6 +124,8 @@ keywords = [
   , initial
   , terminal
   , transition
+  , enum
+  , case_
   ]
 
 operators = [

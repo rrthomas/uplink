@@ -10,6 +10,5 @@ RUN apt-get install -y xz-utils make
 RUN stack install --no-docker --only-dependencies -j2 --system-ghc
 COPY . .
 RUN stack install --no-docker --system-ghc
-COPY config config
 # delete .git after building uplink for a smaller image
 RUN rm -rf .git/

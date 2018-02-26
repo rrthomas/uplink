@@ -12,7 +12,10 @@ module Script (
   -- ** Syntax
   Script(..),
   Expr(..),
+  Pattern(..),
+  Match(..),
   Method(..),
+  EnumDef(..),
   Def(..),
   Arg(..),
   Lit(..),
@@ -29,6 +32,8 @@ module Script (
   LLit,
   LName,
   LType,
+  LEnumConstr,
+  LPattern,
 
   -- ** Values
   Script.Value(..),
@@ -37,6 +42,9 @@ module Script (
 
   -- ** Name
   Name(..),
+
+  -- ** Enum constructor
+  EnumConstr(..),
 
   -- ** State Labels
   Label(..),
@@ -48,9 +56,13 @@ module Script (
 
   -- ** Types
   TVar(..),
+  TAsset(..),
   Type(..),
 
   -- ** Helpers
+  EnumInfo(..),
+  createEnumInfo,
+
   eseq,
   unseq,
   argtys,
@@ -59,20 +71,21 @@ module Script (
   unLoc,
   at,
   methodNames,
+  lookupMethod,
   mapType,
   emptyScript,
 
   -- ** Pretty Printing
   ppScript,
 
-  module Script.Fixed,
-
 ) where
 
 import Protolude hiding (put, get, (<>), show, Show, putByteString, Type)
 import Prelude (show, Show(..))
 
-import Script.Fixed
+import Control.Monad (fail)
+
+import Fixed
 import Script.Graph
 import Script.Pretty
 import qualified Script.Pretty as Pretty
@@ -80,20 +93,23 @@ import qualified Script.Pretty as Pretty
 import SafeInteger
 import SafeString
 import Address (Address, rawAddr)
+import Asset (AssetType(..))
 import qualified Hash
 import qualified Script.Token as Token
 
 import qualified Datetime as D
 import qualified Datetime.Types as DT
 
+import qualified Data.Binary as B
 import Data.Fixed
 import Data.Time.Clock
 import Data.Hashable (Hashable)
 import Data.String (IsString(..))
 import Data.Time.Calendar (Day(..))
-import Data.Serialize (Serialize(..), encode, decode)
+import Data.Serialize (Serialize(..), encode, decode, putInt8, getInt8)
 import Data.Aeson (ToJSON(..), FromJSON(..))
 import qualified Data.Text as T
+import qualified Data.Map as Map
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
@@ -131,20 +147,26 @@ type LType = Located Type
 type LName = Located Name
 type LBinOp = Located BinOp
 type LUnOp  = Located UnOp
+type LEnumConstr = Located EnumConstr
+type LPattern = Located Pattern
+
+-- | Enum constructor.
+newtype EnumConstr = EnumConstr { unEnumConstr :: SafeString }
+  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData)
+
+instance ToJSON EnumConstr where
+  toJSON = toJSON . unEnumConstr
+
+instance FromJSON EnumConstr where
+  parseJSON = fmap EnumConstr . parseJSON
 
 -- | Variable names
 newtype Name = Name { unName :: Text }
-  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData)
-
-instance ToJSON Name where
-  toJSON (Name nm) = toJSON nm
-
-instance FromJSON Name where
-  parseJSON = fmap Name . parseJSON
+  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData, B.Binary)
 
 -- | Datetime literals
 newtype DateTime = DateTime { unDateTime :: DT.Datetime }
-  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable)
 
 newtype TimeDelta = TimeDelta { unTimeDelta :: DT.Delta }
    deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable, ToJSON, FromJSON)
@@ -155,17 +177,27 @@ instance Hash.Hashable TimeDelta where
 instance Hash.Hashable DateTime where
   toHash = Hash.toHash . (toS :: [Char] -> ByteString) . show
 
+data Pattern
+  = PatLit EnumConstr
+  deriving (Eq, Ord, Show, Generic, Hash.Hashable, NFData)
+
+data Match
+  = Match { matchPat :: LPattern
+          , matchBody :: LExpr
+          }
+  deriving (Eq, Ord, Show, Generic, Hash.Hashable, NFData)
+
 data Expr
   = ESeq     LExpr LExpr           -- ^ Sequencing
   | ELit     LLit                  -- ^ Literal
   | EVar     LName                 -- ^ Variable reference
-  | ERet     LExpr                 -- ^ Return a value
   | EBinOp   LBinOp LExpr LExpr    -- ^ Basic Binary ops on Integers
   | EUnOp    LUnOp  LExpr          -- ^ Basic unary ops
   | EIf      LExpr LExpr LExpr     -- ^ Conditional
   | EBefore  LExpr LExpr           -- ^ Time guard
   | EAfter   LExpr LExpr           -- ^ Time guard
   | EBetween LExpr LExpr LExpr     -- ^ Time guard
+  | ECase    LExpr [Match]         -- ^ Case statement
   | EAssign  Name  LExpr           -- ^ Reference update
   | ECall    Name  [LExpr]         -- ^ Function call
   | ENoOp                          -- ^ Empty method body
@@ -206,6 +238,7 @@ data Lit
   | LTimeDelta TimeDelta
   | LUndefined
   | LVoid
+  | LConstr EnumConstr
   deriving (Eq, Ord, Show, Generic, Hash.Hashable, NFData)
 
 -- | Values in which literals are evaluated to
@@ -224,18 +257,29 @@ data Value
   | VVoid                  -- ^ Void
   | VDateTime DateTime     -- ^ A datetime with a timezone
   | VTimeDelta TimeDelta   -- ^ A difference in time
+  | VEnum EnumConstr       -- ^ Constructor of the given enum type
   | VState Label           -- ^ Named state label
   | VUndefined             -- ^ Undefined
   deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable, Hash.Hashable)
 
 -- | Type variables used in inference
-newtype TVar = TV Text
+data TVar
+  = TV  Text -- ^ General type variable
+  | TAV Text -- ^ Type variable used for inferring return types of prim ops operating over assets
   deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable)
+
+data TAsset
+  = TDiscrete         -- ^ Type of Discrete Assets
+  | TBinary           -- ^ Type of Binary Assets
+  | TFractional PrecN -- ^ Type of Fractional Assets
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable, Serialize)
 
 -- | Core types for FCL
 data Type
   = TError          -- ^ (Internal) Error branch in typechecker
-  | TVar TVar       -- ^ (Internal) Type variable in inference
+  | TVar TVar       -- ^ (Internal) Type variable used in inference
+  | TAny            -- ^ (Internal) Polymorphic type
+  | TAssetAny       -- ^ (Internal) Polymorphic asset type determining type of holdings in prim ops
   | TRef Type       -- ^ (Internal) Variable type
   | TCrypto Type    -- ^ (Internal) Local variables
   | TAddress        -- ^ (Internal) Type of addresses
@@ -244,7 +288,7 @@ data Type
   | TFixed PrecN    -- ^ Type of double precision floats
   | TBool           -- ^ Type of booleans
   | TAccount        -- ^ Type of account addresses
-  | TAsset          -- ^ Type of asset addresses
+  | TAsset TAsset   -- ^ Type of asset addresses
   | TContract       -- ^ Type of contract addresses
   | TMsg            -- ^ Type of messages
   | TSig            -- ^ Type of ECDSA signature
@@ -252,7 +296,7 @@ data Type
   | TDateTime       -- ^ DateTime with Timezone
   | TTimeDelta      -- ^ Type of difference in time
   | TState          -- ^ Contract state
-  | TAny            -- ^ Polymorphic type
+  | TEnum Name      -- ^ Enumeration type
   deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable)
 
 -- | Function argument
@@ -274,6 +318,12 @@ data Method = Method
   , methodBody :: LExpr
   } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
+-- | Enumeration
+data EnumDef = EnumDef
+  { enumName :: LName
+  , enumConstrs :: [LEnumConstr]
+  } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+
 -- | Definition
 data Def
   = GlobalDef Type Name LLit
@@ -284,14 +334,16 @@ data Def
 
 -- | Script
 data Script = Script
-  { scriptDefs        :: [Def]
+  { scriptEnums       :: [EnumDef]
+  , scriptDefs        :: [Def]
   , scriptTransitions :: [Transition]
   , scriptMethods     :: [Method]
   } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 emptyScript :: Script
 emptyScript = Script
-  { scriptDefs        = []
+  { scriptEnums       = []
+  , scriptDefs        = []
   , scriptTransitions = []
   , scriptMethods     = []
   }
@@ -313,6 +365,10 @@ argLits [] = []
 methodNames :: Script -> [Name]
 methodNames = fmap methodName . scriptMethods
 
+lookupMethod :: Name -> Script -> Maybe Method
+lookupMethod nm s =
+  find ((==) nm . methodName) (scriptMethods s)
+
 -- | Remove position information on an element
 unLoc :: Located a -> a
 unLoc (Located loc a) = a
@@ -326,6 +382,10 @@ unseq :: LExpr -> [LExpr]
 unseq (Located l e) = case e of
   ESeq a b       -> unseq a ++ unseq b
   EIf cond tr fl -> unseq tr ++ unseq fl
+  EBefore _ s    -> unseq s
+  EAfter _ s     -> unseq s
+  EBetween _ _ s -> unseq s
+  ECase _ ms     -> concatMap (unseq . matchBody) ms
   _              -> [Located l e]
 
 -- | Roll a list of expressions into a sequence.
@@ -336,34 +396,59 @@ eseq loc es = case es of
   (x:xs) -> Located loc $
     ESeq x $ eseq (located x) xs
 
-mapFixedType :: FixedN -> PrecN
-mapFixedType = \case
-  Fixed1 _ -> Prec1
-  Fixed2 _ -> Prec2
-  Fixed3 _ -> Prec3
-  Fixed4 _ -> Prec4
-  Fixed5 _ -> Prec5
-  Fixed6 _ -> Prec6
+mapFixedType :: FixedN -> Type
+mapFixedType fn =
+  TFixed $ case fn of
+    Fixed1 _ ->  Prec1
+    Fixed2 _ ->  Prec2
+    Fixed3 _ ->  Prec3
+    Fixed4 _ ->  Prec4
+    Fixed5 _ ->  Prec5
+    Fixed6 _ ->  Prec6
 
--- | Map values into respective frontend types
-mapType :: Script.Value -> Type
-mapType = \case
- VInt {}      -> TInt
- VCrypto {}   -> TCrypto TInt
- VFloat {}    -> TFloat
- VFixed f     -> TFixed (mapFixedType f)
- VBool {}     -> TBool
- VAccount {}  -> TAccount
- VAsset {}    -> TAsset
- VContract {} -> TContract
- VAddress {}  -> TAddress
- VVoid        -> TVoid
- VMsg {}      -> TMsg
- VSig {}      -> TSig
- VDateTime {} -> TDateTime
- VTimeDelta {} -> TTimeDelta
- VState {}    -> TState
- VUndefined   -> TAny -- XXX: ugly hack, nothing else to do here
+-- | Map types to values, taking enum types into account. Returns
+-- @Nothing@ in case of an unknown constructor.
+mapType :: EnumInfo -> Script.Value -> Maybe Type
+mapType enumInfo (VEnum c) = TEnum <$> Map.lookup c (constrToEnum enumInfo)
+mapType _ VInt{} = pure TInt
+mapType _ VCrypto{} = pure $ TCrypto TInt
+mapType _ VFloat{} = pure TFloat
+mapType _ (VFixed f) = pure $ mapFixedType f
+mapType _ VBool{} = pure TBool
+mapType _ VAccount{} = pure TAccount
+mapType _ VAsset{} = pure TAssetAny
+mapType _ VContract{}= pure TContract
+mapType _ VAddress{} = pure TAddress
+mapType _ VVoid = pure TVoid
+mapType _ VMsg{} = pure TMsg
+mapType _ VSig{} = pure TSig
+mapType _ VDateTime{} = pure TDateTime
+mapType _ VTimeDelta{} = pure TTimeDelta
+mapType _ VState{} = pure TState
+mapType _ VUndefined = pure TAny
+
+data EnumInfo = EnumInfo
+  { constrToEnum :: Map EnumConstr Name
+  , enumToConstrs :: Map Name [EnumConstr]
+  }
+
+-- | Create the dictionaries for the constructor/enum type membership
+-- relations from the original list of definitions. Assumes that there
+-- are no duplicates in the input.
+createEnumInfo :: [EnumDef] -> EnumInfo
+createEnumInfo enums = EnumInfo constrEnum enumConstrs
+  where
+    constrEnum
+      = Map.fromList
+      . concatMap (\(EnumDef lname constrs)
+                     -> map (\lconstr -> (locVal lconstr, locVal lname)) constrs)
+      $ enums
+
+    enumConstrs
+      = Map.fromList
+      . map (\(EnumDef lname constrs)
+               -> (locVal lname, map locVal constrs))
+      $ enums
 
 -------------------------------------------------------------------------------
 -- Serialization
@@ -380,17 +465,35 @@ instance IsString TVar where
   fromString = TV . toS
 
 instance Serialize TVar where
-  put (TV tv) = put (encodeUtf8 tv)
-  get = TV . decodeUtf8 <$> get
+  put (TV tv)  = putInt8 0 >> put (encodeUtf8 tv)
+  put (TAV tv) = putInt8 1 >> put (encodeUtf8 tv)
+  get = do
+    tag <- getInt8
+    let constr =
+          case tag of
+            0 -> TV
+            1 -> TAV
+            n -> fail "Inavlid tag deserialized for TVar"
+    constr . decodeUtf8 <$> get
+
+instance IsString EnumConstr where
+  fromString = EnumConstr . fromString
+
+instance Serialize EnumConstr where
+  put = put . unEnumConstr
+  get = EnumConstr <$> get
 
 instance (Serialize a) => Serialize (Located a) where
   put (Located loc x) = put (loc,x)
   get = uncurry Located <$> get
 
 instance Serialize Lit where
+instance Serialize EnumDef where
 instance Serialize Def where
 instance Serialize Arg where
 instance Serialize Type where
+instance Serialize Pattern where
+instance Serialize Match where
 instance Serialize Expr where
 instance Serialize BinOp where
 instance Serialize UnOp where
@@ -415,6 +518,9 @@ instance (Pretty a) => Pretty (Located a) where
 instance Pretty Name where
   ppr (Name nm) = ppr nm
 
+instance Pretty EnumConstr where
+  ppr (EnumConstr ec) = ppr ec
+
 instance Pretty Expr where
   ppr = \case
     ENoOp            -> mempty
@@ -427,7 +533,6 @@ instance Pretty Expr where
 
     ELit lit         -> ppr lit
     EVar nm          -> ppr nm
-    ERet e           -> token Token.return <+> ppr e
     EAssign nm e     -> ppr nm <+> token Token.assign <+> ppr e
     EUnOp nm e       -> parens $ ppr nm <> ppr e
     EBinOp nm e e'   -> parens $ ppr e <+> ppr nm <+> ppr e'
@@ -443,6 +548,10 @@ instance Pretty Expr where
                    <$$> rbrace
                       where
                         Located _ e' = e
+
+    ECase e ms -> token Token.case_ <> parens (ppr e) <+> lbrace
+                   <$$> vsep (map (semify . ppr) ms)
+                   <$$> rbrace
 
     EBetween d1 d2 e -> token Token.between <+> tupleOf (map ppr [d1,d2]) <+> lbrace
                    <$$> indent 2 ((if e' == ENoOp then identity else semify) (ppr e'))
@@ -462,6 +571,17 @@ instance Pretty Expr where
                         Located _ e1' = e1
                         Located _ e2' = e2
 
+instance Pretty Match where
+  ppr (Match (Located _ (PatLit p)) expr)
+    = ppr (LConstr p) <+> token Token.rarrow <+> maybeBrace expr
+    where
+      -- Wrap braces around the expression in case it is a sequence of
+      -- statements, otherwise don't.
+      maybeBrace e
+        = case locVal e of
+            ESeq _ _ -> lbrace <+> semify (ppr e) <+> rbrace
+            _ -> ppr e
+
 instance Pretty Lit where
   ppr = \case
     LInt int64     -> ppr int64
@@ -479,6 +599,7 @@ instance Pretty Lit where
     LUndefined     -> dquotes "Undefined" -- Not in syntax
     LDateTime dt   -> dquotes $ ppr $ (DT.formatDatetime (unDateTime dt) :: [Char])
     LTimeDelta d   -> dquotes $ ppr d
+    LConstr ec     -> text "`" <> ppr ec
 
 instance Pretty Type where
   ppr = \case
@@ -486,21 +607,31 @@ instance Pretty Type where
     TFloat      -> token Token.float
     TFixed prec -> ppr prec
     TBool       -> token Token.bool
+    TAny        -> token Token.any
+    TAssetAny   -> token Token.asset
     TAddress    -> token Token.contract
     TAccount    -> token Token.account
-    TAsset      -> token Token.asset
+    TAsset TBinary   -> token Token.assetBin
+    TAsset TDiscrete -> token Token.assetDis
+    TAsset (TFractional Prec1) -> token Token.assetFrac1
+    TAsset (TFractional Prec2) -> token Token.assetFrac2
+    TAsset (TFractional Prec3) -> token Token.assetFrac3
+    TAsset (TFractional Prec4) -> token Token.assetFrac4
+    TAsset (TFractional Prec5) -> token Token.assetFrac5
+    TAsset (TFractional Prec6) -> token Token.assetFrac6
     TContract   -> token Token.contract
     TVoid       -> token Token.void
     TSig        -> token Token.sig
     TMsg        -> token Token.msg
     TError      -> text $ "<error-type>"  -- Not in syntax
     TVar (TV v) -> text $ toSL v
+    TVar (TAV v) -> text $ toSL v
     TRef t      -> hcat ["ref <", ppr t, ">"]  -- Not in syntax
     TCrypto t   -> hsep [ppr Token.local, ppr t]
     TDateTime   -> token Token.datetime
     TTimeDelta  -> token Token.timedelta
     TState      -> token Token.state
-    TAny        -> token Token.any
+    TEnum e     -> token Token.enum <+> token (unName e)
 
 instance Pretty Script.Value where
   ppr = \case
@@ -518,6 +649,7 @@ instance Pretty Script.Value where
     VVoid        -> token Token.void
     VDateTime dt -> ppr (DT.formatDatetime (unDateTime dt) :: [Char])
     VTimeDelta d -> ppr d
+    VEnum c      -> ppr c
     VState n     -> ppr n
     VUndefined   -> "undefined"
 
@@ -552,6 +684,12 @@ instance Pretty Method where
           <$$> rbrace
         other -> lbrace <$$> indent 2 (semify (ppr other)) <$$> rbrace
 
+instance Pretty EnumDef where
+  ppr (EnumDef lname lconstrs)
+    = token Token.enum <+> ppr (locVal lname) <+> lbrace
+      <$$> (Pretty.commafy . map (ppr . locVal) $ lconstrs)
+      <$$> rbrace <> token Token.semi
+
 instance Pretty Def where
   ppr = \case
     GlobalDefNull typ (Located _ name) -> hsep [token Token.global, ppr typ, ppr name] <> token Token.semi
@@ -560,8 +698,9 @@ instance Pretty Def where
     LocalDef typ name lit              -> hsep [token Token.local, ppr typ, ppr name `assign` ppr lit]
 
 instance Pretty Script where
-  ppr (Script defns graph methods) = vsep
-    [ vsep (map ppr defns)
+  ppr (Script enums defns graph methods) = vsep
+    [ vsep (map ppr enums)
+    , vsep (map ppr defns)
     , Pretty.softbreak
     , vsep (map (semify . ppr) graph)
     , Pretty.softbreak
@@ -597,9 +736,26 @@ evalLit lit = case lit of
   LUndefined  -> VUndefined
   LDateTime d -> VDateTime d
   LTimeDelta d -> VTimeDelta d
+  LConstr c -> VEnum c
 
 evalLLit :: LLit -> Script.Value
 evalLLit (Located _ lit) = evalLit lit
+
+-------------------------------------------------------------------------------
+-- To/FromJSON
+-------------------------------------------------------------------------------
+
+instance ToJSON Name where
+  toJSON (Name nm) = toJSON nm
+
+instance FromJSON Name where
+  parseJSON = fmap Name . parseJSON
+
+instance ToJSON DateTime where
+  toJSON (DateTime dt) = toJSON dt
+
+instance FromJSON DateTime where
+  parseJSON = fmap DateTime . parseJSON
 
 -------------------------------------------------------------------------------
 -- Postgres Serialization

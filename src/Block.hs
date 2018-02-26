@@ -328,6 +328,7 @@ instance ToJSON BlockHeader where
     , "prevHash"   .= decodeUtf8 (prevHash bh)
     , "merkleRoot" .= decodeUtf8 (merkleRoot bh)
     , "timestamp"  .= timestamp bh
+    , "consensus"  .= consensus bh
     ]
 instance ToJSON BlockSignature where
   toJSON (BlockSignature sig addr) = object

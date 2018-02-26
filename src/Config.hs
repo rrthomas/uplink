@@ -34,6 +34,9 @@ module Config (
   handleChain,
   defaultChain,
 
+  -- * Logging settings
+  toggleVerbosity,
+
   -- ** Testing
   testChain,
   testConfig,
@@ -48,6 +51,7 @@ import qualified Data.Configurator.Types as C (Config)
 import Address (Address)
 import qualified Utils
 import qualified Network.Utils as NU
+import qualified Network.P2P.Logging as Log
 import qualified Data.Configurator as C
 import qualified Consensus.Authority.Params as CAP
 
@@ -64,9 +68,7 @@ import System.Posix.Files
 -- | Node configuration, all arguments are required and handled by override and
 -- defaulting logic in `Main`.
 data Config = Config
-  { verbose      :: Bool          -- ^ Verbose logging
-  , loggingLevel :: Text          -- ^ Logging level
-  , logfile      :: FilePath      -- ^ Log file
+  { loggingRules :: [Log.LogRule] -- ^ Logging configuration
   , bootnodes    :: [ByteString]  -- ^ Bootnodes
   , rpcPort      :: Int           -- ^ RPC port
   , rpcSsl       :: Bool          -- ^ Use TLS for RPC
@@ -85,7 +87,7 @@ data Config = Config
   , rpcReadOnly  :: Bool          -- ^ Can RPC cmds change state of ledger
   , preallocated :: FilePath      -- ^ Pre-allocated accounts directory
   , testMode     :: Bool          -- ^ Is node in "test" mode
-  } deriving (Eq, Show)
+  } deriving (Show)
 
 data ChainSettings = ChainSettings
   { minTxs           :: Int        -- ^ Minimum number of transactions in a block
@@ -161,11 +163,7 @@ readConfig silent cfgFile = errorHandler $ do
     Utils.putGreen ("Using configuration: " <> toS cfgFile)
 
   cfg          <- C.load [C.Required cfgFile]
-  verbose      <- C.require cfg "logging.verbose"
-  loglevel     <- C.require cfg "logging.loglevel"
-  logfile      <- C.require cfg "logging.logfile"
-
-
+  loggingRules <- C.require cfg "logging.rules"
   backend      <- getStorageBackend =<<
                     C.require cfg "storage.backend"
   nodeDataDir  <- C.require cfg "storage.directory"
@@ -185,29 +183,31 @@ readConfig silent cfgFile = errorHandler $ do
 
   preallocated <- C.require cfg "network.preallocated"
 
-  return Config {
-    verbose      = verbose
-  , loggingLevel = loglevel
-  , logfile      = logfile
-  , bootnodes    = bootnodes
-  , rpcPort      = rpcPort
-  , rpcSsl       = rpcSsl
-  , rpcCrt       = rpcCrt
-  , rpcKey       = rpcKey
-  , port         = port
-  , hostname     = hostname
-  , minPeers     = minPeers
-  , maxPeers     = maxPeers
-  , closed       = closed
-  , storageBackend = backend
-  , nonetwork    = nonetwork
-  , configFile   = cfgFile
-  , chainConfigFile = defaultChain
-  , nodeDataDir  = nodeDataDir
-  , rpcReadOnly  = False
-  , preallocated = preallocated
-  , testMode     = False
-  }
+  case Log.verifyRules loggingRules of
+    Left err
+      -> pure $ Left err
+    Right rules
+      -> pure . Right $ Config
+         { loggingRules = rules
+         , bootnodes    = bootnodes
+         , rpcPort      = rpcPort
+         , rpcSsl       = rpcSsl
+         , rpcCrt       = rpcCrt
+         , rpcKey       = rpcKey
+         , port         = port
+         , hostname     = hostname
+         , minPeers     = minPeers
+         , maxPeers     = maxPeers
+         , closed       = closed
+         , storageBackend = backend
+         , nonetwork    = nonetwork
+         , configFile   = cfgFile
+         , chainConfigFile = defaultChain
+         , nodeDataDir  = nodeDataDir
+         , rpcReadOnly  = False
+         , preallocated = preallocated
+         , testMode     = False
+         }
 
 getHostname :: C.Config -> IO [Char]
 getHostname cfg = do
@@ -300,7 +300,7 @@ readChain silent cfgFile = do
   let eValidPoAParams =
         CAP.mkGenesisPoA
           validators
-          blockPeriod
+          (blockPeriod * 1000000) -- turn into microseconds
           blockGenLimit
           blockSignLimit
           threshold
@@ -361,13 +361,23 @@ defaultConfig = "config/node.config"
 defaultChain :: FilePath
 defaultChain = "config/chain.config"
 
-errorHandler :: IO a -> IO a
+errorHandler :: IO (Either Text a) -> IO a
 errorHandler m = do
   res <- try m
   case res of
     Left (KeyError nm) -> Utils.dieRed $ "Configuration is missing value: " <> nm
-    Right val          -> pure val
+    Right (Left err)   -> Utils.dieRed $ "Configuration is invalid: " <> err
+    Right (Right val)  -> pure val
 
+-------------------------------------------------------------------------------
+-- Logging settings
+-------------------------------------------------------------------------------
+
+toggleVerbosity :: Maybe Bool -> Config -> Config
+toggleVerbosity maybeVerbosity c
+  = c { loggingRules = Log.toggleVerbosity wantVerbosity (loggingRules c) }
+    where
+      wantVerbosity = fromMaybe False maybeVerbosity
 -------------------------------------------------------------------------------
 -- Testing
 -------------------------------------------------------------------------------

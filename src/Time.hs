@@ -16,6 +16,7 @@ module Time (
   validateTimestamp_,
 
   posixMicroSecsToDatetime,
+  datetimeToPosixMicroSecs,
 
 ) where
 
@@ -24,7 +25,7 @@ import Data.Time.Clock
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Hourglass
 
-import Datetime.Types (Datetime, posixToDatetime)
+import Datetime.Types (Datetime, posixToDatetime, datetimeToDateTime)
 
 -- | GMT unix timestamp
 type Timestamp = Int64
@@ -61,3 +62,8 @@ validateTimestamp_ t1 t2 =
 -- represented in microseconds, NOT seconds.
 posixMicroSecsToDatetime :: Int64 -> Datetime
 posixMicroSecsToDatetime = posixToDatetime . (`div` 1000000)
+
+datetimeToPosixMicroSecs :: Datetime -> Int64
+datetimeToPosixMicroSecs dt = s * 1000000
+  where
+    (Elapsed (Seconds s)) =  timeGetElapsed $ datetimeToDateTime dt

@@ -5,5 +5,4 @@ transition initial -> terminal;
 @initial
 entry () {
   terminate("Now I die.");
-  return x;
 }
