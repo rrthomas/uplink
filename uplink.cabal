@@ -2,17 +2,16 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 377cc978cfb721625bd344665c6fb02acef3e768f14b3838c32970ead4d66e7a
+-- hash: c1685372ebee09eb8908aba7f0994d67d03b6d7337c382471b6cc92b5ea90e90
 
 name:           uplink
-version:        0.1.2
+version:        0.1.3
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
 bug-reports:    https://github.com/adjoint-io/uplink/issues
 maintainer:     Stephen Diehl (stephen@adjoint.io)
 license:        Apache
-license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
 

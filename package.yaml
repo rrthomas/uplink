@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.2
+version: 0.1.3
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
