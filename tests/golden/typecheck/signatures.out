@@ -1,20 +1,26 @@
-[ ( Name { unName = "setDate" } , Sig [] TVoid )
-, ( Name { unName = "initialize" } , Sig [] TVoid )
-, ( Name { unName = "confirm" } , Sig [] TVoid )
-, ( Name { unName = "settle" } , Sig [] TVoid )
-, ( Name { unName = "finalize" } , Sig [] TVoid )
-, ( Name { unName = "setX" } , Sig [ TInt , TFloat ] TVoid )
-, ( Name { unName = "fixX" } , Sig [] TVoid )
-, ( Name { unName = "fixY" } , Sig [] TVoid )
-, ( Name { unName = "update" } , Sig [] TVoid )
-, ( Name { unName = "f" } , Sig [ TInt , TBool ] TVoid )
+[ ( Name { unName = "setDate" } , Sig [] TVoid , NoEffect )
+, ( Name { unName = "initialize" } , Sig [] TVoid , Write )
+, ( Name { unName = "confirm" } , Sig [] TVoid , Write )
+, ( Name { unName = "settle" } , Sig [] TVoid , Write )
+, ( Name { unName = "finalize" } , Sig [] TVoid , Write )
+, ( Name { unName = "setX" }
+  , Sig [ TInt , TFloat ] TVoid
+  , Write
+  )
+, ( Name { unName = "fixX" } , Sig [] TVoid , Write )
+, ( Name { unName = "fixY" } , Sig [] TVoid , Write )
+, ( Name { unName = "update" } , Sig [] TVoid , Write )
+, ( Name { unName = "f" } , Sig [ TInt , TBool ] TVoid , NoEffect )
 , ( Name { unName = "g" }
   , Sig [ TAsset TDiscrete , TAccount ] TVoid
+  , ReadWrite
   )
 , ( Name { unName = "circulate" }
   , Sig [ TAsset (TFractional Prec2) , TFixed Prec2 ] TVoid
+  , Write
   )
 , ( Name { unName = "transfer" }
   , Sig [ TAsset TBinary , TAccount , TAccount , TBool ] TAny
+  , Write
   )
 ]

@@ -29,7 +29,6 @@ import DB
 import NodeState
 import Node.Peer
 import qualified Key
-import qualified Utils
 import qualified Block
 import qualified NodeState
 import qualified Time
@@ -43,8 +42,6 @@ import qualified Network.P2P.Service as Service
 
 import qualified Consensus as C
 import qualified Consensus.Authority.Params as CAP
-
-import System.Random (randomRIO)
 
 -------------------------------------------------------------------------------
 -- Consensus Types
@@ -86,27 +83,27 @@ consensusProc msgService = do
     onSignBlockMsg :: (SignBlockMsg, ProcessId) -> NodeT m ()
     onSignBlockMsg (SignBlockMsg block, replyTo) = do
 
-      let blockOrigin = Block.origin $ Block.header block
-      Log.info $ "Received SignBlockMsg from " <> show blockOrigin
-
       -- Validate block with respect to ledger state
       ledgerValid <-
         NodeState.withApplyCtx $ \applyCtx ->
           NodeState.withLedgerState $ \world ->
             liftIO $ V.validateBlock applyCtx world block
 
-      let blkIdxStr = show $ Block.index block
-          mkErrorMsg c err = mconcat
-            [ "[", c, "]", " Block ", blkIdxStr, " invalid:\n    ", show err]
+      let bidxStr = show $ Block.index block
+      let borigStr = show $ Block.origin $ Block.header block
+      let mkErrorMsg err = mconcat
+            [ "Not signing invalid block ", bidxStr
+            , " from ", borigStr, ":\n    ", show err
+            ]
 
       case ledgerValid of
-        Left err -> Log.warning $ mkErrorMsg "Ledger" err
+        Left err -> Log.warning $ mkErrorMsg err
         Right _  -> do
           eBlockSig <- C.signBlock block
           case eBlockSig of
-            Left err -> Log.warning $ mkErrorMsg "Consensus" err
+            Left err -> Log.warning $ mkErrorMsg err
             Right blockSig' -> do
-
+              Log.info $ "Signing block with index " <> bidxStr <> " from " <> borigStr
               -- Construct BlockSig message
               selfAddr <- askSelfAddress
               let blockSig = Block.BlockSignature blockSig' selfAddr
@@ -118,7 +115,7 @@ consensusProc msgService = do
     -- BlockSigMsg handler
     onBlockSigMsg :: BlockSigMsg -> NodeT m ()
     onBlockSigMsg (BlockSigMsg blockSig) = do
-      Log.info $ "Received BlockSigMsg from " <> show (Block.signerAddr blockSig)
+      Log.info $ "Received Signature from " <> show (Block.signerAddr blockSig)
       mBlock <- C.acceptBlockSig blockSig
       case mBlock of
         Nothing -> pure ()
@@ -130,7 +127,7 @@ consensusProc msgService = do
 -- | Process that generates new blocks according to the current
 -- consensus algorithm parameters in the latest block on the chain
 blockGenProc
-  :: forall m. (MonadWriteDB m, MonadProcessBase m)
+  :: forall m. (MonadReadWriteDB m, MonadProcessBase m)
   => NodeT m ()
 blockGenProc = do
     register "blockgenproc" =<< getSelfPid
@@ -138,55 +135,17 @@ blockGenProc = do
   where
     blockGenProc' :: NodeT m ()
     blockGenProc' = do
-
-      lastBlock <- NodeState.getLastBlock
-
-      -- Wait until time to generate next block
-      -- Note: If a no valid transaction exist in the mempool, the time since the
-      -- last block was generated will far exceed the block period. This will
-      -- cause this function to loop without waiting any time at all. A default
-      -- wait of 3 seconds [arbitrary] is forced here.
-      waitedFor <- liftIO $ waitToGenNextBlock 3000000 lastBlock
-      when (waitedFor > 0) $
-        Log.info $ "Waiting to generate next block for " <> show waitedFor <> "us..."
-
       -- Attempt to generate a new block
-      Log.info $ "Trying to create block "
-        <> show (Block.index lastBlock + 1)
-      eBlock <- C.generateBlock
-      case eBlock of
-        Left err    -> Log.warning $ show err
-        Right block -> do
-
-          Log.info $ "Successfully made block..."
-
-          -- Send SignBlock Msgs to all peers
-          selfPid <- getSelfPid
-          let signBlockMsg = (SignBlockMsg block, selfPid)
-          validatorPeers <- NodeState.getValidatorPeers
-
-          Log.info $ "Sending block to all validators to sign..."
-          forM_ validatorPeers $ \(Peer peerPid addr) -> do
-            let peerNodeId = processNodeId peerPid
-            P2P.nsendPeer Service.Consensus peerNodeId signBlockMsg
-
-    -- Wait to generate next block dictated by previous blocks's blockPeriod
-    waitToGenNextBlock :: Int64 -> Block.Block -> IO Int64
-    waitToGenNextBlock nms lastBlock = do
-      let lastBlockTs = Block.timestamp $ Block.header lastBlock
-      let blockPeriod = CAP.blockPeriod $ Block.getConsensus lastBlock
-      let nextBlockTs = lastBlockTs + blockPeriod -- in microsecs
-
-      -- Wait just a bit longer to prevent all generating nodes from making blocks all at once
-      randMicroSecs <- randomRIO (1000000, blockPeriod `div` 3)
-      let timeToWaitUntil = nextBlockTs + randMicroSecs
-
-      -- If timeToWaitUntil is earlier than "now", wait a default
-      -- n micro seconds instead of not waiting at all.
-      currentTs <- Time.now
-      if timeToWaitUntil <= currentTs
-        then Utils.waitUntil $ currentTs + nms
-        else Utils.waitUntil timeToWaitUntil
+      block <- C.generateBlock
+      -- Send SignBlock Msgs to all peers
+      selfPid <- getSelfPid
+      let signBlockMsg = (SignBlockMsg block, selfPid)
+      validatorPeers <- NodeState.getValidatorPeers
+      let blockIdx = Block.index block
+      forM_ validatorPeers $ \(Peer peerPid addr) -> do
+        let peerNodeId = processNodeId peerPid
+        Log.info $ "Sending block " <> show blockIdx <> " to " <> show addr <> " to sign..."
+        P2P.nsendPeer Service.Consensus peerNodeId signBlockMsg
 
 -------------------------------------------------------------------------------
 -- Serialization

@@ -5,21 +5,17 @@ module Network.P2P.Controller (
   peerControllerProc,
 
   queryAllPeers,
-  queryCapablePeers,
 
   -- ** nsendX using Data.Binary
   nsendPeer,
   nsendPeers,
   nsendPeersMany,
-  nsendCapable,
 
   -- ** nsendX using Data.Serialize
   nsendPeer',
   nsendPeers',
   nsendPeersMany',
-  nsendCapable',
 
-  listPeers,
   doDiscover,
   getCachedPeers,
 ) where
@@ -68,8 +64,8 @@ peerControllerProc = do
   setPeers $ Set.singleton $ Peer selfPid selfAddr
   register (show PeerController) selfPid
 
-  -- Discover boot nodes
-  mapM_ doDiscover initNodeIds
+  -- Discover boot nodes asynchronously
+  mapM_ (void . spawnLocal . doDiscover) initNodeIds
 
   controlP $ \runInBase -> do
     Log.info "P2P controller started."
@@ -104,20 +100,23 @@ peerControllerProc = do
 -- to kill the discovery process if it takes longer than 2 seconds to establish
 -- a connection to the given nodeId.
 doDiscover :: forall m. MonadProcessBase m => NodeId -> m ()
-doDiscover node = do
-    Log.info ("Examining node: " <> show node)
-    doDiscover'
+doDiscover node = void $ spawnLocal doDiscover'
   where
+    -- A process that spawns a discovery process and then waits for 3 seconds
+    -- for it to respond that it found a peer or not.
     doDiscover' :: m ()
     doDiscover' = do
+      register ("discovery-" ++ show node) =<< getSelfPid
+      Log.info $ "Examining node: " <> show node
       (sp,rp) <- newChan
       -- Spawn a discovery process to attempt to discover peer
       pid <- spawnLocal $ discoveryProc sp
-      -- But only wait for it to respond for 2 seconds
-      mRes <- receiveChanTimeout 2000000 rp
+      -- But only wait for it to respond for 3 seconds
+      mRes <- receiveChanTimeout 3000000 rp
       case mRes of
         Nothing -> Log.warning ("Could not reach node: " <> show node)
-        Just _  -> kill pid "Stop discovering peer"
+        Just _  -> pure ()
+      kill pid "Stop discovering peer"
 
     -- This process is spawned to send a WhereIs message to the potential peer
     -- process. It waits for a WhereIsReply message, and then forward the
@@ -126,10 +125,10 @@ doDiscover node = do
     -- seemingly simple timeout is actually _not_ simple.
     discoveryProc :: SendPort () -> m ()
     discoveryProc sp = do
-      register "discovery" =<< getSelfPid
-      -- This might hang for a few minutes...
+      -- *** This might hang for a few minutes, so we are monitoring it
+      -- with `doDiscover'`, and killing it if it takes too long.
       whereisRemoteAsync node (show PeerController)
-      -- Expect a reply and forward it to the p2p controller proc
+      -- Wait for the reply and forward response to p2p controller process
       reply <- expect :: m WhereIsReply
       nsend (show PeerController) reply
       -- alert the parent process that we're finished
@@ -168,13 +167,13 @@ onDiscover (WhereIsReply _ Nothing) = return ()
 onDiscover (WhereIsReply _ (Just seedPid)) = do
   Log.info $ "Peer discovered: " <> show seedPid
   selfPid <- liftP getSelfPid
-  selfPeer <- Peer selfPid <$> NodeState.askSelfAddress
   when (selfPid /= seedPid) $ do
     -- Checks whether peer is in test mode and
     -- if the hash of the genesis block matches
     validPeerConfig <- isPeerConfigValid $ processNodeId seedPid
     when validPeerConfig $ do
       (sp, rp) <- liftP newChan
+      selfPeer <- Peer selfPid <$> NodeState.askSelfAddress
       liftP $ send seedPid (selfPeer, sp :: SendPort Peers)
       Log.info $ "Waiting for peers from " <> show seedPid
       recPeers <- liftP $ receiveChanTimeout 3000000 rp
@@ -249,50 +248,35 @@ nsendPeer
   => Service
   -> NodeId
   -> a
-  -> m ()
+  -> NodeT m ()
 nsendPeer service peer =
   nsendRemote peer (show service)
 
 -- | Broadcast a message to a specific service on all peers.
--- Blocks on `queryAllPeers` (waits for P2P:Controller to respond)
 nsendPeers
   :: (MonadProcessBase m, Serializable a)
   => Service
   -> a
-  -> m ()
+  -> NodeT m ()
 nsendPeers service msg = do
-  peers <- queryAllPeers
+  peers <- getPeerNodeIds
   Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
   forM_ peers $ \peer -> do
     Log.info $ "Sending msg to " <> (show peer :: Text)
     nsendPeer service peer msg
 
 -- | Broadcast multiple messages to a specific service on all peers.
--- Blocks on `queryAllPeers` (waits for P2P:Controller to respond)
 nsendPeersMany
   :: (MonadProcessBase m, Serializable a)
   => Service
   -> [a]
-  -> m ()
+  -> NodeT m ()
 nsendPeersMany service msgs = do
-  peers <- queryAllPeers
+  peers <- getPeerNodeIds
   Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
   Log.info $ "Sending msg to " <> (show peers :: Text)
   forM_ peers $ \peer -> do
     mapM_ (nsendPeer service peer) msgs
-
--- | Broadcast a message to a service of on nodes currently running it.
-nsendCapable
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> a
-  -> m ()
-nsendCapable service msg = do
-  peers <- queryCapablePeers service
-  Log.info $ "nsendCapable: Sending msg to " <> show (length peers) <> " peers."
-  forM_ peers $ \peer -> do
-    Log.info $ "Sending msg to " <> (show peer :: Text)
-    nsendPeer service peer msg
 
 -------------------------------------------------------------------------------
 
@@ -302,7 +286,7 @@ nsendPeer'
   => Service
   -> NodeId
   -> a
-  -> m ()
+  -> NodeT m ()
 nsendPeer' s p =
   nsendPeer s p . S.encode
 
@@ -311,7 +295,7 @@ nsendPeers'
   :: (MonadProcessBase m, S.Serialize a)
   => Service
   -> a
-  -> m ()
+  -> NodeT m ()
 nsendPeers' s =
   nsendPeers s . S.encode
 
@@ -320,18 +304,9 @@ nsendPeersMany'
   :: (MonadProcessBase m, S.Serialize a)
   => Service
   -> [a]
-  -> m ()
+  -> NodeT m ()
 nsendPeersMany' s msgs =
   nsendPeersMany s $ (map S.encode msgs)
-
--- | Like nsendCapable but serialize with Data.Serialize instead of Data.Binary
-nsendCapable'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> a
-  -> m ()
-nsendCapable' s =
-  nsendCapable s . S.encode
 
 -------------------------------------------------------------------------------
 -- P2P Discovery Utils
@@ -346,26 +321,11 @@ queryAllPeers = do
   nsend (show PeerController) (sp :: SendPort Peers)
   peersToNodeIds <$> receiveChan rp
 
--- | Poll a network for a list of specific service providers.
-queryCapablePeers :: MonadProcessBase m => Service -> m [NodeId]
-queryCapablePeers service = do
-    (sp, rp) <- newChan
-    nsendPeers PeerController (service, sp)
-    Log.info "Waiting for capable peer nodes..."
-    go rp []
-  where
-    go rp acc = do
-      res <- receiveChanTimeout 3000000 rp
-      case res of
-        Just pid -> do
-          Log.info "Found capable peer."
-          go rp (processNodeId pid : acc)
-        Nothing -> do
-          Log.info "Found all capable peers!"
-          return acc
-
 -- | Check if peer has valid config
-queryValidPeerConfig :: MonadProcessBase m => NodeId -> m (Maybe (Bool, ByteString))
+queryValidPeerConfig
+  :: MonadProcessBase m
+  => NodeId
+  -> NodeT m (Maybe (Bool, ByteString))
 queryValidPeerConfig nodeId = do
   (sp, rp) <- newChan
   nsendPeer PeerController nodeId sp
@@ -376,7 +336,7 @@ isPeerConfigValid :: MonadProcessBase m => NodeId -> NodeT m Bool
 isPeerConfigValid nodeId = do
   isTestNode <- NodeState.isTestNode
   genesisBlockHash <- Block.hashBlock <$> NodeState.askGenesisBlock
-  mConf <- liftP $ queryValidPeerConfig nodeId
+  mConf <- queryValidPeerConfig nodeId
   case mConf of
     Nothing -> return False
     Just (isPeerTestNode, peerGenBlockHash) -> return $
@@ -384,13 +344,9 @@ isPeerConfigValid nodeId = do
           , genesisBlockHash == peerGenBlockHash
           ]
 
-listPeers :: MonadProcessBase m => m ()
-listPeers = queryAllPeers >>= (liftIO . print)
-
--- XXX --------------------------------------------
--- XXX Rewrite these functions using the general
--- XXX save/loadPeers functions in NodeState
--- XXX --------------------------------------------
+----------------------------------------------
+-- Cached Peers
+----------------------------------------------
 
 cachePeers :: (MonadProcess m) => Peers -> NodeT m ()
 cachePeers peers = do

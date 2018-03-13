@@ -104,15 +104,15 @@ removeTxs memPool txs =
 -- | Bounded pool of invalid transactions, storing the last n (`bound`)
 -- transactions in memory.
 data InvalidTxPool = InvalidTxPool
-  { size            :: Int  -- ^ Current number of InvalidTxs in InvalidTxPool
-  , bound           :: Int  -- ^ The largest number of InvalidTxs the pool can contain
-  , invalidTxs      :: [InvalidTransaction]
-  , invalidTxHashes :: [Hash ByteString]
-  }
+  { itxPoolSize   :: Int  -- ^ Current number of InvalidTxs in InvalidTxPool
+  , itxPoolBound  :: Int  -- ^ The largest number of InvalidTxs the pool can contain
+  , itxPoolTxs    :: [InvalidTransaction]
+  , itxPoolHashes :: [Hash ByteString]
+  } deriving (Show)
 
 resetInvalidTxPool :: InvalidTxPool -> InvalidTxPool
 resetInvalidTxPool itxPool =
-  itxPool { size = 0, invalidTxs = [], invalidTxHashes = [] }
+  itxPool { itxPoolSize = 0, itxPoolTxs = [], itxPoolHashes = [] }
 
 -- | Smart constructor for creating InvalidTxPools
 mkInvalidTxPool :: Int -> Either Text InvalidTxPool
@@ -121,30 +121,25 @@ mkInvalidTxPool n
   | otherwise = Right $ InvalidTxPool 0 n [] []
 
 addInvalidTxs :: [InvalidTransaction] -> InvalidTxPool -> InvalidTxPool
-addInvalidTxs newItxs itxp@(InvalidTxPool s b itxs' itxHshs') =
-    itxp { size            = newSize
-         , invalidTxs      = newItxs
-         , invalidTxHashes = newItxHshs
-         }
+addInvalidTxs newItxs itxp@(InvalidTxPool origSize bound origItxs origItxHshs) =
+  itxp { itxPoolSize   = finalNewSize
+       , itxPoolTxs    = finalNewItxs
+       , itxPoolHashes = finalNewItxHshs
+       }
   where
-    numNewItxs = length newItxs
-
-    newSize' = s + numNewItxs
-    newSize  = min b newSize'
-
     -- reverse because of order of buffer
     newItxsRev = reverse newItxs
-    itxs = reverse newItxs ++ itxs'
-    newItxs
-      | newSize' > b = take b itxs
-      | otherwise    = itxs
+    itxs = newItxsRev ++ origItxs
 
-    itxHshs = map hashInvalidTx newItxsRev ++ itxHshs'
-    newItxHshs
-      | newSize' > b = take b itxHshs
-      | otherwise    = itxHshs
+    newSize = origSize + (length newItxs)
+    finalNewSize  = min bound newSize
+
+    finalNewItxs = take finalNewSize itxs
+
+    itxHshs = map hashInvalidTx newItxsRev ++ origItxHshs
+    finalNewItxHshs = take finalNewSize itxHshs
 
 -- Check membership of transaction in InvalidTxPool
 elemInvalidTxPool :: ByteString -> InvalidTxPool -> Bool
 elemInvalidTxPool itxHash itxPool =
-  toHash itxHash `elem` invalidTxHashes itxPool
+  toHash itxHash `elem` itxPoolHashes itxPool

@@ -74,16 +74,17 @@ import qualified Script.Prim as Prim
 undefinednessAnalysis
   :: Script
   -> Either [InvalidStackTrace] [ValidStackTrace]
-undefinednessAnalysis scr = case allErrors of
-                              [] -> Right allSuccesses
-                              _ -> Left allErrors
+undefinednessAnalysis scr = do
+  initEnv <- initialEnv scr
+  case allErrors initEnv of
+    [] -> Right $ allSuccesses initEnv
+    errs@(_:_) -> Left errs
   where
     methods = fetchScriptMethods scr
-    initEnv = initialEnv scr
     allStackTraces = generateStackTraces scr
-    allResults = map (validateStackTrace initEnv methods) allStackTraces
-    allErrors = Either.lefts allResults
-    allSuccesses = Either.rights allResults
+    allResults env = map (validateStackTrace env methods) allStackTraces
+    allErrors env = Either.lefts (allResults env)
+    allSuccesses env = Either.rights (allResults env)
 
 -------------------------------------------------------------------------------
 -- Stack traces
@@ -171,13 +172,29 @@ initializeInEnv = Map.insertWith replaceUnlessError
 -- | Given the initial values of the global and local variables (or
 -- lack thereof), set their undefinedness status in the environment
 -- accordingly.
-initialEnv :: Script -> UndefinednessEnv
-initialEnv = Map.fromList . map toKeyValue . scriptDefs
+initialEnv :: Script -> Either [InvalidStackTrace] UndefinednessEnv
+initialEnv = handleErrors . foldlM addDef Map.empty . scriptDefs
   where
-    toKeyValue (GlobalDef _ n _) = (n, Initialized)
-    toKeyValue (GlobalDefNull _ ln) = (locVal ln, Uninitialized)
-    toKeyValue (LocalDef _ n _) = (n, Initialized)
-    toKeyValue (LocalDefNull _ ln) = (locVal ln, Initialized)
+    handleErrors
+      :: Either Text UndefinednessEnv
+      -> Either [InvalidStackTrace] UndefinednessEnv
+    handleErrors (Left err)
+      = Left [InvalidStackTrace [] [err]]
+    handleErrors (Right env)
+      = case collectErrors env of
+          [] -> pure env
+          errs@(_:_) -> Left [InvalidStackTrace [] errs]
+
+    addDef oldEnv (GlobalDef _ n lexpr)
+      = checkAssignment (located lexpr) oldEnv n lexpr
+    addDef oldEnv (GlobalDefNull _ ln)
+      = pure $ Map.insert (locVal ln) Uninitialized oldEnv
+    addDef oldEnv (LocalDef _ n lexpr)
+      = checkAssignment (located lexpr) oldEnv n lexpr
+    -- XXX always initialize local definitions because Gabe does not
+    -- understand them :(
+    addDef oldEnv (LocalDefNull _ ln)
+      = pure $ Map.insert (locVal ln) Initialized oldEnv
 
 -------------------------------------------------------------------------------
 -- Types of partial and end results of analysis
@@ -208,6 +225,9 @@ instance Pretty [InvalidStackTrace] where
     = vcat . map ppr . List.nub $ errs
 
 instance Pretty InvalidStackTrace where
+  ppr (InvalidStackTrace [] msgs)
+    = vcat
+    $ map token msgs
   ppr (InvalidStackTrace strace msgs)
     = vcat
     $ map token (msgs ++ ["", "Stack trace leading up to error:"])
@@ -383,19 +403,8 @@ checkStatement (Located _ (EBetween c0 c1 s)) (currState, env)
   checkStatement s (currState, newEnv)
 checkStatement (Located loc (EAssign var rhs)) (currState, oldEnv)
   = do
-  envRhs <- checkExpression rhs oldEnv
-  varsRhs <- expressionVars rhs
-  let newVal
-        = replaceError
-          . Map.foldr meet Initialized
-          . Map.restrictKeys envRhs
-          $ varsRhs
-      newEnv
-        = initializeInEnv var newVal (envMeet envRhs oldEnv)
+  newEnv <- checkAssignment loc oldEnv var rhs
   pure [(currState, newEnv)]
-    where
-      replaceError (Error _) = Error $ Set.singleton loc
-      replaceError x = x
 checkStatement (Located _ (ECall opname ss)) (currState, oldEnv)
   = case Prim.lookupPrim opname of
       Nothing
@@ -411,6 +420,28 @@ checkStatement (Located _ (ECall opname ss)) (currState, oldEnv)
                 <$> mapM (`checkExpression` oldEnv) ss
 checkStatement (Located _ ENoOp) env
   = pure [env]
+
+-- | Check an assignment
+checkAssignment
+  :: Loc
+  -> UndefinednessEnv
+  -> Name
+  -> LExpr
+  -> Either Text UndefinednessEnv
+checkAssignment loc oldEnv var rhs = do
+  envRhs <- checkExpression rhs oldEnv
+  varsRhs <- expressionVars rhs
+  let newVal
+        = replaceError
+        . Map.foldr meet Initialized
+        . Map.restrictKeys envRhs
+        $ varsRhs
+      newEnv
+        = initializeInEnv var newVal (envMeet envRhs oldEnv)
+      replaceError (Error _) = Error $ Set.singleton loc
+      replaceError x = x
+
+  pure newEnv
 
 -- | Mapping from method names to expressions
 type Methods = Map Name LExpr
@@ -476,14 +507,15 @@ validateStackTrace initEnv methodBodies
         body <- Map.lookup m methodBodies
         pure (m, src, dst, body)
 
-      collectErrors
-        :: UndefinednessEnv -> [Text]
-      collectErrors env'
-        = concat [ displayError v e | (v, Error e) <- Map.toList env' ]
-          where
-            displayError v e
-              = "Variable " <> show (unName v) <> " undefined at:"
-                : map (("  - " <>) . showLoc) (Set.toList e)
+-- | Collect erroneous variables from an environment
+collectErrors
+  :: UndefinednessEnv -> [Text]
+collectErrors env'
+  = concat [ displayError v e | (v, Error e) <- Map.toList env' ]
+    where
+      displayError v e
+        = "Variable " <> show (unName v) <> " undefined at:"
+          : map (("  - " <>) . showLoc) (Set.toList e)
 
 -------------------------------------------------------------------------------
 -- Generating stack traces

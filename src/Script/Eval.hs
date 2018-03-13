@@ -12,6 +12,7 @@ FCL interpreter and expression evaluation.
 
 module Script.Eval (
   -- ** Evaluation monad
+  EvalM,
   EvalFail(..),
   runEvalM,
   execEvalM,
@@ -26,11 +27,9 @@ module Script.Eval (
   -- ** Evaluation state
   EvalState(..),
   initEvalState,
-  scriptToContract,
 
   -- ** Evaluation context
   EvalCtx(..),
-  initEvalCtx,
 ) where
 
 import Protolude hiding (DivideByZero, Overflow, Underflow)
@@ -48,7 +47,6 @@ import Storage
 import Contract (Contract, LocalStorageVars(..))
 import Derivation (addrContract')
 import Account (Account,  address, publicKey)
-import Script.Init (initLocalStorageVars)
 import Script.Prim (PrimOp(..))
 import Script.Error as Error
 import Script.Graph (GraphState(..), terminalLabel, initialLabel)
@@ -60,7 +58,6 @@ import qualified Contract
 import qualified Hash
 import qualified Key
 import qualified Ledger
-import qualified Script.Storage
 import qualified Script.Prim as Prim
 import qualified Homomorphic as Homo
 
@@ -133,31 +130,6 @@ type Lock = Maybe (Time.Timestamp, Int64)
  -   > timestamp
  -   > address
  -}
-
--- *** Take NodeData as arugment and fill in proper EvalCtx fields
-initEvalCtx
-  :: Int64      -- ^ Current Block Index
-  -> Timestamp  -- ^ Current Block Timestamp
-  -> Address    -- ^ Address of Evaluating node
-  -> ByteString -- ^ Current Transaction hash
-  -> Address    -- ^ Issuer of transaction (tx origin field)
-  -> PrivateKey -- ^ Node private key for signing
-  -> Contract   -- ^ Contract to which method belongs
-  -> IO EvalCtx
-initEvalCtx blockIdx blockTs nodeAddr txHash txOrigin privKey c = do
-  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
-  return EvalCtx
-    { currentBlock       = blockIdx
-    , currentValidator   = nodeAddr
-    , currentTransaction = txHash
-    , currentTimestamp   = blockTs
-    , currentCreated     = Contract.timestamp c
-    , currentDeployer    = Contract.owner c
-    , currentTxIssuer    = txOrigin
-    , currentAddress     = Contract.address c
-    , currentPrivKey     = privKey
-    , currentStorageKey  = pub
-    }
 
 initEvalState :: Contract -> World -> EvalState
 initEvalState c w = EvalState
@@ -1049,28 +1021,6 @@ hashValue = \case
   VEnum c        -> pure (show c)
   VSig _         -> throwError $ Impossible "Cannot hash signature"
   VUndefined     -> throwError $ Impossible "Cannot hash undefined"
-
-scriptToContract
-  :: Timestamp    -- ^ Timestamp of creation
-  -> Address      -- ^ Address of Contract Owner
-  -> Script       -- ^ AST
-  -> Contract
-scriptToContract ts cOwner s =
-  Contract.Contract
-    { timestamp        = ts
-    , script           = s
-    , localStorage     = Map.empty
-    , globalStorage    = gs
-    , localStorageVars = initLocalStorageVars s
-    , methods          = Script.methodNames s
-    , state            = GraphInitial
-    , owner            = cOwner
-    , address          = cAddress
-    }
-  where
-    gs = Script.Storage.initStorage s
-    methodNames = Script.methodNames s
-    cAddress = Derivation.addrContract' ts gs
 
 -------------------------------------------------------------------------------
   -- Eval specific fatal errors

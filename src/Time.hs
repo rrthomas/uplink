@@ -12,8 +12,7 @@ module Time (
   -- ** Unix Time
   now,
   validateTimestamp,
-  validateTimestamp',
-  validateTimestamp_,
+  validateTimestampAgainst,
 
   posixMicroSecsToDatetime,
   datetimeToPosixMicroSecs,
@@ -30,6 +29,7 @@ import Datetime.Types (Datetime, posixToDatetime, datetimeToDateTime)
 -- | GMT unix timestamp
 type Timestamp = Int64
 
+pastThreshold, futureThreshold :: Int64
 pastThreshold   = 86400 * 1000000 -- 1 day (microsecs)
 futureThreshold = 900  * 1000000  -- 15 minutes (microsecs)
 
@@ -39,21 +39,13 @@ now = round <$> (* 1000000) <$> getPOSIXTime
 
 -- | Validates a timestamp against `now`, +/- hardcoded validation thresholds
 validateTimestamp :: Timestamp -> IO Bool
-validateTimestamp = validateTimestamp' pastThreshold futureThreshold
-
--- | Validates a timestamp against `now`, passing explicit past & future
--- thresholds
-validateTimestamp' :: Int64 -> Int64 -> Timestamp -> IO Bool
-validateTimestamp' pastThreshold' futureThreshold' n = do
-  ts <- now
-  pure $ and
-    [ n < (ts + futureThreshold')
-    , n > (ts - pastThreshold')
-    ]
+validateTimestamp tsThen = do
+  tsNow <- now
+  pure $ validateTimestampAgainst tsNow tsThen
 
 -- | Validates a timestamp `t2` against another timestamp `t1`
-validateTimestamp_ :: Timestamp -> Timestamp -> Bool
-validateTimestamp_ t1 t2 =
+validateTimestampAgainst :: Timestamp -> Timestamp -> Bool
+validateTimestampAgainst t1 t2 =
      t2 < (t1 + futureThreshold)
   && t2 > (t1 - pastThreshold)
 

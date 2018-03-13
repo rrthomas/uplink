@@ -272,6 +272,7 @@ parseTransactionCol :: Text -> Parser TransactionCol
 parseTransactionCol "origin"    = TxOrigin    <$> parseAddress
 parseTransactionCol "tx_type"   = TxType      <$> parseQuoted
 parseTransactionCol "timestamp" = TxTimestamp <$> decimal
+parseTransactionCol "hash"      = TxHash <$> parseQuoted
 parseTransactionCol colName     = fail $
   "Could not parse TransactionCol. Unrecognized col name: " <> show colName
 

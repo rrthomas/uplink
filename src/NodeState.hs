@@ -72,6 +72,7 @@ module NodeState
   , getPoAState
   , setPoAState
   , modifyPoAState_
+  , withPoAState
   , getLastBlock
   , setLastBlock
   , isValidatingNode
@@ -348,6 +349,15 @@ setPoAState pstate =
 modifyPoAState_ :: MonadBase IO m => (CAS.PoAState -> CAS.PoAState) -> NodeT m ()
 modifyPoAState_ f = modifyNodeState_ poaState $ pure . f
 
+-- | Holds onto the poa state mvar while performing the computation
+withPoAState :: MonadBase IO m => (CAS.PoAState -> NodeT m a) -> NodeT m a
+withPoAState f = do
+  poaMV <- getNodeState poaState
+  poa <- liftBase $ takeMVar poaMV
+  res <- f poa
+  liftBase $ putMVar poaMV poa
+  pure res
+
 resetPoAState :: MonadBase IO m => NodeT m ()
 resetPoAState = setPoAState CAS.defPoAState
 
@@ -480,8 +490,8 @@ withApplyCtx f = do
 -- | Query transaction status by hash
 getTxStatus :: MonadBase IO m => ByteString -> NodeT m Tx.Status
 getTxStatus txHash = do
-  elemTxMemPool <- elemTxMemPool' txHash
-  if elemTxMemPool
+  notInMemPool <- elemTxMemPool' txHash
+  if not notInMemPool
     then pure Tx.Pending
     else do
       elemInvalidTxPool <- elemInvalidTxPool txHash

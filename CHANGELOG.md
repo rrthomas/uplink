@@ -1,6 +1,18 @@
 Changelog
 ========
 
+1.4
+---
+
+*March 13, 2018*
+
+* Top-level declarations may now have definitions that are arbitrary
+  expressions (without side-effects).
+* Effect checking: we can now check and show what side-effects
+  expressions or methods have.
+* Fix timeout issues in Federated Consensus Algorithm. Block period is 
+  now adhered to properly within the block generation process.
+
 1.3
 ---
 

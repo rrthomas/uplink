@@ -141,7 +141,11 @@ p2p
   => Config.Config
   -> NodeT m ()
 p2p config = do
-  -- Init Peer controller
+  -- Initialize logging process (before any other process)
+  unregister (show Logger)
+  let loggingRules = Config.loggingRules config
+  spawnLocal (Log.loggerProc loggingRules) >>= register (show Logger)
+  -- Initialize PeerController process
   spawnLocal peerControllerProc
   -- Run main process
   waitForLocalService' PeerController 1000000 mainProcess
@@ -155,12 +159,6 @@ mainProcess = do
   isTestNode <- NodeState.isTestNode
   let msgService = if isTestNode then TestMessaging else Messaging
   isValidatingNode <- NodeState.isValidatingNode
-
-  -- Unregister old logging process (?)
-  unregister (show Logger)
-  loggingRules <- Config.loggingRules <$> askConfig
-  spawnLocal (Log.loggerProc loggingRules)
-    >>= register (show Logger)
 
   if isTestNode
     then Log.info "Node is running in test mode."

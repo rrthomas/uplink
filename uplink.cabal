@@ -2,10 +2,10 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: c1685372ebee09eb8908aba7f0994d67d03b6d7337c382471b6cc92b5ea90e90
+-- hash: b2d50c0641b80c512fe271cfe1d482a4a75d5c4e319948a0d412b3fc5a435ea9
 
 name:           uplink
-version:        0.1.3
+version:        0.1.4
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
@@ -206,6 +206,7 @@ library
       Script.Analysis
       Script.Duplicate
       Script.Undefinedness
+      Script.Effect
   other-modules:
       Paths_uplink
   default-language: Haskell2010

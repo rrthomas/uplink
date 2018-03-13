@@ -15,6 +15,7 @@ module Block (
   BlockSignature(..),
   BlockSignatures,
   InvalidBlock(..),
+  InvalidBlockReason(..),
 
   sortBlocks,
   medianTimestamp,
@@ -198,7 +199,10 @@ sortBlocks = sortBy (compare `on` index)
 -- Block Validation (Chain Rules)
 -------------------------------------------------------------------------------
 
-data InvalidBlock
+data InvalidBlock = InvalidBlock Int InvalidBlockReason
+  deriving (Show, Eq)
+
+data InvalidBlockReason
   = InvalidBlockSignature Key.InvalidSignature
   | InvalidBlockSigner Address
   | InvalidBlockOrigin Address
@@ -228,7 +232,7 @@ validateBlock medianTs prevBlock Block{..} = do
         validatePrevHash
 
   case blockIsValid of
-    Left err -> return $ Left err
+    Left err -> return $ Left $ InvalidBlock index err
     Right _  -> return $ Right ()
   where
     txHashes = map Tx.base16HashTransaction transactions
@@ -263,7 +267,8 @@ validateChain :: [Block] -> IO (Either InvalidBlock ())
 validateChain [] = pure $ Right ()
 validateChain blks@(b:bs) = do
   case medianTimestamps of
-    Left err -> pure $ Left $ InvalidMedianTimestamp $ toS err
+    Left err -> pure $ Left $
+      InvalidBlock (index b) $ InvalidMedianTimestamp $ toS err
     Right tss -> do
       validBlocks <- zipWithM validateBlock' tss descBlkPairs
       case sequence validBlocks of

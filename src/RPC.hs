@@ -539,8 +539,10 @@ handleRPCCmd mConnPool localNode rpcCmd = do
         liftBase $ putText $
           "RPC Recieved Transaction:\n   " <> show tx
         runProcess localNode $ do
-          eRes <- Cmd.commTasksProc $ Cmd.Transaction tx
-          liftBase $ putMVar rpcRespMVar RPCRespOK
+          -- XXX handle potential failure on submission
+          _ <- Cmd.commTasksProc $ Cmd.Transaction tx
+          let txHashText = decodeUtf8 $ Tx.base16HashTransaction tx
+          liftBase $ putMVar rpcRespMVar $ RPCTransactionOK txHashText
 
       Query textQ -> do
         liftBase $ putText $
@@ -639,6 +641,7 @@ data RPCResponse
   = RPCResp { contents :: A.Value }
   | RPCRespError RPCResponseError
   | RPCRespOK
+  | RPCTransactionOK { txHash :: Text }
   deriving (Generic, A.ToJSON, A.FromJSON)
 
 -- | An RPC response error

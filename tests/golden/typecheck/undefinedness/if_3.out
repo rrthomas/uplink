@@ -1,5 +1,5 @@
-[ ( Name { unName = "go" } , Sig [] TVoid )
-, ( Name { unName = "init" } , Sig [] TVoid )
-, ( Name { unName = "exitOne" } , Sig [] TAny )
-, ( Name { unName = "exitTwo" } , Sig [] TAny )
+[ ( Name { unName = "go" } , Sig [] TVoid , Write )
+, ( Name { unName = "init" } , Sig [] TVoid , ReadWrite )
+, ( Name { unName = "exitOne" } , Sig [] TAny , Write )
+, ( Name { unName = "exitTwo" } , Sig [] TAny , Write )
 ]

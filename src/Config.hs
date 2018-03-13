@@ -90,21 +90,9 @@ data Config = Config
   } deriving (Show)
 
 data ChainSettings = ChainSettings
-  { minTxs           :: Int        -- ^ Minimum number of transactions in a block
-  , maxTxs           :: Int        -- ^ Maximum number of transactions in a block
-  , maxAccts         :: Int        -- ^ Maximum number of accounts in system
-  , presetAccts      :: Bool       -- ^ Account creation is not allowed.
-
-  , genesisTimestamp :: Int64      -- ^ Genesis block timestamp
+  { genesisTimestamp :: Int64      -- ^ Genesis block timestamp
   , genesisHash      :: ByteString -- ^ Genesis block hash
-
-  , consensus        :: Text       -- ^ Consensus algorithim
-  , chainScoring     :: Text       -- ^ Chain scoring metric
-
-  , contractSize     :: Int        -- ^ Contract size
-
   , genesisPoA       :: CAP.PoA    -- ^ PoA Cosensus Algorithm Parameters
-
   } deriving (Eq, Show)
 
 -------------------------------------------------------------------------------
@@ -287,7 +275,6 @@ readChain silent cfgFile = do
     else pure ()
 
   cfg           <- C.load [C.Required cfgFile]
-  consensus     <- C.require cfg "consensus.algorithm"
 
   -- PoA consensus params
   validators    <- C.require cfg "authority.validators"
@@ -313,20 +300,11 @@ readChain silent cfgFile = do
   timestamp     <- C.require cfg "genesis.timestamp"
   genesisHash   <- C.require cfg "genesis.hash"
 
-  contractSize  <- C.require cfg "contracts.max-size"
-
   -- XXX: hardcoded
   return ChainSettings {
-    minTxs            = 1
-  , maxTxs            = 100
-  , maxAccts          = 100
-  , presetAccts       = False
-  , genesisTimestamp  = timestamp
+    genesisTimestamp  = timestamp
   , genesisHash       = genesisHash
   , genesisPoA        = poaParams
-  , consensus         = consensus
-  , chainScoring      = ""
-  , contractSize      = contractSize
   }
 
 -- | Verify the integrity of a configuration set.

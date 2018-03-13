@@ -354,6 +354,7 @@ data TransactionCol
   = TxType      Text
   | TxOrigin    Address
   | TxTimestamp Int64
+  | TxHash      Text
   deriving (Eq, Ord, Show)
 
 instance HasColName TransactionCol where
@@ -362,6 +363,7 @@ instance HasColName TransactionCol where
       TxType      _ -> "tx_type"
       TxOrigin    _ -> "origin"
       TxTimestamp _ -> "timestamp"
+      TxHash      _ -> "hash"
 
 instance ToField TransactionCol where
   toField txCol =
@@ -369,6 +371,7 @@ instance ToField TransactionCol where
       TxType      c -> toField c
       TxOrigin    c -> toField c
       TxTimestamp c -> toField c
+      TxHash      c -> toField c
 
 --------------------------------------------------------------------------------
 -- DSL
@@ -897,6 +900,7 @@ instance Pretty TransactionCol where
     TxOrigin addr        -> ppr addr
     TxType txtyp         -> dquotes $ ppr txtyp
     TxTimestamp ts       -> ppr ts
+    TxHash      hash     -> ppr hash
 
 instance Pretty a => Pretty (Cond a) where
   ppr (ColEquals col) = ppr (colName col) <+> "="  <+> ppr col

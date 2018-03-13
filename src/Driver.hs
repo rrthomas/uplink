@@ -422,9 +422,9 @@ driverScript cmd opts (config @ Config {..}) =
         Left err -> putText err
         Right (sigs, script) -> do
           putText "Signatures:"
-          forM_ sigs $ \(name,sig) ->
+          forM_ sigs $ \(name,sig,effect) ->
             putText $ Pretty.prettyPrint name
-              <> ": " <> Pretty.prettyPrint (Typecheck.ppSig sig)
+              <> ": " <> Pretty.prettyPrint (Typecheck.ppSig sig) <> " " <> Pretty.prettyPrint effect
 
           case localStorageFile of
             (Just path) -> do
@@ -453,10 +453,10 @@ driverScript cmd opts (config @ Config {..}) =
         Right (sigs, script) -> do -- prepare context, load repl, print sigs
           liftBase $ do
             putText "Signatures:"
-            forM_ sigs $ \(name,sig) -> do
+            forM_ sigs $ \(name,sig,effect) -> do
               putText $ Pretty.prettyPrint name
-                <> ": " <> Pretty.prettyPrint (Typecheck.ppSig sig)
-          Repl.repl nodeDataDir sigs script verbose
+                <> ": " <> Pretty.prettyPrint (Typecheck.ppSig sig) <> " " <> Pretty.prettyPrint effect
+          Repl.repl nodeDataDir (map (\(name,sig,_) -> (name, sig)) sigs) script verbose
 
 -------------------------------------------------------------------------------
 -- Data Commands

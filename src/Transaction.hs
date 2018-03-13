@@ -91,6 +91,7 @@ import qualified Script.Init
 import qualified Script.Eval
 import qualified Script.Graph as Graph
 import qualified Script.Typecheck
+import qualified Script.Compile as Compile
 
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
@@ -582,11 +583,12 @@ instance FromJSON TxContract where
           c <- v .: "contents"
           script <- c .: "script"
           addr   <- c .: "address"
-          ts     <- c .: "timestamp"
-          owner  <- c .: "owner"
-          case Script.Init.createContractWithAddr owner addr ts (toS (SafeString.toBytes script)) of
+          timestamp <- c .: "timestamp" :: Parser Time.Timestamp
+          owner  <- c .: "owner" :: Parser Address
+          -- Parse and type check script
+          case Compile.compile (toS (SafeString.toBytes script)) of
             Left err -> fail (toS err)
-            Right contract -> pure (CreateContract addr script)
+            Right _ -> pure (CreateContract addr script)
 
        | tagV == "Call" -> do
           c <- v .: "contents"
@@ -780,7 +782,7 @@ validateTransaction txvctx tx@Transaction{..} = do
     isTimeValid <-
       case txvctx of
         TxBlock blockTs -> pure $
-          Time.validateTimestamp_ blockTs timestamp
+          Time.validateTimestampAgainst blockTs timestamp
         TxMemPool ->
           Time.validateTimestamp timestamp
         -- For "validating" the data integrity of invalid txs

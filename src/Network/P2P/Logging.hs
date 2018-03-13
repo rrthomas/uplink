@@ -21,16 +21,19 @@ import Protolude
 
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
-import Control.Monad (forever)
+import Control.Monad (forever, unless, void)
 
 import Data.Binary
 import qualified Data.List as List
 import qualified Data.Text as Text
-import Datetime.Types (Datetime)
-import qualified Datetime.Types as Datetime
+import qualified Data.Hourglass as Hourglass
+import qualified System.Hourglass as Hourglass (dateCurrent)
 import qualified System.Console.ANSI as ANSI
+import qualified System.Directory as Dir
 
 import qualified Network.P2P.Service as Service
+
+import Utils (safeWrite, safeWithFile)
 
 -------------------------------------------------------------------------------
 -- Logging functions
@@ -59,8 +62,13 @@ critical = liftP . sendLogMsg Error
 -- | Logging process. This is to be spawned and registered as the
 -- @Logging@ service in order for it to receive logging messages.
 loggerProc :: MonadProcessBase m => [LogRule] -> m ()
-loggerProc rules = forever $
-  liftP . logMessage rules =<< expect
+loggerProc rules = do
+  let fps = [fp | (LogRule _ _ (LogFile fp _)) <- rules]
+  liftIO $ mapM_ (\fp -> do
+                    fileExists <- Dir.doesFileExist fp
+                    unless fileExists $ void $ safeWrite fp ""
+                 ) fps
+  forever $ liftP . logMessage rules =<< expect
 
 -- | Various levels of severity of log messages
 data Severity
@@ -84,29 +92,48 @@ logMessage rules msg
   . mapM_ (writeLogMessage msg)
   $ matchRules (logSender msg) (logSeverity msg) rules
 
+-- | Write a log message to the destination (stdout/stderr/file) based on the
+-- log rule provided. XXX In the case of a file destination and the file does
+-- not exist, the logs will be written to stderr.
 writeLogMessage :: LogMsg -> LogRuleDestination -> IO ()
 writeLogMessage (LogMsg sender severity msg) dest = do
-  time <- Datetime.now
-  writeDest dest (fullMsg time)
+  time <- Hourglass.dateCurrent
+  writeDest (fullMsg time) dest
     where
-      writeDest (Stdout color) msg
-        = hPutStrLn stdout (applyColors color severity msg)
-      writeDest (Stderr color) msg
-        = hPutStrLn stderr (applyColors color severity msg)
-      writeDest (LogFile fp color) msg
-        = withFile fp AppendMode (\h -> hPutStrLn h (applyColors color severity msg))
+      writeDest msg' = \case
+        Stdout color     -> hPutStrLn stdout (applyColors color severity msg')
+        Stderr color     -> hPutStrLn stderr (applyColors color severity msg')
+        LogFile fp color -> do
+          eRes <- safeWithFile fp AppendMode $ \h ->
+            hPutStrLn h (applyColors color severity msg')
+          case eRes of -- XXX If file does not exist, log to stderr
+            Left err ->
+              let altMsg = "(Dumping to stderr because:" <> err <> ") " <> msg'
+              in hPutStrLn stderr (applyColors color severity altMsg)
+            Right r  -> pure ()
 
       senderTxt = maybe " " (\s -> " (" <> s <> ") ") sender
 
       fullMsg time = "[" <> showTime time <> "]" <> senderTxt <> msg
 
-      severityColor Info = ANSI.White
-      severityColor Debug = ANSI.Magenta
-      severityColor Warning = ANSI.Yellow
-      severityColor Error = ANSI.Red
-
-      showTime :: Datetime -> Text
-      showTime = Text.pack . Datetime.formatDatetime
+      showTime :: Hourglass.DateTime -> Text
+      showTime = Text.pack . Hourglass.timePrint fmt
+        where
+          fmt = [ Hourglass.Format_Year
+                , Hourglass.Format_Text '-'
+                , Hourglass.Format_Month2
+                , Hourglass.Format_Text '-'
+                , Hourglass.Format_Day2
+                , Hourglass.Format_Text 'T'
+                , Hourglass.Format_Hour
+                , Hourglass.Format_Text ':'
+                , Hourglass.Format_Minute
+                , Hourglass.Format_Text ':'
+                , Hourglass.Format_Second
+                , Hourglass.Format_Text '.'
+                , Hourglass.Format_MilliSecond
+                , Hourglass.Format_TzHM_Colon
+                ]
 
       applyColors :: Colors -> Severity -> Text -> Text
       applyColors NoColors _ m = m

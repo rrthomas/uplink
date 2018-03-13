@@ -1,9 +1,11 @@
 [ ( Name { unName = "start" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
+  , Write
   )
-, ( Name { unName = "increase" } , Sig [] TVoid )
-, ( Name { unName = "assignedStop" } , Sig [] TAny )
+, ( Name { unName = "increase" } , Sig [] TVoid , Write )
+, ( Name { unName = "assignedStop" } , Sig [] TAny , Write )
 , ( Name { unName = "assign" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
+  , Write
   )
 ]

@@ -8,6 +8,7 @@ module Script.Compile (
   -- ** Compiler
   compile,
   compileFile,
+  compileScript,
 
   loadStorageFile,
   matchTypes,
@@ -49,6 +50,7 @@ import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Script.Analysis as Anal
 import qualified Script.Duplicate as Dupl
+import qualified Script.Effect as Effect
 import qualified Script.Typecheck as Typecheck
 import qualified Script.Undefinedness as Undef
 import Data.Bifunctor (first, second)
@@ -71,6 +73,7 @@ data Pass
   | Typecheck
   | DuplCheck
   | UndefCheck
+  | EffectCheck
   deriving (Eq, Show)
 
 -- | A stage in the compiler.
@@ -78,7 +81,7 @@ stage :: Pretty.Pretty err => Pass -> Either err a -> Either Text a
 stage pass = either (Left . Pretty.prettyPrint) Right
 
 -- | Compile a given file into it's signatures and AST.
-compileFile :: FilePath -> IO (Either Text ([(Name,Sig)], Script))
+compileFile :: FilePath -> IO (Either Text ([(Name,Sig,Effect.Effect)], Script))
 compileFile fpath = do
   res <- Utils.safeRead fpath
   case res of
@@ -86,14 +89,25 @@ compileFile fpath = do
     (Right contents) -> return $ compile $ decodeUtf8 contents
 
 -- | Compile a text stream into it's signatures and AST.
-compile :: Text -> Either Text ([(Name,Sig)], Script)
+compile :: Text -> Either Text ([(Name,Sig,Effect.Effect)], Script)
 compile body = do
-  ast  <- stage Parse (Parser.parseScript body)
+  past <- stage Parse (Parser.parseScript body)
+  compileScript past
+
+-- | Compile an abstract syntax tree into it's signatures and AST.
+compileScript :: Script -> Either Text ([(Name,Sig,Effect.Effect)], Script)
+compileScript iast = do
+  let ast = applyLitSubsts iast
   _    <- stage DuplCheck (Dupl.duplicateCheck ast)
   sigs <- stage Typecheck (Typecheck.signatures ast)
   gr   <- stage Graph (Anal.checkGraph ast)
   _    <- stage UndefCheck (Undef.undefinednessAnalysis ast)
-  pure (sigs, ast)
+  effects <- stage EffectCheck (Effect.effectCheckScript ast)
+  let sigsEffects = Effect.combineSigsEffects sigs effects
+  pure (sigsEffects, ast)
+  where
+    applyLitSubsts :: Script -> Script
+    applyLitSubsts s = s { Script.scriptDefs = Typecheck.defnAddrSubst (Script.scriptDefs s) }
 
 -- | Compile returning either the parser errors
 lintFile :: FilePath -> IO [Parser.ParseErrInfo]
@@ -104,15 +118,11 @@ lintFile fpath = do
     Left err  -> pure [err]
     Right ast -> pure []
 
--- | Verify that a given script typechecks succesfully.
+-- | Verify that a given script passes all checks succesfully.
 verifyScript :: Script -> Bool
-verifyScript script =
-  case Typecheck.signatures script of
-    Left err -> False
-    Right sigs ->
-      case Anal.checkGraph script of
-        Left err -> False
-        Right gr -> True
+verifyScript script = case compileScript script of
+  Left err     -> False
+  Right (_, _) -> True
 
 -- | Compile a file pretty printing the resulting AST.
 formatScript :: FilePath -> IO (Either Text LText)
@@ -159,7 +169,7 @@ matchTypes a b  = Map.mapMaybe identity $ Map.intersectionWith matchTypes' a b
     matchTypes' a b = if a == b then Nothing else Just (a,b)
 
 -- | Empty compiler artifact
-emptyTarget :: IO (Either Text ([(Name,Sig)], Script))
+emptyTarget :: IO (Either Text ([(Name,Sig,Effect.Effect)], Script))
 emptyTarget = pure (Right ([], Script.emptyScript))
 
 -------------------------------------------------------------------------------

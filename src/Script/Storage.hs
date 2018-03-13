@@ -7,43 +7,106 @@ Memory state for FCL execution.
 {-# LANGUAGE TupleSections #-}
 
 module Script.Storage (
+  initLocalStorageVars,
   initStorage,
   dumpStorage,
 ) where
 
 import Protolude hiding ((<>))
 
+import Ledger (World)
+import Time (Timestamp)
+import Key (PrivateKey)
+import Address
 import Script
 import Storage
 import SafeInteger
 import Script.Pretty
-
+import Script.Eval (EvalM, EvalState(..), EvalCtx(..))
+import qualified Script.Eval as Eval
+import qualified Contract
 import qualified Data.Map as Map
+import qualified Data.Set as Set
+import Script.Graph (GraphState(..), terminalLabel, initialLabel)
+import qualified Homomorphic as Homo
 
-initStorage :: Script -> GlobalStorage
-initStorage (Script _ defns graph _) = GlobalStorage $
-    foldl' buildStores Map.empty defns
+import Data.Foldable (foldlM)
+import Control.Monad.State.Strict (modify')
+
+initLocalStorageVars :: Script -> Contract.LocalStorageVars
+initLocalStorageVars (Script _ defns _ _) =
+  Contract.LocalStorageVars $ Set.fromList
+    [ name | LocalDefNull _ (Located _ name) <- defns ]
+
+initGlobalStorage :: Script -> Storage
+initGlobalStorage (Script _ defns _ _)
+  = foldl' buildStores mempty defns
   where
     buildStores :: Storage -> Def -> Storage
     buildStores gstore = \case
-      GlobalDef type_ (Name nm) lit ->
-        Map.insert (Key $ encodeUtf8 nm) (convAddr type_ $ evalLLit lit) gstore
-
       LocalDef TInt (Name nm) lit ->
-        Map.insert (Key $ encodeUtf8 nm) (toVCrypto TInt $ evalLLit lit) gstore
+        Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
+
+      GlobalDef type_ (Name nm) expr ->
+        Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
 
       GlobalDefNull _ (Located _ (Name nm)) ->
         Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
 
+      -- XXX what are we supposed to do with local vars?
       _ -> gstore
 
-    toVCrypto TInt (VInt n) = VCrypto $ toSafeInteger' n
-    toVCrypto t     v       = convAddr t v
+initStorage
+  :: EvalCtx    -- ^ Context to evaluate the top-level definitions in
+  -> World      -- ^ World to evaluate the top-level definitions in
+  -> Script     -- ^ Script
+  -> IO GlobalStorage
+initStorage evalCtx world s@(Script _ defns _ _)
+  = do
+  res <- Eval.execEvalM evalCtx emptyEvalState $ mapM_ assignGlobal defns
+  case res of
+    Left err -> die $ show err
+    Right state -> pure . GlobalStorage . globalStorage $ state
+  where
+    assignGlobal :: Def -> EvalM ()
+    assignGlobal = \case
+      LocalDef type_ nm expr -> do
+        val <- Eval.evalLExpr expr
+        modify' (insertVar nm (toVCrypto TInt val))
+      GlobalDef type_ nm expr -> do
+        val <- Eval.evalLExpr expr
+        modify' (insertVar nm val)
+      _ -> pure ()
 
-    convAddr TAccount (VAddress addr)   = VAccount addr
-    convAddr (TAsset _) (VAddress addr) = VAsset addr
-    convAddr TContract (VAddress addr)  = VContract addr
-    convAddr _          x               = x
+    insertVar nm val st
+      = st { globalStorage = Map.insert
+                               (Key . encodeUtf8 . unName $ nm)
+                               val
+                               (globalStorage st)
+           }
+
+    emptyEvalState :: EvalState
+    emptyEvalState = EvalState
+      { tempStorage      = mempty
+      , globalStorage    = initGlobalStorage s
+      , localStorage     = mempty
+      , localStorageVars = initLocalStorageVars s
+      , graphState       = GraphInitial
+      , sideState        = Nothing
+      , sideLock         = (False, Nothing)
+      , worldState       = world
+      , deltas           = []
+      }
+
+toVCrypto :: Script.Type -> Value -> Value
+toVCrypto TInt (VInt n) = VCrypto $ toSafeInteger' n
+toVCrypto t     v       = convAddr t v
+
+convAddr :: Script.Type -> Value -> Value
+convAddr TAccount (VAddress addr) = VAccount addr
+convAddr (TAsset _)(VAddress addr) = VAsset addr
+convAddr TContract (VAddress addr) = VContract addr
+convAddr _ x = x
 
 -- | Pretty print storage map
 dumpStorage :: EnumInfo -> Map Key Value -> Doc

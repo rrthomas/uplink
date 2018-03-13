@@ -38,7 +38,7 @@ storage
 logging
 {
   rules = [ ["*", "*", "stdout", "no colors"]
-          , ["*", "*", "/var/log/uplink/debug.log", "no colors"]
+          , ["*", "*", "debug.log", "no colors"]
 	  ]
 }
 

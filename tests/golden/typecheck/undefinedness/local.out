@@ -1,1 +1,1 @@
-[ ( Name { unName = "init" } , Sig [] TAny ) ]
+[ ( Name { unName = "init" } , Sig [] TAny , Write ) ]

@@ -1,6 +1,6 @@
 Type error at Line 2, Column 17:
    Invalid definition for y:
-      Literal 0.0 does not have type int
+      Expression 0.0 does not have type int
 
 Type error at Line 10, Column 7:
    Invalid local var assignment: 

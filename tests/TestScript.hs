@@ -26,6 +26,7 @@ import qualified Address
 import qualified Encoding
 import qualified Contract
 import qualified Hash (sha256Raw)
+import qualified Transaction
 
 import Script
 import Storage
@@ -37,14 +38,17 @@ import qualified Script.Eval as Eval
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Script.Compile as Compile
-import qualified Script.Storage as SStorage
 import qualified Script.Typecheck as Typecheck
+import qualified Script.Init as Init
 
 import qualified Reference as Ref
 
 -------------------------------------------------------------------------------
 -- Generators
 -------------------------------------------------------------------------------
+
+instance Arbitrary Fixed.FixedN where
+  arbitrary = Fixed.mkFixed <$> arbitrary <*> ((10^6 *) <$> arbitrary)
 
 instance Arbitrary BS.ByteString where
   arbitrary = encodeUtf8 . T.pack . ("addr"++)
@@ -62,63 +66,52 @@ instance Arbitrary Name where
 
 instance Arbitrary Label where
   arbitrary = Label . T.pack . ("label"++)
-    <$> listOf1 (elements $ ['a'..'z'] ++ ['1'..'9'] ++ ['_','\''])
-
-arbBinOpNm :: Gen Name
-arbBinOpNm = Name . T.pack <$> oneof (map pure ["+", "-", "*", "&&", "||"])
+    <$> listOf1 (elements $ ['a'..'z'] ++ ['1'..'9'] ++ ['_'])
 
 instance Arbitrary a => Arbitrary (Located a) where
   arbitrary = Located <$> arbitrary <*> arbitrary
 
-arbNonRecExpr = oneof
-  [ EVar <$> arbitrary
-  , ELit <$> arbitrary
-  ]
+-- This is basically liftArbitrary from Arbitrary1
+addLoc :: Gen a -> Gen (Located a)
+addLoc g = Located <$> arbitrary <*> g
 
-arbNonRecLExpr = Located <$> arbitrary <*> arbNonRecExpr
+instance Arbitrary BinOp where
+  arbitrary = oneof . map pure $
+    [ Add
+    , Sub
+    , Mul
+    , Div
+    , And
+    , Or
+    , Equal
+    , NEqual
+    , LEqual
+    , GEqual
+    , Lesser
+    , Greater
+    ]
 
-arbMatches :: Int -> Gen [Match]
-arbMatches n = listOf1 (Match <$> arbPat <*> arbLExpr n)
-
-arbPat :: Gen LPattern
-arbPat = Located <$> arbitrary <*> (PatLit <$> arbitrary)
-
-arbNonSeqExpr :: Int -> Gen Expr
-arbNonSeqExpr n
-  | n <= 0 = arbNonRecExpr
-  | otherwise = let n' = n `div` 2 in oneof
-      [ EAssign <$> arbitrary         <*> arbNonSeqLExpr n'
-      , ECall   <$> arbitrary         <*> listOf (arbNonSeqLExpr n')
-      , EIf     <$> arbNonSeqLExpr n' <*> arbLExpr n' <*> arbLExpr n'
-      , ECase   <$> arbNonSeqLExpr n' <*> arbMatches n'
-      -- Don't know how to gen test with taking operator precedence into account
-      -- , EBinOp  <$> arbBinOpNm        <*> arbNonSeqLExpr n' <*> arbNonRecLExpr
-      ]
-
-arbSeqExpr :: Int -> Gen Expr
-arbSeqExpr n
-  | n <= 0 = arbNonRecExpr
-  | otherwise = let n' = n `div` 2 in
-      ESeq <$> arbNonSeqLExpr n' <*> arbLExpr n'
-
-arbLExpr :: Int -> Gen LExpr
-arbLExpr n = oneof
-  [ arbNonSeqLExpr n, arbSeqLExpr n ]
-
-arbNonSeqLExpr :: Int -> Gen LExpr
-arbNonSeqLExpr n = Located <$> arbitrary <*> arbNonSeqExpr n
-
-arbSeqLExpr :: Int -> Gen LExpr
-arbSeqLExpr n = Located <$> arbitrary <*> arbSeqExpr n
+instance Arbitrary UnOp where
+  arbitrary = pure Not
 
 instance Arbitrary Lit where
+  -- Missing literals:
+  --  + LDateTime: missing instance Arbitrary DateTime (!)
+  --  + LTimeDelta: missing instance Arbitrary TimeDelta (!)
+  --  + LAccount: not part of concrete syntax
+  --  + LAsset: not part of concrete syntax
+  --  + LContract: not part of concrete syntax
+  --  + LSig: not part of concrete syntax
+  --  + LUndefined: not part of the concrete syntax
   arbitrary = oneof
-    [ LInt     <$> arbitrary
+    [  LInt     <$> arbitrary
     , LFloat   <$> arbitrary
+    , LFixed   <$> arbitrary
     , LBool    <$> arbitrary
+    , LState   <$> arbitrary
     , LAddress <$> arbitrary
-    , LConstr <$> arbitrary
     , pure LVoid
+    , LConstr <$> arbitrary
     ]
 
 instance Arbitrary Fixed.PrecN where
@@ -140,8 +133,8 @@ instance Arbitrary Type where
 
 instance Arbitrary Def where
   arbitrary = oneof
-    [ GlobalDef <$> arbitrary <*> arbitrary <*> arbitrary
-    , LocalDef  <$> arbitrary <*> arbitrary <*> arbitrary
+    [ GlobalDef <$> arbitrary <*> arbitrary <*> addLoc (sized arbNonSeqExpr)
+    , LocalDef  <$> arbitrary <*> arbitrary <*> addLoc (sized arbNonSeqExpr)
     ]
 
 instance Arbitrary Arg where
@@ -176,14 +169,84 @@ instance Arbitrary EnumConstr where
 instance Arbitrary Script where
   arbitrary = Script <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary Expr where
+  arbitrary = sized arbNonSeqExpr
+
+arbNumLogicExpr :: Int -> Gen Expr
+arbNumLogicExpr n
+  | n <= 0
+    = oneof $ [EVar <$> arbitrary] ++
+      map (fmap ELit . addLoc)
+            [ LInt <$> arbitrary
+            , LFloat <$> arbitrary
+            , LFixed <$> arbitrary
+            , LBool <$> arbitrary
+            ]
+  | otherwise = let n' = n `div` 2 in oneof
+      [ EBinOp <$> arbitrary
+               <*> addLoc (arbNumLogicExpr n')
+               <*> addLoc (arbNumLogicExpr n')
+      , EUnOp <$> arbitrary <*> addLoc (arbNumLogicExpr n')
+      ]
+
+arbMatches :: Int -> Gen [Match]
+arbMatches n = listOf1 (Match <$> arbPat <*> arbLExpr n)
+
+arbPat :: Gen LPattern
+arbPat = Located <$> arbitrary <*> (PatLit <$> arbitrary)
+
+arbNonSeqExpr :: Int -> Gen Expr
+arbNonSeqExpr n
+  | n <= 0 = oneof
+             [ EVar <$> arbitrary
+             , ELit <$> arbitrary
+             ]
+  | otherwise = let n' = n `div` 2 in oneof
+      [ EAssign <$> arbitrary         <*> addLoc (arbNonSeqExpr n')
+      , ECall   <$> arbitrary         <*> listOf (addLoc (arbNonSeqExpr n'))
+      , EIf     <$> addLoc (arbNonSeqExpr n') <*> arbLExpr n' <*> arbLExpr n'
+      , EBefore <$> addLoc (arbNonSeqExpr n') <*> arbLExpr n'
+      , EAfter  <$> addLoc (arbNonSeqExpr n') <*> arbLExpr n'
+      , EBetween <$> addLoc (arbNonSeqExpr n')
+                 <*> addLoc (arbNonSeqExpr n')
+                 <*> arbLExpr n'
+      , ECase <$> addLoc (arbNonSeqExpr n') <*> arbMatches n'
+      , arbNumLogicExpr n
+      ]
+
+arbSeqExpr :: Int -> Gen Expr
+arbSeqExpr n
+  | n <= 0 = arbNonSeqExpr 0
+  | otherwise = let n' = n `div` 2 in
+      ESeq <$> addLoc (arbNonSeqExpr n') <*> arbLExpr n'
+
+arbLExpr :: Int -> Gen LExpr
+arbLExpr n = oneof . map addLoc $
+  [ arbNonSeqExpr n, arbSeqExpr n ]
+
+-------------------------------------------------------------------------------
+-- Test trees
+-------------------------------------------------------------------------------
+
+parserRoundtripTest
+  :: (Arbitrary a, Show a, Pretty.Pretty a, Eq a)
+  => TestName
+  -> (Text -> Either err a)
+  -> TestTree
+parserRoundtripTest propName parser
+  = testProperty propName $ \inp ->
+    case parser (Pretty.prettyPrint inp) of
+      Left err -> False
+      Right outp -> outp == inp
+
 scriptPropTests :: TestTree
-scriptPropTests = localOption (QuickCheckMaxSize 20) $
-  testGroup "Parser and Pretty Printer Tests"
-    [ testProperty "AST == parse (ppr AST)" $ \script ->
-        let pgmText = Pretty.prettyPrint script in
-        case Parser.parseScript pgmText of
-          Left err -> False
-          Right pgm -> pgm == script
+scriptPropTests
+  = testGroup "Parser and Pretty Printer Tests"
+    [ parserRoundtripTest "lit == parse (ppr lit)" Parser.parseLit
+    , localOption (QuickCheckMaxSize 20) $
+      parserRoundtripTest "expr == parse (ppr expr)" Parser.parseExpr
+    , localOption (QuickCheckMaxSize 15) $
+      parserRoundtripTest "script == parse (ppr script)" Parser.parseScript
     ]
 
 scriptGoldenTests :: TestTree
@@ -203,25 +266,11 @@ scriptGoldenTests = testGroup "Script Compiler Golden Tests"
         case eSigs of
           Left err -> return $ toSL err
           Right _  -> return "Type checking succeeded... this should not happen!"
-    , goldenVsStringDiff "Eval outputs correct deltas" differ evalOutFile $ do
-        eSigs <- Compile.compileFile evalFile
-        case eSigs of
-          Left err -> return $ toSL err
-          Right (_,s) -> do
-            now <- Time.now
-            let storage = SStorage.initStorage s
-            let contract = Eval.scriptToContract now Ref.testAddr s
-            Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
-            evalCtx <- initTestEvalCtx pub
-            let evalState = Eval.initEvalState contract Ledger.genesisWorld
-            case Script.lookupMethod "f" s of
-              Nothing -> fail "Could not find method"
-              Just method -> do
-                eRes <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
-                case eRes of
-                  Left err -> return $ show err
-                  Right res -> return $ toSL $ Utils.ppShow $ Eval.deltas res
-
+    , evalTest "Eval outputs correct deltas" evalFile evalOutFile "f"
+    , evalTest "Eval outputs correct deltas with top-level computation"
+               "tests/FCL/sample_eval_toplevel.s"
+               "tests/golden/typecheck/eval_toplevel.out"
+               "init"
     , goldenVsStringDiff "Eval crypto vals outputs correct deltas" differ evalCryptoOutFile $ do
         Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
         eSigs <- Compile.compileFile evalCryptoFile
@@ -229,7 +278,17 @@ scriptGoldenTests = testGroup "Script Compiler Golden Tests"
           Left err -> return $ toSL err
           Right (_,s) -> do
             now <- Time.now
-            let contract = Eval.scriptToContract now Ref.testAddr s
+            contract <- Init.scriptToContract
+                          0
+                          now
+                          Ref.testAddr
+                          (Transaction.signature $ Ref.testTx Ref.testCall)
+                          Ref.testAddr
+                          Ref.testPriv
+                          now
+                          Ref.testAddr
+                          Ledger.genesisWorld
+                          s
             let gstore = Storage.GlobalStorage $ encryptStorage pub $
                   Storage.unGlobalStorage $ Contract.globalStorage contract
             let contract' = contract { Contract.globalStorage = gstore }
@@ -298,10 +357,47 @@ scriptGoldenTests = testGroup "Script Compiler Golden Tests"
 differ :: (IsString a) => a -> a -> [a]
 differ ref new = ["diff", "-u", ref, new]
 
+evalTest
+  :: TestName -- ^ test name
+  -> FilePath -- ^ FCL file
+  -> FilePath -- ^ expected output
+  -> Name -- ^ method name to test (assumed to have no arguments)
+  -> TestTree
+evalTest testName inputFp outputFp testMethodName
+  = goldenVsStringDiff testName differ outputFp $ do
+      eSigs <- Compile.compileFile inputFp
+      case eSigs of
+        Left err -> return $ toSL err
+        Right (_,s) -> do
+          now <- Time.now
+          Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
+          contract <- Init.scriptToContract
+                        0
+                        now
+                        Ref.testAddr
+                        (Transaction.signature $ Ref.testTx Ref.testCall)
+                        Ref.testAddr
+                        Ref.testPriv
+                        now
+                        Ref.testAddr
+                        Ledger.genesisWorld
+                        s
+          evalCtx <- initTestEvalCtx pub
+          let evalState = Eval.initEvalState contract Ledger.genesisWorld
+          case Script.lookupMethod testMethodName s of
+            Nothing -> fail "Could not find method"
+            Just method -> do
+              eRes <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
+              case eRes of
+                Left err -> return $ show err
+                Right res -> return $ toSL $ Utils.ppShow $ Eval.deltas res
+  
+
 scriptAnalysisGoldenTests :: TestTree
 scriptAnalysisGoldenTests = testGroup "Script analysis golden tests"
                             [ graphTests
                             , undefinednessTests
+                            , effectTests
                             ]
   where
     graphTests
@@ -350,6 +446,7 @@ scriptAnalysisGoldenTests = testGroup "Script analysis golden tests"
               , "if_tmp"
               , "states"
               , "assignment"
+              , "toplevel"
               ]
          )
 
@@ -363,6 +460,12 @@ scriptAnalysisGoldenTests = testGroup "Script analysis golden tests"
                      ("tests/FCL/undefinedness/" <> testName <> ".s")
                      ("tests/golden/typecheck/undefinedness/" <> testName <> ".out")
 
+    effectTests
+      = testGroup "Effect analysis golden tests"
+        [ negativeTest "Effect analysis for toplevel_side_effect.s"
+                       "tests/FCL/effects/toplevel_side_effect.s"
+                       "tests/golden/typecheck/effects/toplevel_side_effect.out"
+        ]
 
 scriptEnumGoldenTests :: TestTree
 scriptEnumGoldenTests = testGroup "Script enum golden tests"
@@ -449,7 +552,7 @@ initTestEvalCtx pub = do
   pure Eval.EvalCtx
     { Eval.currentBlock = 0
     , Eval.currentValidator = Ref.testAddr
-    , Eval.currentTransaction = "TESTHASHOMFG"
+    , Eval.currentTransaction = Transaction.signature $ Ref.testTx Ref.testCall
     , Eval.currentCreated = now
     , Eval.currentTimestamp = now
     , Eval.currentDeployer = Ref.testAddr

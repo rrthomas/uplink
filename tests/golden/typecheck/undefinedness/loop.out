@@ -1,7 +1,7 @@
-[ ( Name { unName = "start" } , Sig [] TVoid )
-, ( Name { unName = "one" } , Sig [] TVoid )
-, ( Name { unName = "two" } , Sig [] TVoid )
-, ( Name { unName = "three" } , Sig [] TVoid )
-, ( Name { unName = "four" } , Sig [ TInt ] TVoid )
-, ( Name { unName = "exit" } , Sig [] TAny )
+[ ( Name { unName = "start" } , Sig [] TVoid , Write )
+, ( Name { unName = "one" } , Sig [] TVoid , Write )
+, ( Name { unName = "two" } , Sig [] TVoid , Write )
+, ( Name { unName = "three" } , Sig [] TVoid , Write )
+, ( Name { unName = "four" } , Sig [ TInt ] TVoid , Write )
+, ( Name { unName = "exit" } , Sig [] TAny , Write )
 ]

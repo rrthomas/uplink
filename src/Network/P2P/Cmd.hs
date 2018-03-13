@@ -262,7 +262,7 @@ handleTestCmd testCmd =
 
     -- XXX Handle error cases better
     ServiceRestartController service delay -> do
-      peers <- queryCapablePeers service
+      peers <- getPeerNodeIds
       randN <- liftIO $ randomRIO (0, length peers)
       case peers `atMay` randN of
         Nothing -> return ()
@@ -312,7 +312,7 @@ nsendTransaction
   :: MonadProcessBase m
   => Service
   -> Transaction.Transaction
-  -> m ()
+  -> NodeT m ()
 nsendTransaction service tx = do
   let message = Message.SendTx (Message.SendTransactionMsg tx)
   -- Don't need to `nsendCapable` because incapable
@@ -323,7 +323,7 @@ nsendTransactionMany
   :: MonadProcessBase m
   => Service
   -> [Transaction.Transaction]
-  -> m ()
+  -> NodeT m ()
 nsendTransactionMany service txs = do
   let messages = [Message.SendTx (Message.SendTransactionMsg tx) | tx <- txs]
   -- Don't need to `nsendCapable` because incapable

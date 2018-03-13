@@ -1,4 +1,5 @@
 [ ( Name { unName = "run" }
   , Sig [ TEnum Name { unName = "myEnum" } ] TAny
+  , Write
   )
 ]

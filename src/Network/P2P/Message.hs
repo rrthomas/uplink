@@ -250,7 +250,7 @@ handleMessage replyService msg =
               Log.info $ "Got a ping from " <> show sender
               myNodeId <- liftP $ toS <$> extractNodeId
               let response = Pong (SafeString.fromBytes' myNodeId)
-              liftP $ nsendPeer' replyService nodeId response
+              nsendPeer' replyService nodeId response
 
         Pong sender -> do
           mNodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
@@ -292,7 +292,7 @@ handleMessage replyService msg =
             case mReplyToNodeId of
               Left err            -> Log.warning err
               Right replyToNodeId ->
-                liftP $ nsendPeer' replyService replyToNodeId blkAtIdxMsg
+                nsendPeer' replyService replyToNodeId blkAtIdxMsg
 
         GetBlock gmsg@(GetBlockMsg idx sender) -> do
           eBlock <- lift $ DB.readBlock idx
@@ -306,7 +306,7 @@ handleMessage replyService msg =
                 Left err -> Log.warning err
                 Right nodeId -> do
                   blockMsg <- mkBlockMsg blk
-                  liftP $ nsendPeer' replyService nodeId blockMsg
+                  nsendPeer' replyService nodeId blockMsg
 
         -- For Messages operating on a "test node"
         Test testMsg -> handleTestMessage replyService testMsg

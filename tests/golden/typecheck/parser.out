@@ -1,24 +1,26 @@
 Script
   { scriptEnums = []
   , scriptDefs =
-      [ GlobalDef TFloat Name { unName = "x" } (LFloat 0.0)
+      [ GlobalDef TFloat Name { unName = "x" } (ELit (LFloat 0.0))
       , GlobalDef
-          (TFixed Prec3) Name { unName = "f" } (LFixed (Fixed3 (F3 1.234)))
+          (TFixed Prec3)
+          Name { unName = "f" }
+          (ELit (LFixed (Fixed3 (F3 1.234))))
       , GlobalDefNull (TFixed Prec2) Name { unName = "q" }
-      , LocalDef TInt Name { unName = "y" } (LInt 7)
+      , LocalDef TInt Name { unName = "y" } (ELit (LInt 7))
       , LocalDefNull TFloat Name { unName = "v" }
       , GlobalDef
           (TAsset (TFractional Prec5))
           Name { unName = "z" }
-          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+          (ELit (LAsset H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
       , GlobalDef
           TContract
           Name { unName = "c" }
-          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+          (ELit (LContract H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
       , GlobalDef
           TAccount
           Name { unName = "a" }
-          (LAddress H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65)
+          (ELit (LAccount H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
       , GlobalDefNull TDateTime Name { unName = "dt" }
       ]
   , scriptTransitions =

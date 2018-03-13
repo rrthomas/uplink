@@ -128,6 +128,9 @@ data Located a = Located
   , locVal  :: a
   } deriving (Generic, Hash.Hashable)
 
+instance Functor Located where
+  fmap f (Located l v) = Located l (f v)
+
 instance Show a => Show (Located a) where
   show (Located _ a) = show a
   showsPrec d (Located _ a) = showsPrec d a
@@ -326,9 +329,9 @@ data EnumDef = EnumDef
 
 -- | Definition
 data Def
-  = GlobalDef Type Name LLit
+  = GlobalDef Type Name LExpr
   | GlobalDefNull Type LName
-  | LocalDef Type Name LLit
+  | LocalDef Type Name LExpr
   | LocalDefNull Type LName
   deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
@@ -550,7 +553,7 @@ instance Pretty Expr where
                         Located _ e' = e
 
     ECase e ms -> token Token.case_ <> parens (ppr e) <+> lbrace
-                   <$$> vsep (map (semify . ppr) ms)
+                   <$$> indent 2 (vsep (map (semify . ppr) ms))
                    <$$> rbrace
 
     EBetween d1 d2 e -> token Token.between <+> tupleOf (map ppr [d1,d2]) <+> lbrace
@@ -598,7 +601,7 @@ instance Pretty Lit where
     LState label   -> token Token.colon <> ppr label
     LUndefined     -> dquotes "Undefined" -- Not in syntax
     LDateTime dt   -> dquotes $ ppr $ (DT.formatDatetime (unDateTime dt) :: [Char])
-    LTimeDelta d   -> dquotes $ ppr d
+    LTimeDelta d   -> ppr d
     LConstr ec     -> text "`" <> ppr ec
 
 instance Pretty Type where
@@ -694,8 +697,8 @@ instance Pretty Def where
   ppr = \case
     GlobalDefNull typ (Located _ name) -> hsep [token Token.global, ppr typ, ppr name] <> token Token.semi
     LocalDefNull typ (Located _ name)  -> hsep [token Token.local, ppr typ, ppr name] <> token Token.semi
-    GlobalDef typ name lit             -> hsep [token Token.global, ppr typ, ppr name `assign` ppr lit]
-    LocalDef typ name lit              -> hsep [token Token.local, ppr typ, ppr name `assign` ppr lit]
+    GlobalDef typ name expr             -> hsep [token Token.global, ppr typ, ppr name `assign` ppr expr]
+    LocalDef typ name expr              -> hsep [token Token.local, ppr typ, ppr name `assign` ppr expr]
 
 instance Pretty Script where
   ppr (Script enums defns graph methods) = vsep

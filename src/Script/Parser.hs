@@ -169,6 +169,7 @@ fixedNLit precn = do
   let prec = fromEnum precn + 1
   try $ do
     -- Parse the left hand side of the decimal point
+    sign <- maybe 1 (const (-1)) <$> optionMaybe (char '-')
     lhs <- Tok.integer lexer <* char '.'
 
     -- Parse the rhs, prec # of digits ending in 'f'
@@ -179,7 +180,7 @@ fixedNLit precn = do
     let decs = sum $ zipWith (\n e -> n*(10^e)) (reverse rhs) [0..]
 
     -- Turn the lhs and rhs into a fixed point
-    pure $ mkFixed precn $ lhs*(10^prec) + decs
+    pure $ mkFixed precn $ sign * (lhs*(10^prec) + decs)
 
 fixedN :: Parser FixedN
 fixedN =  fixedNLit Prec6
@@ -396,8 +397,8 @@ localDef = do
   typ <- type_
   id <- name
   reservedOp Token.assign
-  llit <- locLit
-  return $ LocalDef typ id llit
+  lexpr <- expr
+  return $ LocalDef typ id lexpr
  <?> "local definition"
 
 localDefNull :: Parser Def
@@ -414,8 +415,8 @@ globalDef = do
   typ <- type_
   id <- name
   reservedOp Token.assign
-  llit <- locLit
-  return $ GlobalDef typ id llit
+  lexpr <- expr
+  return $ GlobalDef typ id lexpr
  <?> "global definition"
 
 globalDefNull :: Parser Def
@@ -551,24 +552,27 @@ unOp oper = symbol (Lexer.unOpToken oper) >> pure oper
 
 expr :: Parser LExpr
 expr = buildExpressionParser opTable locExpr
+  where
+    -- Expressions without locations and binary and unary ops.
+    nonLocExpr :: Parser Expr
+    nonLocExpr =  assignExpr
+              <|> beforeExpr
+              <|> afterExpr
+              <|> betweenExpr
+              <|> ifElseExpr
+              <|> caseExpr
+              <|> callExpr
+              <|> litExpr
+              <|> varExpr
 
-locExpr :: Parser LExpr
-locExpr =  mkLocated nonLocExpr
-       <|> parensLExpr
+    -- Expressions without binary/unary operations or expressions with
+    -- parentheses.
+    locExpr :: Parser LExpr
+    locExpr =  mkLocated nonLocExpr
+           <|> parensLExpr
 
 parensLExpr :: Parser LExpr
 parensLExpr = parens expr
-
-nonLocExpr :: Parser Expr
-nonLocExpr =  assignExpr
-          <|> beforeExpr
-          <|> afterExpr
-          <|> betweenExpr
-          <|> ifElseExpr
-          <|> caseExpr
-          <|> callExpr
-          <|> litExpr
-          <|> varExpr
 
 litExpr :: Parser Expr
 litExpr = ELit <$> locLit

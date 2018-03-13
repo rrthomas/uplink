@@ -574,12 +574,12 @@ enumE = EnumDef (testLocated $ "E") [ testLocated $ EnumConstr "Foo"
                                     ]
 
 defX :: Def
-defX = GlobalDef TInt "x" (testLocated $ LInt 0)
+defX = GlobalDef TInt "x" . testLocated . ELit . testLocated $ LInt 0
 
 defY :: Def
 defY = GlobalDef (TEnum "E")
                  "y"
-                 (testLocated . LConstr . EnumConstr $ "Foo")
+                 (testLocated . ELit . testLocated . LConstr . EnumConstr $ "Foo")
 
 setY :: Method
 setY = Method (Main "initial") "setY" [] $ eseq NoLoc $

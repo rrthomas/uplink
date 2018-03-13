@@ -1,38 +1,10 @@
-block 
-{
-  min-transactions  = 1
-  max-transacctions = 100
-}
-
 genesis 
 {
-  # Initial ledger seed that uniquely identifies the genesis block of this
-  # network.
-  seed = "3J5k5GpWMG8Lxq6v"
-  
   # Genesis block timestamp
   timestamp = 1231006505
 
   # Genesis block previousHash
   hash = "0000000000000000000000000000000000000000000000000000000000000000"
-}
-
-consensus
-{
-  # Algorithm used for creating and signing new blocks 
-  algorithm = "authority"
-
-  # Algorithm used for scoring and pruning forks
-  chain-scoring = "height"
-}
-
-contracts
-{
-  # Maximum contract size in KB
-  max-size = 1024
-
-  # Enable private storage
-  private-store = true
 }
 
 authority
@@ -41,14 +13,15 @@ authority
   block-period = 1 
 
   # Number of consecutive blocks out of which a validator may only generate one
-  block-gen-limit = 1
-  # Number of consecutive blocks out of which a validator may only sign one
-  block-sign-limit = 1
+  block-gen-limit = 2
   
   # Voting threshold
   threshold = 2
 
-  # Minimum nubmer of transactions needed for block
+  # Number of consecutive blocks out of which a validator may only sign one
+  block-sign-limit = 1
+
+  # Minimum number of transactions needed for block
   transactions = 1
 
   validators = [

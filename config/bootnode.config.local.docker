@@ -37,7 +37,11 @@ storage
 logging
 {
   rules = [ ["*", "*", "stdout", "no colors"]
-          , ["*", "*", "/var/log/uplink/debug.log", "no colors"]
+          , ["p2p:controller", "*", "logs/controller.log", "no colors"]
+	  , ["main", "*", "logs/main.log", "no colors"]
+	  , ["supervisor", "*", "logs/supervisor.log", "no colors"]
+	  , ["blockgenproc", "*", "logs/blockgenproc.log", "no colors"]
+	  , ["test-comm", "*", "logs/test-comm.log", "no colors"]
 	  ]
 }
 

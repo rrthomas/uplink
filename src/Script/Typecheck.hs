@@ -18,6 +18,9 @@ module Script.Typecheck (
   -- ** Signatures
   Sig(..),
 
+  -- ** Literal substitutions
+  defnAddrSubst,
+
   -- ** Typechecker
   tcLExpr,
   signatures,
@@ -63,7 +66,7 @@ data Sig = Sig [Type] Type
 -- Serialize instance for free.
 data TypeErrInfo
   = UnboundVariable Name                -- ^ Unbound variables
-  | InvalidDefinition Name Type Lit     -- ^ Invalid definition
+  | InvalidDefinition Name Type Expr    -- ^ Invalid definition
   | InvalidUnOp UnOp Type               -- ^ Invalid unary op
   | InvalidBinOp BinOp Type Type        -- ^ Invalid binary op
   | InvalidPrimOp Name                  -- ^ Invocation of non-primop function
@@ -219,11 +222,26 @@ defnAddrSubst = map substDefn
     substDefn :: Def -> Def
     substDefn (GlobalDefNull typ nm) = GlobalDefNull typ nm
     substDefn (LocalDefNull typ nm) = LocalDefNull typ nm
-    substDefn (GlobalDef typ nm llit) = GlobalDef typ nm $ substAddrLLit typ llit
-    substDefn (LocalDef typ nm llit)  = LocalDef typ nm $ substAddrLLit typ llit
+    substDefn (GlobalDef typ nm lexpr) = GlobalDef typ nm $ substAddrExpr typ <$> lexpr
+    substDefn (LocalDef typ nm lexpr)  = LocalDef typ nm $ substAddrExpr typ <$> lexpr
 
-    substAddrLLit :: Type -> LLit -> LLit
-    substAddrLLit t (Located loc lit) = Located loc $ substAddrLit t lit
+substAddrExpr :: Type -> Expr -> Expr
+substAddrExpr t (ESeq l r) = ESeq (substAddrExpr t <$> l) (substAddrExpr t <$> r)
+substAddrExpr t (ELit lit) = ELit (substAddrLit t <$> lit)
+substAddrExpr _ v@EVar{} = v
+substAddrExpr t (EBinOp op l r) = EBinOp op (substAddrExpr t <$> l) (substAddrExpr t <$> r)
+substAddrExpr t (EUnOp op e) = EUnOp op (substAddrExpr t <$> e)
+substAddrExpr t (EIf c l r) = EIf (substAddrExpr t <$> c) (substAddrExpr t <$> l) (substAddrExpr t <$> r)
+substAddrExpr t (EBefore c e) = EBefore (substAddrExpr t <$> c) (substAddrExpr t <$> e)
+substAddrExpr t (EAfter c e) = EAfter (substAddrExpr t <$> c) (substAddrExpr t <$> e)
+substAddrExpr t (EBetween c l r) = EBetween (substAddrExpr t <$> c) (substAddrExpr t <$> l) (substAddrExpr t <$> r)
+substAddrExpr t (ECase c ms) = ECase (substAddrExpr t <$> c) (map (substAddrMatch t) ms)
+substAddrExpr t (EAssign n e) = EAssign n (substAddrExpr t <$> e)
+substAddrExpr t (ECall n args) = ECall n (map (fmap (substAddrExpr t)) args)
+substAddrExpr t ENoOp = ENoOp
+
+substAddrMatch :: Type -> Match -> Match
+substAddrMatch t (Match pat b) = Match pat (substAddrExpr t <$> b)
 
 substAddrLit :: Type -> Lit -> Lit
 substAddrLit TAccount  (LAddress addr) = LAccount addr
@@ -338,31 +356,31 @@ tcDefn def = extendEnvM =<< case def of
         typeInfo = TypeInfo (TRef typ) (VariableDefn nm) loc
     return (nm, Local, typeInfo)
 
-  GlobalDef typ nm llit -> do
-    (TypeInfo litType _ loc) <- tcLLit llit
-    when (not $ validLitType typ litType) $ void $
-      throwErrInferM (InvalidDefinition nm typ $ locVal llit) loc
+  GlobalDef typ nm lexpr -> do
+    (TypeInfo exprType _ loc) <- tcLExpr lexpr
+    when (not $ validAssetType typ exprType) $ void $
+      throwErrInferM (InvalidDefinition nm typ $ locVal lexpr) loc
     let typeInfo = TypeInfo (TRef typ) (VariableDefn nm) loc
     return (nm, Global, typeInfo)
 
   -- LocalDef variable can only be (TCrypto) TInt for right now
-  LocalDef TInt nm llit -> do
-    (TypeInfo litType _ loc) <- tcLLit llit
-    when (not $ validLitType TInt litType) $ void $
-      throwErrInferM (InvalidDefinition nm TInt $ locVal llit) loc
+  LocalDef TInt nm lexpr -> do
+    (TypeInfo exprType _ loc) <- tcLExpr lexpr
+    when (not $ validAssetType TInt exprType) $ void $
+      throwErrInferM (InvalidDefinition nm TInt $ locVal lexpr) loc
     let typeInfo = TypeInfo (TRef $ TCrypto TInt) (VariableDefn nm) loc
     return (nm, Local, typeInfo)
 
   -- Otherwise, LocalDef is invalid
-  LocalDef typ nm (Located loc lit) -> do
-    throwErrInferM (InvalidDefinition nm TInt lit) loc
+  LocalDef typ nm (Located loc expr) -> do
+    throwErrInferM (InvalidDefinition nm TInt expr) loc
     let typeInfo = TypeInfo TInt (VariableDefn nm) loc
     return (nm, Local, typeInfo)
   where
-    validLitType :: Type -> Type -> Bool
-    validLitType (TAsset _) TAssetAny = True
-    validLitType TAssetAny (TAsset _) = True
-    validLitType t1 t2 = t1 == t2
+    validAssetType :: Type -> Type -> Bool
+    validAssetType (TAsset _) TAssetAny = True
+    validAssetType TAssetAny (TAsset _) = True
+    validAssetType t1 t2 = t1 == t2
 
 tcDefns :: [Def] -> InferM ()
 tcDefns = mapM_ tcDefn
@@ -1238,8 +1256,8 @@ instance Pretty TypeInfo where
 instance Pretty TypeErrInfo where
   ppr e = case e of
     UnboundVariable nm            -> "Unbound variable: " <+> ppr nm
-    InvalidDefinition nm typ lit  -> "Invalid definition for" <+> ppr nm <> ":"
-                                  <$$+> "Literal " <> ppr lit <+> "does not have type" <+> ppr typ
+    InvalidDefinition nm typ expr -> "Invalid definition for" <+> ppr nm <> ":"
+                                  <$$+> "Expression " <> ppr expr <+> "does not have type" <+> ppr typ
     InvalidPrimOp nm              -> "Invalid primitive operation: " <+> ppr nm
     InvalidReturnType             -> "Invalid return type: "
                                   <$$+> "Local variables or expressions involving computations over local"

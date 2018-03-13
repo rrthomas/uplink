@@ -5,7 +5,7 @@ module Consensus.Authority.State (
   PoAState(..),
   defPoAState,
 
-  setPrevSignedBlockIdx,
+  setPrevSignedBlockData,
   setPrevGenBlock,
   resetPrevGenBlock,
   addSigToPrevGenBlock,
@@ -16,6 +16,7 @@ import Protolude
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
 
+import Time  (Timestamp)
 import Block (Block)
 import qualified Block
 import qualified Hash
@@ -31,16 +32,16 @@ import qualified Hash
 
 -- | State of validating/generating node with respect to ConsensusAlg
 data PoAState = PoAState
-  { prevSignedBlockIdx :: Int
-  , prevGenBlock       :: Maybe  Block
+  { prevSignedBlockData :: (Int,Timestamp)
+  , prevGenBlock        :: Maybe Block
   } deriving (Show, Eq, Generic, S.Serialize, Hash.Hashable)
 
 defPoAState :: PoAState
-defPoAState = PoAState 0 Nothing
+defPoAState = PoAState (0,0) Nothing
 
-setPrevSignedBlockIdx :: PoAState -> Block -> PoAState
-setPrevSignedBlockIdx poaState block =
-  poaState { prevSignedBlockIdx = Block.index block }
+setPrevSignedBlockData :: PoAState -> Block -> PoAState
+setPrevSignedBlockData poaState block =
+  poaState { prevSignedBlockData = (Block.index block, Block.getTimestamp block) }
 
 setPrevGenBlock :: PoAState -> Block -> PoAState
 setPrevGenBlock poaState block =

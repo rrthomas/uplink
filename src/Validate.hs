@@ -65,8 +65,10 @@ import qualified Storage
 import qualified Contract
 import qualified Derivation as D
 import qualified Transaction as Tx
+import qualified Homomorphic as Homo
 
 import qualified Script
+import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
 import qualified Script.Init
 import qualified Script.Typecheck as TC
@@ -90,7 +92,9 @@ validateBlock ctx world block = do
   (_,invalidTxs,_) <- applyBlock ctx world block
   case head invalidTxs of
     Nothing  -> pure $ Right ()
-    Just err -> pure $ Left $ Block.InvalidBlockTx err
+    Just err -> pure $ Left $
+      Block.InvalidBlock (Block.index block) $
+        Block.InvalidBlockTx err
 
 -------------------------------------------------------------------------------
 -- Transaction Validation w/ Respect to World State
@@ -130,23 +134,30 @@ verifyBlock :: World -> Block -> Either Block.InvalidBlock ()
 verifyBlock world block =
   let genAddr = Block.origin (Block.header block) in
   case Ledger.lookupAccount genAddr world of
-    Left err  -> Left $ Block.InvalidBlockOrigin genAddr
+    Left err  ->
+      Left $ mkInvalidBlockErr $
+        Block.InvalidBlockOrigin genAddr
     Right acc -> do
       -- Verify all block signatures
       forM_ (Block.signatures block) $ \(Block.BlockSignature signature signerAddr) -> do
         case Ledger.lookupAccount signerAddr world of
-          Left _    -> Left $ Block.InvalidBlockSigner signerAddr
+          Left _    ->
+            Left $ mkInvalidBlockErr $
+              Block.InvalidBlockSigner signerAddr
           Right acc -> do
             let accPubKey = Account.publicKey acc
-            verifyBlockSig accPubKey signature
+            first mkInvalidBlockErr $
+              verifyBlockSig accPubKey signature
       -- Verify signatures of all transactions in block
       let blockTxs  = Block.transactions block
-      first Block.InvalidBlockTx $
+      first (mkInvalidBlockErr . Block.InvalidBlockTx) $
         mapM_ (verifyTransaction world) blockTxs
   where
     verifyBlockSig pubKey sig = do
       first Block.InvalidBlockSignature $
         Block.verifyBlockSig pubKey sig block
+
+    mkInvalidBlockErr = Block.InvalidBlock (Block.index block)
 
 -- | Verify a transaction signature & hash
 verifyTransaction :: World -> Transaction -> Either Tx.InvalidTransaction ()
@@ -404,7 +415,16 @@ applyTxContract tx txContract = do
 
     Tx.CreateContract addr scriptSS -> do
       let scriptText = decodeUtf8 $ SafeString.toBytes scriptSS
-          eContract = Script.Init.createContractWithAddr issuer addr ts scriptText
+
+      world <- gets accumWorld
+      applyCtx <- ask
+      evalCtx <- liftIO $ initEvalCtxTxCreateContract applyCtx tx addr
+      eContract
+        <- liftIO
+           $ Script.Init.createContractWithEvalCtx
+               evalCtx
+               world
+               scriptText
       case eContract of
         Left err -> throwTxContract $ Tx.InvalidContract $ toS err
         Right contract -> do
@@ -501,15 +521,40 @@ initEvalCtxTxCall
   -> Contract
   -> Transaction
   -> IO Eval.EvalCtx
-initEvalCtxTxCall ApplyCtx{..} c tx =
-  Eval.initEvalCtx
-    (fromIntegral $ Block.index applyCurrBlock)
-    (Block.timestamp $ Block.header applyCurrBlock)
-    applyNodeAddress
-    (Tx.base16HashTransaction tx)
-    (Tx.origin tx)
-    applyNodePrivKey
-    c
+initEvalCtxTxCall ApplyCtx{..} contract tx = do
+  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
+  pure EvalCtx
+    { currentBlock = fromIntegral $ Block.index applyCurrBlock
+    , currentValidator = applyNodeAddress
+    , currentTransaction = Tx.base16HashTransaction tx
+    , currentTimestamp = Block.timestamp $ Block.header applyCurrBlock
+    , currentCreated = Contract.timestamp contract
+    , currentDeployer = Contract.owner contract
+    , currentTxIssuer = Tx.origin tx
+    , currentAddress = Contract.address contract
+    , currentPrivKey = applyNodePrivKey
+    , currentStorageKey = pub
+    }
+
+initEvalCtxTxCreateContract
+  :: ApplyCtx
+  -> Transaction
+  -> Address
+  -> IO Eval.EvalCtx
+initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr = do
+  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
+  pure EvalCtx
+    { currentBlock = fromIntegral $ Block.index applyCurrBlock
+    , currentValidator = applyNodeAddress
+    , currentTransaction = Tx.base16HashTransaction tx
+    , currentTimestamp = Block.timestamp $ Block.header applyCurrBlock
+    , currentCreated = Tx.timestamp tx
+    , currentDeployer = Tx.origin tx
+    , currentTxIssuer = Tx.origin tx
+    , currentAddress = contractAddr
+    , currentPrivKey = applyNodePrivKey
+    , currentStorageKey = pub
+    }
 
 -- | Helper to construct InvalidTransactions from InvalidTxHeaders
 mkInvalidTx :: Transaction -> Tx.InvalidTxHeader -> Tx.InvalidTransaction

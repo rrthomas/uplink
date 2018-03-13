@@ -1,3 +1,3 @@
-[ ( Name { unName = "put" } , Sig [ TMsg ] TVoid )
-, ( Name { unName = "end" } , Sig [] TAny )
+[ ( Name { unName = "put" } , Sig [ TMsg ] TVoid , ReadWrite )
+, ( Name { unName = "end" } , Sig [] TAny , Write )
 ]

@@ -19,6 +19,7 @@ module Utils (
   safeRead,
   safeReadLazy,
   safeWrite,
+  safeWithFile,
 
   waitUntil,
   delayedReplicateM_,
@@ -174,6 +175,14 @@ safeReadLazy fpath = do
       pure $ Right contents
     else do
       pure $ Left $ "File does not exist: " <> (show fpath)
+
+-- | Checks if the file exists before attempting open it.
+safeWithFile :: FilePath -> IOMode -> (Handle -> IO r) -> IO (Either Text r)
+safeWithFile fpath mode f = do
+  exists <- doesFileExist fpath
+  if exists
+     then Right <$> withFile fpath mode f
+     else pure $ Left $ "File does not exist: " <> (show fpath)
 
 safeWrite :: FilePath -> ByteString -> IO (Either Text ())
 safeWrite fpath bs =

@@ -38,7 +38,7 @@ import Storage
 import Block (Block)
 import Address (Address)
 import Account (Account)
-import Contract (Contract)
+import Contract (Contract(..))
 
 import DB
 import qualified DB.LevelDB as DB (Database(..), lastBlock, loadDBs)
@@ -48,8 +48,11 @@ import qualified Block
 import qualified Account
 import qualified Address
 import qualified Contract
+import qualified Homomorphic as Homo
 
+import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
+import qualified Script.Init as Init
 import qualified Script.Error as Error
 import qualified Script.Prim as Prim
 import qualified Script.Typecheck as TC
@@ -280,15 +283,19 @@ initEvalCtxRepl (nodeAddr, nodePrivKey) latestBlock contract = do
   let blockTs  = Block.timestamp $ Block.header latestBlock
   let txHash   = "REPL-EVAL-NO-TRANSACTION-HASH"          -- XXX
   let txIssuer = Address.fromRaw "THISISANINVALIDADDRESS" -- XXX
-  fmap Right $
-    Eval.initEvalCtx
-      blockIdx
-      blockTs
-      nodeAddr
-      txHash
-      txIssuer
-      nodePrivKey
-      contract
+  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
+  pure . pure $ EvalCtx
+    { currentBlock = blockIdx
+    , currentValidator = nodeAddr
+    , currentTransaction = txHash
+    , currentTimestamp = blockTs
+    , currentCreated = timestamp contract
+    , currentDeployer = owner contract
+    , currentTxIssuer = txIssuer
+    , currentAddress = address contract
+    , currentPrivKey = nodePrivKey
+    , currentStorageKey = pub
+    }
 
 -------------------------------------------------------------------------------
 -- Entry
@@ -326,14 +333,26 @@ repl accPath sigs script verbose = do
 
       let nodeAddr = Account.address $ fst nodeAccAndKeys
       let nodePrivKey = snd $ snd nodeAccAndKeys
-      let contract = Eval.scriptToContract now nodeAddr script
+
+      (Right world) <- DB.readWorld
+      contract <- liftBase $
+        Init.scriptToContract
+            (fromIntegral $ Block.index latestBlock)
+            now
+            nodeAddr
+            mempty -- XXX empty transaction hash: this is a hack
+            nodeAddr
+            nodePrivKey
+            now
+            nodeAddr
+            world
+            script
 
       eEvalCtx <- liftBase $
         initEvalCtxRepl (nodeAddr,nodePrivKey) latestBlock contract
-      eWorld   <- DB.readWorld
-      case (,) <$> eEvalCtx <*> first show eWorld of
+      case eEvalCtx of
         Left err -> liftBase $ dieRed $
           "Could not initialize EvalCtx or read world from DB:\n\t" <> toS err
-        Right (evalCtx,world)  -> do
+        Right evalCtx  -> do
           let evalState = Eval.initEvalState contract world
           liftBase $ replLoop sigs script evalCtx evalState verbose

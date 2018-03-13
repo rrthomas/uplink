@@ -82,7 +82,7 @@ CREATE TABLE blocks (
 
 CREATE TABLE transactions (
   block_idx  int8    NOT NULL REFERENCES blocks(idx) ON DELETE CASCADE,
-  hash       bytea   NOT NULL UNIQUE,
+  hash       varchar NOT NULL UNIQUE,
   tx_type    varchar NOT NUll, -- type of transaction (header) 
   header     bytea   NOT NULL, -- binary encoding of header
   signature  bytea   NOT NULL,

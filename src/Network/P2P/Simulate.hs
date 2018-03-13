@@ -53,12 +53,13 @@ import SafeString  (SafeString, toBytes)
 import Script      (Script, Value, Name, Method(..), Arg, Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
 import Script.Typecheck (Sig, TypeErrInfo, tcMethod)
 import Script.Init (createContract)
-import Script.Eval (EvalCtx, EvalState, runEvalM, eval, initEvalCtx, initEvalState)
+import Script.Eval (EvalCtx, EvalState, runEvalM, eval, initEvalState)
 import Script.Error (EvalFail)
 import Script.Pretty (prettyPrint)
 import Script.Parser (parseTimeDelta)
 import Time        (Timestamp)
 import NodeState   (NodeT, getLedger)
+import qualified Homomorphic as Homo
 
 import Network.P2P.Service (Service(Simulation))
 import qualified Network.P2P.Logging as Log
@@ -68,6 +69,7 @@ import qualified NodeState as N
 import qualified Storage as Store
 import qualified Time
 import qualified Script.Graph as Graph
+import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
 
 {-
@@ -424,14 +426,33 @@ handleSimulationMsg sims (sp, simMsg) =
           case mWorld of
             Nothing    -> getLedger
             Just world -> pure world
+        lastBlock <- N.getLastBlock
+        let blockIdx = fromIntegral $ Block.index lastBlock
+            blockTs  = Block.timestamp $ Block.header lastBlock
+        nodeAddr <- N.askSelfAddress
+        let txHash   = "SIMULATION-TRANSACTION"
+        nodePrivKey <- N.askPrivateKey
         nodeAddr <- N.askSelfAddress
         contractTs <- liftBase Time.now
         let rawScript = decodeUtf8 $ SafeString.toBytes scriptSS
-            eContract = createContract nodeAddr contractTs rawScript
+
+        eContract
+          <- liftBase
+             $ createContract
+                 blockIdx
+                 blockTs
+                 nodeAddr
+                 txHash
+                 issuer
+                 nodePrivKey
+                 contractTs
+                 issuer
+                 world
+                 rawScript
         case eContract of
           Left err -> pure $ Left $ CompilationFail $ toS err
           Right contract -> do
-            evalCtx'   <- initEvalCtx' contract
+            evalCtx'   <- initEvalCtx contract
             let evalState'  = initEvalState contract world
                 simContract = SimulatedContract contract evalState' evalCtx'
                 simKey      = C.address contract
@@ -439,23 +460,27 @@ handleSimulationMsg sims (sp, simMsg) =
             pure $ Right $ SimulationCreated simKey
       where
         -- Setup the initial EvalCtx using the current node state
-        initEvalCtx' :: C.Contract -> NodeT m EvalCtx
-        initEvalCtx' contract = do
+        initEvalCtx :: C.Contract -> NodeT m EvalCtx
+        initEvalCtx contract = do
           lastBlock <- N.getLastBlock
           let blockIdx = fromIntegral $ Block.index lastBlock
               blockTs  = Block.timestamp $ Block.header lastBlock
           nodeAddr <- N.askSelfAddress
           let txHash   = "SIMULATION-TRANSACTION"
           nodePrivKey <- N.askPrivateKey
-          liftBase $
-            initEvalCtx
-              blockIdx
-              blockTs
-              nodeAddr
-              txHash
-              issuer
-              nodePrivKey
-              contract
+          (pub,_) <- liftBase $ Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
+          pure EvalCtx
+            { currentBlock = blockIdx
+            , currentValidator = nodeAddr
+            , currentTransaction = txHash
+            , currentTimestamp = blockTs
+            , currentCreated = C.timestamp contract
+            , currentDeployer = C.owner contract
+            , currentTxIssuer = issuer
+            , currentAddress = C.address contract
+            , currentPrivKey = nodePrivKey
+            , currentStorageKey = pub
+            }
 
 --------------------------------------------------------------------------------
 
