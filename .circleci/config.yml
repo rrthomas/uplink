@@ -99,6 +99,7 @@ jobs:
           command: |
             apk add --update python py-pip git openssh
             pip install docker-compose
+
       - run:
           name: Clone sdks
           command: |
@@ -107,8 +108,29 @@ jobs:
       - run:
           name: Run python sdk integration tests
           command: |
-            docker-compose -f docker-compose.integration-tests.yml run integration-tests-sdk-py
-            
+            (docker-compose -f docker-compose.integration-tests.yml run integration-tests-sdk-py) || echo $? > tests_error_code
+
+      - run:
+          name: Fetch log files from uplink node containers
+          command: |
+            docker cp bootnode_container:/usr/src/app/logs bootnodeLogs
+            docker cp validator_container:/usr/src/app/logs validatorLogs
+
+      - store_artifacts:
+          path: logs
+
+      - store_artifacts:
+          path: validatorLogs
+
+      - store_artifacts:
+          path: bootnodeLogs
+
+      - run:
+          name: Return the return code of the integration tests
+          command: |
+            echo "Return value of integration tests is:" $(cat tests_error_code)
+            exit $(cat tests_error_code)
+
       - persist_to_workspace:
           root: .
           paths:

@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b2d50c0641b80c512fe271cfe1d482a4a75d5c4e319948a0d412b3fc5a435ea9
+-- hash: a5ea347720e9407f7b9fdfa4c13137b770e6032fe6a7effd2d279ab0195a92a7
 
 name:           uplink
 version:        0.1.4
@@ -12,6 +12,7 @@ homepage:       https://github.com/adjoint-io/uplink#readme
 bug-reports:    https://github.com/adjoint-io/uplink/issues
 maintainer:     Stephen Diehl (stephen@adjoint.io)
 license:        Apache
+license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
 
