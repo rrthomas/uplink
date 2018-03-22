@@ -1,0 +1,15 @@
+pkgname=uplink
+pkgver=1.3
+pkgrel=1
+arch=('x86_64')
+url="adjoint.io"
+license=('APACHE2')
+provides=('uplink')
+depends=('leveldb' 'expat' 'gmp')
+source=('uplink')
+sha256sums=('SKIP')
+
+package() {
+	install -Dm755 uplink ${pkgdir}/usr/bin/uplink
+}
+
