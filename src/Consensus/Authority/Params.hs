@@ -35,7 +35,7 @@ import Protolude hiding (put, get)
 
 import Control.Monad.Fail (fail)
 
-import Data.Aeson (ToJSON(..))
+import Data.Aeson (ToJSON(..), FromJSON(..))
 import Data.Ord (compare)
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
@@ -65,6 +65,9 @@ instance Monoid ValidatorSet where
 instance ToJSON ValidatorSet where
   toJSON (ValidatorSet vset) = toJSON vset
 
+instance FromJSON ValidatorSet where
+  parseJSON = fmap ValidatorSet . parseJSON
+
 isValidatorAddr :: Address -> ValidatorSet ->  Bool
 isValidatorAddr addr validators = addr `Set.member` unValidatorSet validators
 
@@ -76,7 +79,7 @@ data PoA = PoA
   , threshold     :: Int          -- ^ # of signatures/votes required for block approval
   , minTxs        :: Int          -- ^ Minimum # of transactions per block
   , signerLimit   :: Int          -- ^ # of consecutive blocks of which the validator can sign one block
-  } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable, ToJSON)
+  } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable, ToJSON, FromJSON)
 
 mkGenesisPoA
   :: [Text]

@@ -43,7 +43,7 @@ import qualified Data.Serialize as S
 
 import Node.Peer
 import NodeState
-import SafeString
+import SafeString as SS
 import qualified Account
 import qualified Address
 import qualified Asset
@@ -56,7 +56,6 @@ import qualified Storage
 import qualified Utils
 import qualified Time
 import qualified Transaction
-import qualified Derivation
 import Network.Utils
 import Network.P2P.Controller
 import Network.P2P.Service (Service(..))
@@ -207,12 +206,12 @@ handleCmd service cmd =
       peers <- queryAllPeers
       nodeId <- liftP extractNodeId
       forM_ peers $ \peer -> do
-        let msg = SafeString.fromBytes' (toS nodeId)
+        let msg = SS.fromBytes' (toS nodeId)
         nsendPeer' service peer $ Message.Ping msg
       return cmdSuccess
     (PingPeer host) -> do
       nodeId <- extractNodeId
-      let msg = SafeString.fromBytes' (toS nodeId)
+      let msg = SS.fromBytes' (toS nodeId)
       eNodeId <- liftIO $ mkNodeId (toS host)
       case eNodeId of
         Left err     -> Log.warning err
@@ -248,8 +247,8 @@ handleTestCmd testCmd =
           (newAcc, acctKeys) <- liftIO $ Account.newAccount "GMT" mempty
           let tz = Account.timezone newAcc
               md = Account.metadata newAcc
-              pub = Key.unHexPub $ Key.hexPub $ Account.publicKey newAcc
-          let txHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
+              pubSS = SS.fromBytes' $ Key.unHexPub $ Key.hexPub $ Account.publicKey newAcc
+          let txHdr = Transaction.TxAccount $ Transaction.CreateAccount pubSS tz md
 
           liftIO $ Transaction.newTransaction (Account.address newAcc) (snd acctKeys) txHdr
 
@@ -267,7 +266,7 @@ handleTestCmd testCmd =
       case peers `atMay` randN of
         Nothing -> return ()
         Just nodeId -> do
-          let serviceNmSafe = SafeString.fromBytes $ show service
+          let serviceNmSafe = SS.fromBytes $ show service
           let msg = Message.ServiceRestart $ Message.ServiceRestartMsg service delay
           nsendPeer' service nodeId (Message.Test msg)
 

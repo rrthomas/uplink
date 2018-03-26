@@ -10,13 +10,17 @@ module Network.Utils (
   waitForLocalService,
   waitForLocalService',
 
+  findRemoteService,
   resolveHostname,
+
+  commProc,
 ) where
 
-import Protolude
+import Protolude hiding (newChan)
 
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
+import Control.Distributed.Process.Serializable (Serializable)
 
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.List as List
@@ -137,6 +141,34 @@ validateHostname host =
         Just (_ :: IP.IPv6) -> True
         Nothing             ->
           TH.validHostname $ toS host
+
+
+-- | Find the process id of a service on a remote node
+findRemoteService
+  :: MonadProcessBase m
+  => NodeId
+  -> Service
+  -> m ProcessId
+findRemoteService nodeId service = do
+  whereisRemoteAsync nodeId (show service)
+  reply <- expectTimeout 1500000
+  case reply of
+    Just (WhereIsReply tasks (Just pid)) ->
+      return pid
+    _ -> do
+      putText $ "Failed to connect to " <> show service <> " service at: " <> show nodeId
+      findRemoteService nodeId service
+
+-- | Send a message and block for response. Service agnostic
+commProc
+  :: (MonadProcessBase m, Serializable a, Serializable b)
+  => ProcessId
+  -> a
+  -> m b
+commProc pid msg = do
+  (sp,rp) <- newChan
+  send pid (sp, msg)
+  receiveChan rp
 
 -- | Canonicalize HostNames
 -- Note: Since some versions of Mac OS (e.g. High Sierra) IPV6 is used instead

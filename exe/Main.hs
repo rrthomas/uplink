@@ -53,20 +53,45 @@ chainParser = runChainParser
       return chainOpts { _command = Driver.Chain Run }
 
     initChainParser :: Parser Opts
-    initChainParser = subparser $ command "init" $
-        info (helper <*> initChainOptsParser) (progDesc "Init new chain")
+    initChainParser =
+        subparser $ command "init" $
+          info (helper <*> initChainOptsParser) $
+            progDesc "Initialize a new Uplink node and database."
       where
         initChainOptsParser :: Parser Opts
         initChainOptsParser = do
-          initAcc <- initAccParser
+          init <- Init <$> initAccParser <*> importDataParser
           chainOpts <- optsParser
-          return chainOpts { _command = Driver.Chain (Init initAcc) }
+          return chainOpts { _command = Driver.Chain init }
 
         -- Used for spinning up nodes on the test network
         initAccParser :: Parser Account.AccountPrompt
         initAccParser = flag Account.Prompt Account.NoPrompt $
              long "new-account"
           <> help "Don't prompt for new account creation."
+
+        -- Load blocks or world state from a file
+        importDataParser :: Parser (Maybe ImportData)
+        importDataParser = optional $
+            importBlocksParser <|> importLedgerParser
+          where
+            -- Load blocks from a file
+            importBlocksParser :: Parser ImportData
+            importBlocksParser =
+              fmap ImportBlocks $
+                strOption $
+                     long "import-blocks"
+                  <> metavar "FILE"
+                  <> help "Import blocks from a file storing blocks as XML or JSON."
+
+            -- Load ledger state from a file
+            importLedgerParser :: Parser ImportData
+            importLedgerParser =
+              fmap ImportLedger $
+                strOption $
+                     long "import-ledger"
+                  <> metavar "FILE"
+                  <> help "Import ledger from a file storing ledger data as JSON."
 
     optsParser :: Parser Opts
     optsParser = do
@@ -112,13 +137,15 @@ keyParser = subparser $ command "authority"
 
 
 dataParser :: Parser Opts
-dataParser =
-  dataGetParser
-  <|> dataListParser
-  <|> dataExport
-  <|> dataCommitParser
-  <|> dataLoadAssetParser
-  <|> dataLoadAccountParser
+dataParser = do
+  cmd <- dataGetParser
+     <|> dataListParser
+     <|> dataExport
+     <|> dataCommitParser
+     <|> dataLoadAssetParser
+     <|> dataLoadAccountParser
+  db <- storageBackend
+  pure $ cmd { _storageBackend = db }
 
 dataGetParser :: Parser Opts
 dataGetParser =  subparser $ command "get"
@@ -180,16 +207,33 @@ dataLoadAccountParser = subparser $ command "loadAccount"
         }
 
 dataExport :: Parser Opts
-dataExport = subparser $ command "export"
-    (info (helper <*> scriptParser')
-    (progDesc "Export ledger data to file"))
+dataExport =
+  subparser $ command "export" $
+    info (helper <*> dataExportCmdParser) $
+      progDesc "Export data to file"
   where
-    scriptParser' :: Parser Opts
-    scriptParser' = do
-      fp <- fileParser
+    dataExportCmdParser :: Parser Opts
+    dataExportCmdParser = do
+      export <- Export
+            <$> exportDataParser
+            <*> fileParser
       pure defaultOpts
-        { _command = Driver.Data (Export fp)
+        { _command = Driver.Data export
         }
+
+    exportDataParser = exportLedgerJSON <|> exportBlocks
+
+    exportLedgerJSON :: Parser ExportData
+    exportLedgerJSON =
+      subparser $ command "ledger" $
+        info (helper <*> pure ExportLedgerState) $
+          progDesc "Export ledger data as JSON to a file."
+
+    exportBlocks :: Parser ExportData
+    exportBlocks =
+      subparser $ command "blocks" $
+        info (helper <*> fmap ExportBlocks formatParser) $
+          progDesc "Export blocks to a file in a given format"
 
 -------------------------------------------------------------------------------
 -- Script Commands
@@ -198,36 +242,9 @@ dataExport = subparser $ command "export"
 scriptParser :: Parser Opts
 scriptParser =
   scriptCompileParser
-  <|> scriptReplParser
   <|> scriptFormat
   <|> scriptLint
   <|> scriptGraph
-
-scriptReplParser :: Parser Opts
-scriptReplParser = subparser $ command "repl"
-    (info (helper <*> repl)
-    (progDesc "Compile, typecheck a script, and load it into a REPL."))
-  where
-    repl :: Parser Opts
-    repl = do
-      compile     <- optional fileParser
-      verboseFlag <- verbose
-      useJson     <- json
-      pure defaultOpts
-        { _command = Driver.Script (ReplScript compile verboseFlag)
-        }
-
-    json :: Parser Bool
-    json = flag False True $
-         long "json"
-      <> short 'j'
-      <> help "JSON output"
-
-    verbose :: Parser Bool
-    verbose = flag False True $
-         long "verbose"
-      <> short 'v'
-      <> help "Verbose logging"
 
 scriptFormat :: Parser Opts
 scriptFormat = subparser $ command "format"
@@ -299,6 +316,7 @@ scriptGraph = subparser $ command "graph"
 -------------------------------------------------------------------------------
   -- Console Command
 -------------------------------------------------------------------------------
+
 consoleParser :: Parser Opts
 consoleParser = consoleParser'
   where
@@ -307,6 +325,22 @@ consoleParser = consoleParser'
       _host <- hostname
       _port <- port
       pure defaultOpts { _port = _port, _hostname = _host, _command = Console }
+
+-------------------------------------------------------------------------------
+  -- Repl Command
+-------------------------------------------------------------------------------
+replParser :: Parser Opts
+replParser = replParser'
+  where
+    replParser' :: Parser Opts
+    replParser' = do
+      _host <- hostname
+      _port <- port
+      _script <- fileParser
+      _verbose <- verbose
+
+      _worldState <- optional fileParser
+      pure defaultOpts { _port = _port, _hostname = _host, _command = (Repl _script (fromMaybe False _verbose) _worldState)  }
 
 
 -------------------------------------------------------------------------------
@@ -320,7 +354,17 @@ addrParser :: Parser Address.Address
 addrParser = argument (eitherReader addrParser') (metavar "ADDR")
   where
     addrParser' :: [Char] -> Either [Char] Address.Address
-    addrParser' a = maybe (Left "Address given is invalid") Right (Address.parseAddr (BS.pack a))
+    addrParser' a =
+      maybe (Left "Address given is invalid") Right (Address.parseAddr (BS.pack a))
+
+formatParser :: Parser DataFormat
+formatParser =
+  fmap (fromMaybe JSON) $
+    optional $ option auto $
+      mconcat [ long "format"
+              , short 'f'
+              , help "Format of data output"
+              ]
 
 port :: Parser (Maybe Int)
 port = optional $ option auto $
@@ -425,6 +469,7 @@ copts = subparser
    <> command "scripts"  (info (helper <*> scriptParser) (progDesc "Manage smart contract scripts."))
    <> command "data"     (info (helper <*> dataParser)   (progDesc "Manage ledger data and oracle services."))
    <> command "console"  (info (helper <*> consoleParser)(progDesc "Connect to a node and issue transactions."))
+   <> command "repl"     (info (helper <*> replParser)   (progDesc "Connect to a node and simulate a contract."))
    <> command "version"  (info (helper <*> versionCmd)   (progDesc "Version info"))
   )
 
@@ -434,20 +479,22 @@ handleOpts o@Opts {..} = do
 
   let
     silent = case Opts._command o of
-      Chain _  -> False
-      Keys _   -> True
-      Script _ -> True
-      Data _   -> True
-      Console  -> False
-      Version  -> False
+      Chain _    -> False
+      Keys _     -> True
+      Script _   -> True
+      Data _     -> True
+      Console    -> False
+      Repl _ _ _ -> False
+      Version    -> False
 
   case Opts._command o of
-      Chain _  -> putStrLn banner
-      Keys _   -> pure ()
-      Script _ -> pure ()
-      Data _   -> pure ()
-      Console  -> putStrLn banner
-      Version  -> putStrLn banner
+      Chain _    -> putStrLn banner
+      Keys _     -> pure ()
+      Script _   -> pure ()
+      Data _     -> pure ()
+      Console    -> putStrLn banner
+      Repl _ _ _ -> putStrLn banner
+      Version    -> putStrLn banner
 
   -- Load Config from command line fallbacking to 'defaultConfig'
   c@Config.Config {}

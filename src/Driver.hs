@@ -33,7 +33,6 @@ import Config (Config(..), ChainSettings(..), handleChain)
 import qualified RPC
 import qualified Block
 import qualified Key
-import qualified Repl
 import qualified Utils
 import qualified Ledger
 import qualified Script
@@ -72,12 +71,16 @@ import Network.Utils
 import qualified Network.P2P.Cmd as Cmd
 import qualified Network.P2P as P2P
 import qualified Network.P2P.Service as Service
+import qualified Network.Utils as NUtils
 
 import qualified XML
 import qualified Text.XML.Expat.Tree as XML
 import qualified Text.XML.Expat.Pickle as XML
 import qualified Text.XML.Expat.Format as XML
+import qualified REPL
 
+import Utils
+import SafeString
 --------------------------------------------------------------------------------
 -- Uplink
 --------------------------------------------------------------------------------
@@ -94,7 +97,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
 
   -- Read/Validate Chain config
   -- ==========================
-  ChainSettings{..}<- handleChain False chainConfigFile
+  chainSettings <- handleChain False chainConfigFile
 
   -- Setup entropy pool with 4096 bytes of entropy
   -- ========================================
@@ -110,7 +113,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
   (nodeData,nodeAccType) <- do
     (eNodeData, accType) <-
       case cmd of
-        Init accPrompt -> do
+        Init accPrompt _ -> do
           -- Attempt to read existing node data from nodeDataDir
           eNodeData <- NF.readNodeDataDir nodeDataDir
           case eNodeData of
@@ -183,23 +186,33 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       connPool <-
         case eConnPool of
           Left err -> do
-            Utils.putRed "Failed to connect to specified database. Creating a new db..."
-            -- Attempt to create Uplink Postgres DB
-            eConnPool' <- DB.PostgreSQL.setupDB connInfo
+            case cmd of
 
-            case eConnPool' of
-              Left err -> Utils.dieRed $
-                "Failed to create Uplink database: " <> show err
-              Right connPool -> do
-                -- Initialize Genesis Block & World with Validator Accounts
-                let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
-                logInfo "Intializing genesis block..."
-                DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runPostgresT'
-                DB.initWorld preallocated runPostgresT'
-                Utils.putGreen "Successfully intialized Uplink Postgres Database."
-                pure connPool
+              -- If initializing database and failed to connect to existing
+              -- database, try to setup database and import data if specified.
+              Init _ mImport -> do
+                -- Attempt to create Uplink Postgres DB
+                let dbName = toS (DB.PostgreSQL.connectDatabase connInfo)
+                Utils.putGreen $ "Creating Uplink database \"" <> dbName <> "\"..."
+                eConnPool' <- DB.PostgreSQL.setupDB connInfo
+                case eConnPool' of
+                  Left err -> Utils.dieRed $
+                    "Failed to create Uplink database: " <> show err
+                  Right connPool -> do
 
-          Right connPool -> pure connPool
+                    let runPostgresT' = DB.PostgreSQL.runPostgresT connPool
+                    handleJSONDataImport chainSettings runPostgresT' mImport
+                    pure connPool
+
+              -- If running with existing database, but failed to connect, die.
+              Run -> Utils.dieRed $ "Failed to create Uplink database: " <> show err
+
+          Right connPool ->
+            case cmd of
+              Init _ _ -> do
+                let dbName = toS (DB.PostgreSQL.connectDatabase connInfo)
+                Utils.dieRed $ "Uplink database with name \"" <> dbName <> "\" already exists."
+              Run -> pure connPool
 
       let runPostgresT'= DB.PostgreSQL.runPostgresT connPool
 
@@ -231,45 +244,113 @@ driver (Chain cmd) opts (config @ Config {..}) = do
     -- LevelDB Backend
     -----------------------
     DB.LevelDB path -> do
-      eDatabase <- DB.LevelDB.setupDB path
-      case eDatabase of
-        Left err       -> Utils.dieRed $ toS err
-        Right database -> do
-          logInfo $ "Using existing database at: " <> toS path
-          let runLevelDBT' = DB.LevelDB.runLevelDBT database
 
-          case cmd of
+      levelDB <-
+        case cmd of
 
-            Init _ -> do
+          Init _ mImport -> do
 
-              -- Initialize Genesis Block & World with Validator Accounts
-              logInfo "Intializing genesis block..."
-              DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runLevelDBT'
-              DB.initWorld preallocated runLevelDBT'
+            eLevelDB <- DB.LevelDB.createDB path
+            case eLevelDB of
+              Left err -> Utils.dieRed $
+                "Couldn't create LevelDB at path '" <> toS path <> ":\n  " <> toS err
+              Right db -> do
 
-              Utils.putGreen "Successfully intialized Uplink LevelDB Database."
+                let runLevelDBT' = DB.LevelDB.runLevelDBT db
+                handleJSONDataImport chainSettings runLevelDBT' mImport
+                pure db
 
-            Run -> pure ()
+          Run -> do
+            eLevelDB <- DB.LevelDB.loadExistingDB path
+            case eLevelDB of
+              Left err -> Utils.dieRed $
+                "Couldn't load LevelDB at path '" <> toS path <> ":\n  " <> toS err
+              Right db -> do
+                logInfo $ "Using existing LevelDB database at: " <> toS path
+                pure db
 
-          -- Load world state and genesis block to initialize NodeEnv
-          Utils.putGreen "Loading world state from DB."
-          world <- DB.loadWorld runLevelDBT'
-          Utils.putGreen "Loading genesis block from DB."
-          (genesisBlock, lastBlock) <- DB.loadBlocks runLevelDBT'
-          nodeEnv <- mkNodeEnv world genesisBlock lastBlock
-          let runNodeT' = NodeState.runNodeT nodeEnv
+      let runLevelDBT' = DB.LevelDB.runLevelDBT levelDB
 
-          -- Create the cloud haskell local node
-          localNode <- P2P.createLocalNode config
+      -- Load world state and genesis block to initialize NodeEnv
+      Utils.putGreen "Loading world state from DB."
+      world <- DB.loadWorld runLevelDBT'
+      Utils.putGreen "Loading genesis block from DB."
+      (genesisBlock, lastBlock) <- DB.loadBlocks runLevelDBT'
+      nodeEnv <- mkNodeEnv world genesisBlock lastBlock
+      let runNodeT' = NodeState.runNodeT nodeEnv
 
-          -- Launch RPC Server
-          Utils.putGreen "Starting RPC server..."
-          forkIO $ RPC.rpcServer config (runLevelDBT' . runNodeT') localNode Nothing
+      -- Create the cloud haskell local node
+      localNode <- P2P.createLocalNode config
 
-          -- Launch P2P Server
-          Utils.putGreen "Starting P2P processes..."
-          runProcess localNode . runLevelDBT' . runNodeT' $
-            P2P.p2p config
+      -- Launch RPC Server
+      Utils.putGreen "Starting RPC server..."
+      forkIO $
+        RPC.rpcServer
+          config
+          (runLevelDBT' . runNodeT')
+          localNode
+          Nothing
+
+      -- Launch P2P Server
+      Utils.putGreen "Starting P2P processes..."
+      runProcess localNode . runLevelDBT' . runNodeT' $
+        P2P.p2p config
+
+  where
+    loadBlocksFromJSON :: FilePath -> IO [Block.Block]
+    loadBlocksFromJSON fp = do
+      eBlocksJSON <- Utils.safeReadLazy fp
+      case eBlocksJSON of
+        Left err -> Utils.dieRed err
+        Right blocksJSON ->
+          case A.eitherDecode blocksJSON of
+            Left err   -> Utils.dieRed $
+              "Failed to decode Uplink blocks from JSON:\n   " <> toS err
+            Right blks -> pure blks
+
+    -- If I put the typesig to this function it can't compile :(
+    handleJSONDataImport ChainSettings{..} runDB = \case
+      -- In the case that we are not importing data...
+      Nothing -> do
+        -- Initialize Genesis Block & World with Validator Accounts
+        logInfo "Intializing genesis block..."
+        DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runDB
+        DB.initWorld preallocated runDB
+        Utils.putGreen "Successfully intialized Uplink LevelDB Database."
+
+      -- In the case that we're importing blocks
+      Just (ImportBlocks fp) -> do
+        logInfo $ "Importing blocks from JSON file: " <> toS fp
+        blocks <- loadBlocksFromJSON fp
+        case blocks of
+          []     -> Utils.dieRed "No blocks to load..."
+          (b:bs) -> do
+            -- Initialize the world
+            DB.initWorld preallocated runDB
+            -- Apply the imported blocks to the ledger state...
+            eRes <- runDB $ DB.writeBlocks (b:bs)
+            case eRes of
+              Left err -> Utils.dieRed $
+                "Failed to write imported blocks to the database:\n   " <> show err
+              Right () -> pure ()
+
+      -- In the case that we're importing the ledger state (for testing)
+      Just (ImportLedger fp) -> do
+        ledgerE <- Ledger.loadLedgerFromJSON fp
+        case ledgerE of
+          Left err -> Utils.dieRed err
+          Right ledger -> do
+            -- Write to the ledger with the data from the file
+            logInfo "Initializing ledger state from JSON import..."
+            DB.initWorld preallocated runDB
+            eRes <- runDB $ DB.syncWorld ledger
+            case eRes of
+              Left err -> Utils.dieRed $ show err
+              Right _  -> do
+                -- Since no blocks were written, intialize genesis block
+                logInfo "Intializing genesis block..."
+                DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runDB
+
 
 driver (Script cmd) opts (config @ Config {..}) =
   case storageBackend of
@@ -277,19 +358,16 @@ driver (Script cmd) opts (config @ Config {..}) =
     DB.PostgreSQL connInfo -> do
       eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
       case eConnPool of
-        Left err -> do
-          Utils.putRed $ "Failed to create Uplink database: " <> show err
-          System.Exit.die "Database initialization failed."
+        Left err -> Utils.dieRed $
+          "Failed to create Uplink database: " <> show err
         Right connPool ->
           DB.PostgreSQL.runPostgresT connPool $
             driverScript cmd opts config
 
     DB.LevelDB path -> do
-      eDatabase <- DB.LevelDB.setupDB path
+      eDatabase <- DB.LevelDB.loadExistingDB path
       case eDatabase of
-        Left err -> do
-          Utils.putRed $ toS err
-          System.Exit.die $ toS err
+        Left err -> Utils.dieRed $ toS err
         Right database ->
           DB.LevelDB.runLevelDBT database $
             driverScript cmd opts config
@@ -306,19 +384,16 @@ driver (Data cmd) opts (config @ Config {..}) = do
     DB.PostgreSQL connInfo -> do
       eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
       case eConnPool of
-        Left err -> do
-          Utils.putRed $ "Failed to create Uplink database: " <> show err
-          System.Exit.die "Database initialization failed."
+        Left err -> Utils.dieRed $
+          "Failed to create Uplink database: " <> show err
         Right connPool ->
           DB.PostgreSQL.runPostgresT connPool $
             driverData cmd opts config
 
     DB.LevelDB path -> do
-      eDatabase <- DB.LevelDB.setupDB path
+      eDatabase <- DB.LevelDB.loadExistingDB path
       case eDatabase of
-        Left err -> do
-          Utils.putRed $ toS err
-          System.Exit.die $ toS err
+        Left err -> Utils.dieRed $ toS err
         Right database ->
           DB.LevelDB.runLevelDBT database $
             driverData cmd opts config
@@ -341,7 +416,7 @@ driver Console opts config = do
       -- Find the ProcessId for the tasks proc on the remote node
       cmdProcIdMVar <- newEmptyMVar
       runProcess localNode $ do
-        cmdProcId <- findTasksProc cmdProcNodeId
+        cmdProcId <- findRemoteService cmdProcNodeId Service.Tasks
         link cmdProcId
         liftIO $ putMVar cmdProcIdMVar cmdProcId
 
@@ -355,16 +430,46 @@ driver Console opts config = do
           , vars    = mempty
           }
 
-    findTasksProc :: NodeId -> Process ProcessId
-    findTasksProc nodeId = do
-      whereisRemoteAsync nodeId (show Service.Tasks)
-      reply <- expectTimeout 1500000
-      case reply of
-        Just (WhereIsReply tasks (Just pid)) ->
-          return pid
-        _ -> do
-          putText $ "Failed to connect to: " <> show nodeId
-          findTasksProc nodeId
+driver (Repl path verbose mWorldPath) opts config = do
+      let host = Config.hostname config
+      let port = Config.port config
+      eRemote <- mkNodeId $ toS $ host <> ":" <> show port
+      localNode <- P2P.createLocalNode' "localhost" "" (Just DPN.initRemoteTable)
+      case eRemote of
+        Left err -> Utils.dieRed err
+        Right remote -> runReplProcs localNode remote
+    where
+      runReplProcs :: DPN.LocalNode -> NodeId -> IO ()
+      runReplProcs localNode simProcNodeId = do
+
+        logInfo $ "Searching for simulation process on: " <> show simProcNodeId
+        -- Find the ProcessId for the Simulation proc on the remote node
+        simProcIdMVar <- newEmptyMVar
+        runProcess localNode $ do
+          simProcId <- findRemoteService simProcNodeId Service.Simulation
+          link simProcId
+          liftIO $ putMVar simProcIdMVar simProcId
+
+        remoteSimProcId <- takeMVar simProcIdMVar
+
+        logInfo $ "Reading script from: " <> show path
+        scriptE <- Utils.safeRead path
+
+        -- Try and load a ledger state from 'uplink data export ledger <path>', if a path supplied
+        mWorld <- case mWorldPath of
+          Nothing -> pure Nothing
+          Just fp -> do
+
+            logInfo $ "Loading ledger state: " <> show fp
+            l <- Ledger.loadLedgerFromJSON fp
+            case l of
+              Left err -> Utils.dieRed err
+              Right w -> pure $ Just w
+
+        case scriptE of
+          Right script ->
+            REPL.runRepl localNode remoteSimProcId (fromBytes' script) mWorld verbose
+          Left err -> putText err
 
 -------------------------------------------------------------------------------
 -- Script Commands
@@ -440,23 +545,6 @@ driverScript cmd opts (config @ Config {..}) =
 
                   return ()
             _ -> return ()
-
-
-    -- repl
-    Opts.ReplScript mscriptFile verbose -> do
-      eScript <- liftBase $ case mscriptFile of
-        Just scriptFile -> Compile.compileFile scriptFile
-        Nothing         -> Compile.emptyTarget
-
-      case eScript of
-        Left err -> liftBase $ putText err
-        Right (sigs, script) -> do -- prepare context, load repl, print sigs
-          liftBase $ do
-            putText "Signatures:"
-            forM_ sigs $ \(name,sig,effect) -> do
-              putText $ Pretty.prettyPrint name
-                <> ": " <> Pretty.prettyPrint (Typecheck.ppSig sig) <> " " <> Pretty.prettyPrint effect
-          Repl.repl nodeDataDir (map (\(name,sig,_) -> (name, sig)) sigs) script verbose
 
 -------------------------------------------------------------------------------
 -- Data Commands
@@ -576,12 +664,20 @@ driverData cmd opts (config @ Config {..}) =
                 Left err -> logWarning $ show err
                 Right _  -> pure ()
 
-    Opts.Export fp -> do
-      blocks <- DB.readBlocks
-      liftBase $
-        case blocks of
-          Right v -> BSL.writeFile fp (XML.toXML v)
-          _ -> putText "Could not read database"
+    Opts.Export (ExportBlocks typ) fp -> do
+      eBlocks <- DB.readBlocks
+      liftBase $ case eBlocks of
+        Right blocks ->
+          case typ of
+            XML  -> BSL.writeFile fp $ XML.toXML blocks
+            JSON -> BSL.writeFile fp . toS $ A.encodePretty blocks
+        Left err -> Utils.dieRed $ "Could not read database:\n   " <> show err
+    Opts.Export ExportLedgerState fp -> do
+      eWorld <- DB.readWorld
+      liftBase $ case eWorld of
+        Left err    -> Utils.dieRed $ "Could not read database:\n   " <> show err
+        Right world -> BSL.writeFile fp $ toS $ A.encodePretty world
+
   where
     display v = putStrLn $ A.encodePretty v
 

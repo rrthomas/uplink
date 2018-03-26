@@ -353,7 +353,6 @@ instance ToField BlockCol where
 data TransactionCol
   = TxType      Text
   | TxOrigin    Address
-  | TxTimestamp Int64
   | TxHash      Text
   deriving (Eq, Ord, Show)
 
@@ -362,7 +361,6 @@ instance HasColName TransactionCol where
     case txCol of
       TxType      _ -> "tx_type"
       TxOrigin    _ -> "origin"
-      TxTimestamp _ -> "timestamp"
       TxHash      _ -> "hash"
 
 instance ToField TransactionCol where
@@ -370,7 +368,6 @@ instance ToField TransactionCol where
     case txCol of
       TxType      c -> toField c
       TxOrigin    c -> toField c
-      TxTimestamp c -> toField c
       TxHash      c -> toField c
 
 --------------------------------------------------------------------------------
@@ -899,7 +896,6 @@ instance Pretty TransactionCol where
   ppr = \case
     TxOrigin addr        -> ppr addr
     TxType txtyp         -> dquotes $ ppr txtyp
-    TxTimestamp ts       -> ppr ts
     TxHash      hash     -> ppr hash
 
 instance Pretty a => Pretty (Cond a) where

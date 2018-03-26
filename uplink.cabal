@@ -2,10 +2,10 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: a5ea347720e9407f7b9fdfa4c13137b770e6032fe6a7effd2d279ab0195a92a7
+-- hash: 47c2c1ad97dd1b79ec8ac310aace9af090f99b4cd6890aa6e9c0680d9f8d6790
 
 name:           uplink
-version:        0.1.4
+version:        0.1.5
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
@@ -127,13 +127,15 @@ library
       Account
       Utils
       Version
-      Repl
       Console
       Console.Config
       Console.Command
       Console.Completion
       Console.Parser
       Console.Lexer
+      REPL
+      REPL.Config
+      REPL.Command
       Ledger
       Block
       Asset
@@ -145,7 +147,6 @@ library
       MemPool
       Time
       Address
-      Derivation
       Hash
       Key
       Homomorphic
@@ -209,6 +210,8 @@ library
       Script.Undefinedness
       Script.Effect
   other-modules:
+      REPL.Lexer
+      REPL.Parser
       Paths_uplink
   default-language: Haskell2010
 
@@ -399,6 +402,7 @@ test-suite uplink-test
     , wl-pprint-text
     , x509
   other-modules:
+      Helpers
       KeyTests
       Reference
       TestBinary

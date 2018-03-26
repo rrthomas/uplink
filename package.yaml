@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.4
+version: 0.1.5
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
@@ -184,7 +184,6 @@ library:
     - Account
     - Utils
     - Version
-    - Repl
 
     # Console
     - Console
@@ -193,6 +192,11 @@ library:
     - Console.Completion
     - Console.Parser
     - Console.Lexer
+
+    # REPL
+    - REPL
+    - REPL.Config
+    - REPL.Command
 
     # Ledger
     - Ledger
@@ -208,7 +212,6 @@ library:
 
     # Addresses
     - Address
-    - Derivation
 
     # Cryptography
     - Hash
@@ -254,7 +257,7 @@ library:
     - Network.P2P.Controller
     - Network.P2P.Consensus
     - Network.P2P.Message
-    - Network.P2P.Service 
+    - Network.P2P.Service
     - Network.P2P.Simulate
     - Network.P2P.Logging
 

@@ -15,6 +15,7 @@ PostgreSQL backend for ledger state.
 module DB.PostgreSQL (
 
   ConnectionPool,
+  ConnectInfo(..),
 
   PostgresT,
   PostgresM,
@@ -61,6 +62,7 @@ import DB.PostgreSQL.Account
 import DB.PostgreSQL.Asset
 import DB.PostgreSQL.Contract
 import DB.PostgreSQL.Block
+import DB.PostgreSQL.Transaction
 import DB.PostgreSQL.InvalidTransaction
 import DB.PostgreSQL.Error
 
@@ -126,6 +128,8 @@ instance (MonadBase IO m) => MonadReadDB (PostgresT m) where
   readLastBlock      = withConn queryLastBlock
   readBlocks         = withConn queryBlocks
   readLastNBlocks n  = withConn (flip queryLastNBlocks n)
+
+  readTransaction    = withConn . flip queryTransactionByHash
 
   readInvalidTx hash = withConn (flip queryInvalidTxByHash hash)
   readInvalidTxs     = withConn queryInvalidTxs

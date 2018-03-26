@@ -32,7 +32,6 @@ import qualified Block
 import qualified Config
 import qualified Time
 import qualified Storage
-import qualified Derivation
 import qualified Transaction
 import qualified Script.Eval as Eval
 import qualified Script.Compile as Compile
@@ -52,6 +51,7 @@ import DB.PostgreSQL.Error
 import DB.Query.Lang
 
 import TestQueryLang (queryLangTests)
+import Helpers
 
 import qualified Reference as Ref
 
@@ -104,9 +104,15 @@ postgresTests =
 
 levelDBTests :: TestTree
 levelDBTests =
-  withResource (newDB "tmp") deleteDBs $ \dbIO -> do
+  withResource (createDB "tmp") deleteDBs $ \dbIO -> do
     dbReadWriteTests "LevelDB" $ \action ->
       flip runLevelDBT action =<< dbIO
+  where
+    createDB root = do
+      eDb <- DB.LevelDB.createDB root
+      case eDb of
+        Left err -> panic $ show err
+        Right db -> pure db
 
 dbReadWriteTests
   :: DB.MonadReadWriteDB m
@@ -133,11 +139,11 @@ dbReadWriteTests testNm runDB = do
         DB.readBlocks
 
     testAssetsDB = do
-      let assets = Ref.testAssets
+      assets <- Ref.testAssetsDB
       testDB "writeAssets -> readAssets"
-        assets
+        (sortBy (comparing Asset.address) assets)
         DB.writeAssets
-        DB.readAssets
+        (fmap (sortBy $ comparing Asset.address) <$> DB.readAssets)
 
     testAccountsDB = do
       let accs = [Ref.testAccount, Ref.testAccount2]
@@ -227,28 +233,15 @@ postgresDatatypeTests :: TestTree
 postgresDatatypeTests =
   testGroup "PostgreSQL *Row type round trip tests"
     [ HUnit.testCase "Asset <-> AssetRow/HoldingsRows" $ -- Should be tested on an Asset w/ Holdings
-        HUnit.assertBool "Conversion is Isomorphic" $
-          roundTripTest assetToRowTypes (first show . rowTypesToAsset) Ref.testAsset3'
+        roundTripTest assetToRowTypes (first show . rowTypesToAsset) Ref.testAsset3'
     , HUnit.testCase "Contract <-> ContracRow/GlobalStorageRows/LocalStorageRows" $ do
         contractTs <- Time.now
         let contract = Ref.testContract contractTs
-        HUnit.assertBool "Conversion is Isomorphic" $ -- Should be tested on Contracts w/ Global & Local storage
-          roundTripTest contractToRowTypes (Right . rowTypesToContract) contract
+        -- Should be tested on Contracts w/ Global & Local storage
+        roundTripTest contractToRowTypes (Right . rowTypesToContract) contract
     , HUnit.testCase "Block <-> BlockRow/TransactionRows" $ do
         genesisBlock <- Ref.testGenesis
         block <- Ref.testBlock genesisBlock Ref.testTxs
-        HUnit.assertBool "Conversion is Isomorphic" $ -- Should be tested on a Block with lots of Transactions
-          roundTripTest blockToRowTypes (Right . rowTypesToBlock) block
+        -- Should be tested on a Block with lots of Transactions
+        roundTripTest blockToRowTypes (Right . rowTypesToBlock) block
     ]
-
-type To a b = a -> b
-type From b a = b -> Either Text a
-
-roundTripTest
-  :: (Eq a)
-  => To a b
-  -> From b a
-  -> a
-  -> Bool
-roundTripTest to from x =
-  Right x == from (to x)

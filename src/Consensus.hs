@@ -46,7 +46,7 @@ import qualified Ledger
 import qualified MemPool
 import qualified Time
 import qualified Utils
-import qualified Validate
+import qualified Validate as V
 import qualified NodeState
 import qualified Network.P2P.Logging as Log
 
@@ -81,8 +81,9 @@ signBlock block = do
       -- Validate and sign the block
       eBlockSig  <- do
         -- Validate w/ respect to World state
-        validateBlockWorld <-
-          liftBase $ Validate.verifyAndValidateBlock applyCtx world block
+        validateBlockWorld <- lift $ do
+          let applyState = V.initApplyState world
+          V.verifyValidateAndApplyBlock applyState applyCtx block
         -- Validate w/ respect to Consensus model
         (err, validBlock) <- CA.validateBlock CA.BeforeSigning block
         let validateBlockConsensus =
@@ -92,7 +93,7 @@ signBlock block = do
               first ConsensusBlockValidationErr $ do
                 validateBlockConsensus
                 validateBlockIndex poaState
-              first LedgerBlockValidationErr validateBlockWorld
+              bimap LedgerBlockValidationErr (const ()) $ validateBlockWorld
         case validationRes of
           Left err -> pure $ Left err
           Right _  ->
@@ -125,7 +126,6 @@ signBlock block = do
 -- 4) Sets the `prevGenBlock` field to the newly generated block
 --
 -- Note: This function loops until validation predicate is satisfied.
--- In order for a node
 generateBlock
   :: forall m. (MonadProcessBase m, MonadReadWriteDB m)
   => NodeT m Block.Block
@@ -290,7 +290,7 @@ generateBlock = do
 
 -- | Constructs a new block given the current state of the node
 makeBlock
-  :: (MonadProcessBase m, MonadWriteDB m)
+  :: (MonadProcessBase m, MonadReadWriteDB m)
   => NodeT m (Either CA.BlockValidationError Block.Block)
 makeBlock = do
   -- Validate and remove invalid txs in mempool, returning valid txs
@@ -351,7 +351,7 @@ acceptBlock block = do
           Block.InvalidMedianTimestamp $ toS err
       Right mts -> do
         prevBlock <- NodeState.getLastBlock
-        liftBase $ Block.validateBlock mts prevBlock block
+        pure $ Block.validateBlock mts prevBlock block
 
   case validBlock of
     Left err -> do
@@ -363,34 +363,27 @@ acceptBlock block = do
       (err, blockIsValid) <- CA.validateBlock CA.BeforeAccept block
       if blockIsValid
         then do
-          -- Verify & Validate block w/ respect to world state
-          Log.info "Verifying and Validating block before acceptance..."
-          NodeState.withApplyCtx $ \applyCtx -> do
-            eRes <- NodeState.withLedgerState $ \ledgerState ->
-              liftBase $ Validate.verifyAndValidateBlock applyCtx ledgerState block
-            case eRes of
-              Left err -> do
-                Log.warning $ show err
-                return False
-              Right _ -> do
-                -- Apply block transactions to ledger state
-                Log.info $ "Applying transactions of block "
-                  <> show (Block.index block) <> " to world state..."
-                eRes <- NodeState.applyBlock block
-                case eRes of
-
-                  Left err -> do
-                    Log.critical $ "Error applying block: " <> show err
-                    return False
-
-                  Right _   -> do
-                    -- Sync World with DB
-                    eSyncRes <- NodeState.syncNodeStateWithDBs
-                    case eSyncRes of
-                      Left err -> do
-                        Log.critical $ "Error syncing to database: " <> show err
-                        return False
-                      Right _  -> return True
+          eRes <- do
+            -- Verify & Validate block w/ respect to world state
+            Log.info "Verifying and Validating block before acceptance..."
+            NodeState.withApplyCtx $ \applyCtx -> do
+              NodeState.withLedgerState $ \ledgerState -> lift $ do
+                let applyState = V.initApplyState ledgerState
+                V.verifyValidateAndApplyBlock applyState applyCtx block
+          case eRes of
+            Left err -> do
+              Log.warning $ show err
+              return False
+            Right _ -> do
+              -- Apply block transactions to ledger state
+              Log.info $ "Applying transactions of block "
+                <> show (Block.index block) <> " to world state..."
+              eRes <- NodeState.applyBlock block
+              case eRes of
+                Left err -> do
+                  Log.critical $ "Error applying block:\n  " <> show err
+                  return False
+                Right _   -> return True
         else do
           let errPrefix = "[acceptBlock] Not accepting invalid Block with index "
           let errBlkIdx = show $ Block.index block

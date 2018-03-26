@@ -296,7 +296,6 @@ handleMessage replyService msg =
 
         GetBlock gmsg@(GetBlockMsg idx sender) -> do
           eBlock <- lift $ DB.readBlock idx
-          nodeId <- liftBase $ mkNodeId (toBytes sender)
           case eBlock of
             Left err  -> Log.warning $ "No block with index " <> show idx
             Right blk -> do

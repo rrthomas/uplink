@@ -37,6 +37,7 @@ import Database.PostgreSQL.Simple.ToField
 import qualified Account
 import qualified Asset
 import qualified Contract
+import qualified SafeString
 import qualified Key
 import qualified Reference as Ref
 import qualified Script.Graph as Graph
@@ -161,7 +162,6 @@ instance Arbitrary TransactionCol where
   arbitrary = QC.oneof
     [ TxOrigin    <$> arbitrary
     , TxType      <$> genTxType
-    , TxTimestamp <$> fmap fromIntegral genPosInt
     ]
 
 --------------------------------------------------------------------------------
@@ -204,7 +204,7 @@ instance Arbitrary Select where
 accountToCols :: Account.Account -> [AccountCol]
 accountToCols Account.Account{..} =
   [ AccountAddress address
-  , AccountTimezone $ toS timezone
+  , AccountTimezone $ toS $ SafeString.toBytes timezone
   ]
 
 assetToCols :: Asset.Asset -> [AssetCol]

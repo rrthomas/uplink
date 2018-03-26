@@ -12,6 +12,7 @@ LevelDB backend for ledger state on disk.
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE DefaultSignatures #-}
 {-# OPTIONS_GHC -fno-warn-unused-type-patterns #-}
 
 
@@ -22,7 +23,6 @@ module DB.LevelDB (
   create,
   close,
   write,
-  loadDBs,
   closeDBs,
   selectAll,
 
@@ -47,8 +47,8 @@ module DB.LevelDB (
   readWorld,
 
   -- ** Database (Directory) initialization
-  setupDB,
-  newDB,
+  createDB,
+  loadExistingDB,
   testDB,
 
   -- ** Danger
@@ -160,6 +160,8 @@ instance (MonadBase IO m) => MonadReadDB (LevelDBT m) where
   readBlocks         = withConn (allBlocks . blockDB)
   readLastNBlocks n  = withConn (flip lastNBlocks n . blockDB)
 
+  readTransaction h  = withConn (flip lookupDB h . txDB)
+
   readInvalidTx hash = withConn (flip lookupDB hash . invalidTxDB)
   readInvalidTxs     = withConn (selectAll . invalidTxDB)
 
@@ -176,8 +178,8 @@ instance (MonadBase IO m) => MonadWriteDB (LevelDBT m) where
   writeContract c      = withConn (flip writeDB c . contractDB)
   writeContracts cs    = withConn (flip writeManyDB cs . contractDB)
 
-  writeBlock blk       = withConn (flip writeDB blk . blockDB)
-  writeBlocks blks     = withConn (flip writeManyDB blks . blockDB)
+  writeBlock blk       = withConn (flip writeBlock blk . (blockDB &&& txDB))
+  writeBlocks blks     = withConn (flip writeBlocks blks . (blockDB &&& txDB))
 
   writeInvalidTx itx   = withConn (flip writeDB itx . invalidTxDB)
   writeInvalidTxs itxs = withConn (flip writeManyDB itxs . invalidTxDB)
@@ -188,7 +190,6 @@ instance (MonadBase IO m) => MonadWriteDB (LevelDBT m) where
 {-
 
 .uplink/
-  HEAD          -- World HEAD hash
 
   contracts/    -- Contracts and local/global state
     contract0
@@ -208,11 +209,17 @@ instance (MonadBase IO m) => MonadWriteDB (LevelDBT m) where
     ...
     acctN
 
-  blocks/       -- Global transacction logs
+  blocks/       -- Global transaction log by block index
     block0
     block1
     ...
     blockN
+
+  txs/          -- Global transaction log by hash
+    hashTx1
+    hashTx2
+    ...
+    hashTxN
 
   invalidTxs/   -- All Transaction rejected by Node
     invalidTx0
@@ -222,10 +229,11 @@ instance (MonadBase IO m) => MonadWriteDB (LevelDBT m) where
 
 -}
 
-newtype AcctDB = AcctDB { unAcctDB :: LevelDB.DB }
-newtype AssetDB = AssetDB { unAssetDB :: LevelDB.DB }
-newtype ContractDB = ContractDB { unContractDB :: LevelDB.DB }
-newtype BlockDB = BlockDB { unBlockDB :: LevelDB.DB }
+newtype AcctDB      = AcctDB { unAcctDB :: LevelDB.DB }
+newtype AssetDB     = AssetDB { unAssetDB :: LevelDB.DB }
+newtype ContractDB  = ContractDB { unContractDB :: LevelDB.DB }
+newtype BlockDB     = BlockDB { unBlockDB :: LevelDB.DB }
+newtype TxDB        = TxDB { unTxDB :: LevelDB.DB }
 newtype InvalidTxDB = InvalidTxDB { unInvalidTxDB :: LevelDB.DB }
 
 -- | A type class for wrapping Level DBs and their paths
@@ -250,6 +258,10 @@ instance LevelDB BlockDB where
   unDB (BlockDB db) = db
   dbPath _ = blockDir
 
+instance LevelDB TxDB where
+  unDB (TxDB db) = db
+  dbPath _ = txDir
+
 instance LevelDB InvalidTxDB  where
   unDB (InvalidTxDB db) = db
   dbPath _ = invalidTxDir
@@ -259,48 +271,52 @@ instance LevelDB InvalidTxDB  where
 --   really storing values of type a, this works
 class (Show (Key a), LevelDB db) => HasDB a db | a -> db where
   type Key a
+
   encodeValue :: a -> ByteString
+  default encodeValue :: S.Serialize a => a -> ByteString
+  encodeValue = S.encode
+
   decodeValue :: ByteString -> Either Text a
+  default decodeValue :: S.Serialize a => ByteString -> Either Text a
+  decodeValue = first toS . S.decode
+
   getKey      :: a -> Key a
-  validate    :: a -> IO Bool
-  {-# MINIMAL encodeValue, decodeValue, validate, getKey #-}
+  validate    :: a -> Bool
+  {-# MINIMAL validate, getKey #-}
 
 instance HasDB Account.Account AcctDB where
   type Key Account.Account = Address
-  encodeValue = S.encode
-  decodeValue = first toS . S.decode
-  getKey      = Account.address
-  validate    = pure . Account.validateAccount
+  getKey   = Account.address
+  validate = Account.validateAccount
 
 instance HasDB Asset.Asset AssetDB where
   type Key Asset.Asset = Address
-  encodeValue = S.encode
-  decodeValue = first toS . S.decode
-  getKey      = Asset.address
+  getKey   = Asset.address
   validate = Asset.validateAsset
 
 instance HasDB Block.Block BlockDB where
   type Key Block.Block = Int
-  encodeValue = S.encode
-  decodeValue = first toS . S.decode
-  getKey      = Block.index
+  getKey   = Block.index
   validate = Block.validateBlockDB
 
 instance HasDB Contract.Contract ContractDB where
   type Key Contract = Address
-  encodeValue = S.encode
-  decodeValue = first toS . S.decode
-  getKey      = Contract.address
-  validate    = Contract.validateContract
+  getKey   = Contract.address
+  validate = Contract.validateContract
+
+instance HasDB Tx.Transaction TxDB where
+  type Key Tx.Transaction = ByteString
+  getKey = Tx.base16HashTransaction
+  validate tx =
+    either (const False) (const True) $
+      Tx.validateTransaction tx
 
 instance HasDB Tx.InvalidTransaction InvalidTxDB where
   type Key Tx.InvalidTransaction = ByteString
-  encodeValue = S.encode
-  decodeValue = first toS . S.decode
-  getKey      = Tx.base16HashInvalidTx
+  getKey = Tx.base16HashInvalidTx
   validate (Tx.InvalidTransaction tx err) =
-    either (const False) (const False) <$>
-      Tx.validateTransaction Tx.TxInvalid tx
+    either (const False) (const True) $
+      Tx.validateTransaction tx
 
 -- | Database cursor references
 data Database = Database
@@ -309,6 +325,7 @@ data Database = Database
   , assetDB     :: AssetDB
   , blockDB     :: BlockDB
   , contractDB  :: ContractDB
+  , txDB        :: TxDB
   , invalidTxDB :: InvalidTxDB
   }
 
@@ -332,8 +349,6 @@ instance Exception LevelDBError
 toWriteFailErr :: Show a => Either a b -> Either LevelDBError b
 toWriteFailErr = first (WriteFail . show)
 
-
-
 -------------------------------------------------------------------------------
 -- Generic Database functions
 -------------------------------------------------------------------------------
@@ -353,12 +368,9 @@ lookupDB db key = do
     Just valBS -> case decodeValue valBS of
       Left err -> pure $ Left $
         MalformedValueAtKey (show key) err
-      Right val -> do
-        isValid <- validate val
-        if isValid then
-          pure $ Right val
-        else pure $ Left $
-          InvalidValueAtKey (show key,show val)
+      Right val
+        | validate val -> pure $ Right val
+        | otherwise -> pure $ Left $ InvalidValueAtKey (show key,show val)
 
 writeDB :: (HasDB a db) => db -> a -> IO (Either LevelDBError ())
 writeDB db val =
@@ -379,13 +391,9 @@ writeManyDB db vals =
         LevelDB.write
           (unDB db)
           LevelDB.defaultWriteOptions
-          batchOps
+          (map mkPut vals)
   where
-    keyBS       = show . getKey
-    valBS       = encodeValue
-    keysAndVals = map (keyBS &&& valBS) vals
-
-    batchOps    = map (uncurry LevelDB.Put) keysAndVals
+    mkPut v = LevelDB.Put (show $ getKey v) (encodeValue v)
 
 -- | Parses all key/value pairs of ByteStrings into Haskell values
 parseAllValues
@@ -453,28 +461,66 @@ write db = LevelDB.write db LevelDB.defaultWriteOptions
 lookup :: LevelDB.DB -> ByteString -> IO (Maybe ByteString)
 lookup db = LevelDB.get db LevelDB.defaultReadOptions
 
-loadDBs :: FilePath -> IO Database
-loadDBs dbpath = do
-  acctDB      <- AcctDB      <$> create (acctDir dbpath)
-  assetDB     <- AssetDB     <$> create (assetDir dbpath)
-  blockDB     <- BlockDB     <$> create (blockDir dbpath)
-  contractDB  <- ContractDB  <$> create (contractDir dbpath)
-  invalidTxDB <- InvalidTxDB <$> create (invalidTxDir dbpath)
+-- | Setup a directory as a LevelDB database. The directory must _not_ already exist.
+-- Locks the database so that other processes cannot read or write from/to the database.
+createDB :: FilePath -> IO (Either Text Database)
+createDB root = do
+  dirExists <- doesDirectoryExist root
+  if dirExists
+     then pure $ Left $ "Directory '" <> toS root <> "' already exists. Not overwriting."
+     else do
+       createDirectoryIfMissing True root
+       db <- createDB' root
+       lockDb root
+       pure $ Right db
+
+-- | Setup a directory as a LevelDB database. The directory must already exist.
+-- Locks the database so that other processes cannot read or write from/to the database.
+createDB' :: FilePath -> IO Database
+createDB' root = do
+  acctDB      <- AcctDB      <$> create (acctDir root)
+  assetDB     <- AssetDB     <$> create (assetDir root)
+  blockDB     <- BlockDB     <$> create (blockDir root)
+  contractDB  <- ContractDB  <$> create (contractDir root)
+  txDB        <- TxDB        <$> create (txDir root)
+  invalidTxDB <- InvalidTxDB <$> create (invalidTxDir root)
   return Database
-    { root        = dbpath
+    { root        = root
     , accountDB   = acctDB
     , assetDB     = assetDB
     , blockDB     = blockDB
     , contractDB  = contractDB
+    , txDB        = txDB
     , invalidTxDB = invalidTxDB
     }
 
+-- | Try to load an existing LevelDB Database from a directory. Locks the
+-- database so that other processes cannot read or write from/to the database.
+loadExistingDB :: FilePath ->  IO (Either Text Database)
+loadExistingDB root = do
+  rootExists <- doesDirectoryExist root
+  if rootExists
+     then do
+       db <- createDB' root
+       -- Test the DB was created successfully
+       integrity <- testDB root
+       if integrity
+          then do
+            lockDb root
+            pure $ Right db
+          else pure $ Left $
+            "Database in " <> toS root <> " is not well-formed."
+     else pure $ Left $
+       "Database does not exist at path " <> toS root <> "."
+
+-- | Close the DBs, removing the validity of all DB handles
 closeDBs :: Database -> IO ()
-closeDBs (Database _ accDB assDB blkDB ctrDB itxDB) = do
+closeDBs (Database _ accDB assDB blkDB ctrDB txDB itxDB) = do
   close $ unDB accDB
   close $ unDB assDB
   close $ unDB blkDB
   close $ unDB ctrDB
+  close $ unDB txDB
   close $ unDB itxDB
 
 -------------------------------------------------------------------------------
@@ -503,6 +549,26 @@ lastNBlocks db n
 -- | Read all blocks (sorted)
 allBlocks :: BlockDB -> IO (Either LevelDBError [Block.Block])
 allBlocks = fmap (fmap Block.sortBlocks) . selectAll
+
+-- | Writes a block and transactions to their respective dbs
+writeBlock :: (BlockDB, TxDB) -> Block.Block -> IO (Either LevelDBError ())
+writeBlock (BlockDB bdb, TxDB txdb) blk =
+    fmap toWriteFailErr $ tryDB $ do
+      write bdb [mkPut blk]
+      write txdb txPuts
+  where
+    mkPut v = LevelDB.Put (show $ getKey v) (encodeValue v)
+    txPuts    = map mkPut (Block.transactions blk)
+
+writeBlocks :: (BlockDB, TxDB) -> [Block.Block] -> IO (Either LevelDBError ())
+writeBlocks (BlockDB bdb, TxDB txdb) blks =
+   fmap toWriteFailErr $ tryDB $ do
+      write bdb blkPuts
+      write txdb txPuts
+ where
+    mkPut v = LevelDB.Put (show $ getKey v) (encodeValue v)
+    blkPuts = map mkPut blks
+    txPuts  = concatMap (map mkPut . Block.transactions) blks
 
 -------------------------------------------------------------------------------
 -- Sync World
@@ -586,7 +652,7 @@ mkDeleteBatchOps dbs = do
   where
     keysToPut = TaggedBatchOps . map (LevelDB.Del . show) . Map.keys
 
-  -------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 -- File System
 -------------------------------------------------------------------------------
 
@@ -602,6 +668,9 @@ assetDir root = root </> "assets"
 acctDir :: FilePath ->  FilePath
 acctDir root = root </> "accounts"
 
+txDir :: FilePath -> FilePath
+txDir root = root </> "txs"
+
 invalidTxDir :: FilePath -> FilePath
 invalidTxDir root = root </> "invalidTxs"
 
@@ -610,43 +679,6 @@ currentFile = "CURRENT"
 
 lockingFile :: FilePath
 lockingFile = "LOCK"
-
--- | Setup a folder as a database or load an existing database. Locks the
--- database so that other processes cannot read or write from/to the database.
-setupDB :: FilePath -> IO (Either Text Database)
-setupDB dbpath = do
-  rootExists <- doesDirectoryExist dbpath
-  if rootExists then do
-    db <- loadDBs dbpath
-    integrity <- testDB dbpath
-    if integrity then do
-      lockDb dbpath
-      pure (Right db)
-    else pure $ Left $
-      "Database in " <> show dbpath <> " is not well-formed."
-  else do
-    db <- newDB dbpath
-    lockDb (root db)
-    pure $ Right db
-
--- | Setup a folder as a database
--- Warning: Does not lock the database
-newDB :: FilePath -> IO Database
-newDB root = do
-
-  -- Setup directories
-  createDirectoryIfMissing True root
-  createDirectoryIfMissing True (blockDir root)
-  createDirectoryIfMissing True (contractDir root)
-  createDirectoryIfMissing True (assetDir root)
-  createDirectoryIfMissing True (acctDir root)
-  createDirectoryIfMissing True (invalidTxDir root)
-
-  -- Setup files
-  writeFile (root </> "HEAD") mempty
-
-  -- Setup databases
-  loadDBs root
 
 -- | Wipes entire existing DB without prompt
 -- Warning: Wipes current DB with no prompting and no exception handling
@@ -659,12 +691,10 @@ resetDB db = do
     then do
       closeDBs db
       deleteDBs_ db
-      newDB $ root db
+      createDB $ root db
       pure $ Right ()
     else do
-      pure $ Left $
-        DBDoesNotExist $
-          show $ root db
+      pure $ Left $ DBDoesNotExist $ toS $ root db
 
 -- | Destroy all the databases and wipes the directory that was
 -- used as the database (used during resetDB).
@@ -680,6 +710,7 @@ deleteDBs_ db = do
     destroy' (assetDB db)
     destroy' (contractDB db)
     destroy' (blockDB db)
+    destroy' (txDB db)
     destroy' (invalidTxDB db)
   where
     destroy' :: LevelDB a => a -> IO ()
@@ -696,16 +727,15 @@ testDB root = and <$> sequence [
   , doesDirectoryExist (contractDir root)
   , doesDirectoryExist (assetDir root)
   , doesDirectoryExist (acctDir root)
+  , doesDirectoryExist (txDir root)
   , doesDirectoryExist (invalidTxDir root)
-
-   -- Check files
-  , doesFileExist (root </> "HEAD")
 
    -- Check databases
   , doesFileExist (blockDir root     </> currentFile)
   , doesFileExist (contractDir root  </> currentFile)
   , doesFileExist (assetDir root     </> currentFile)
   , doesFileExist (acctDir root      </> currentFile)
+  , doesFileExist (txDir root        </> currentFile)
   , doesFileExist (invalidTxDir root </> currentFile)
   ]
 

@@ -6,11 +6,13 @@
         "contents": {
             "tag": "Bind",
             "contents": {
-                "proof": "AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE05ODI0NTI4MDUyMjAwMzUwNTY0NDc5NzY3MDg0MzEwNzI3NjEzMjYwMjA1MDEzMzA4MjYyNTc2ODcwNjQ5MTYwMjg3NTcyNTc4ODQ2Nw==",
+                "proof": [
+                    "115136800820456833737994126771386015026287095034625623644186278108926690779567",
+                    "98245280522003505644797670843107276132602050133082625768706491602875725788467"
+                ],
                 "asset": "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB",
                 "contract": "7mR5d7s6cKB4qjuX1kiwwNtygfURhFQ9TKvEd9kmq6QL"
             }
         }
-    },
-    "timestamp": 1231006505
+    }
 }

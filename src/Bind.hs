@@ -20,7 +20,6 @@ import Asset
 import Address
 import Account
 import Contract
-import Derivation
 
 import Data.Serialize as S
 
@@ -48,6 +47,6 @@ checkBind c act asset prf = test
     test :: Bool
     test = and [
         Key.verify (publicKey act) (mkSignatureRS (r,s)) (S.encode prf)
-      , addrAccount act == assetAddr prf
-      , addrContract c == contractAddr prf
+      , Account.address act == assetAddr prf
+      , Contract.address c == contractAddr prf
       ]

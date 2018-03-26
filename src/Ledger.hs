@@ -17,6 +17,7 @@ module Ledger (
   ContractError(..),
   genesisWorld,
   mkWorld,
+  loadLedgerFromJSON,
 
   -- ** Accounts
   lookupAccount,
@@ -47,7 +48,7 @@ import Protolude hiding (from, to, get, put)
 import Control.Monad.State
 import Control.Arrow ((&&&))
 
-import Data.Aeson (ToJSON, FromJSON)
+import Data.Aeson (ToJSON, FromJSON, eitherDecode)
 import Data.Serialize (Serialize, encode)
 import qualified Data.Map as Map
 
@@ -63,6 +64,7 @@ import qualified Account
 import qualified Contract
 import qualified Address
 import qualified Storage
+import qualified Utils
 
 -------------------------------------------------------------------------------
 -- Ledger State
@@ -137,6 +139,17 @@ mkWorld assets accounts contracts =
     assetsMap    = valToKeyValMap Asset.address assets
     accountsMap  = valToKeyValMap Account.address accounts
     contractsMap = valToKeyValMap Contract.address contracts
+
+loadLedgerFromJSON :: FilePath -> IO (Either Text World)
+loadLedgerFromJSON fp = do
+  eLedgerJSON <- Utils.safeReadLazy fp
+  case eLedgerJSON of
+    Left err -> pure $ Left err
+    Right ledgerJSON ->
+      case eitherDecode ledgerJSON of
+        Left err -> pure $ Left $
+          "Failed to decode Uplink Ledger from JSON:\n   " <> toS err
+        Right ledger -> pure $ Right ledger
 
 -------------------------------------------------------------------------------
 -- Polymorphic Funcs

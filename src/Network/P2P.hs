@@ -58,7 +58,7 @@ import qualified Utils
 import qualified Asset
 import qualified Ledger
 import qualified Script
-
+import qualified SafeString
 import qualified Config
 import qualified Account
 import qualified Block
@@ -217,7 +217,7 @@ mainProcess = do
         NodeState.Existing -> return ()
         NodeState.New      -> do
           nodeAcc <- NodeState.askAccount
-          let pub      = Key.unHexPub $ Key.hexPub $ Account.publicKey nodeAcc
+          let pub      = SafeString.fromBytes' $ Key.unHexPub $ Key.hexPub $ Account.publicKey nodeAcc
               tz       = Account.timezone nodeAcc
               md       = Account.metadata nodeAcc
               accTxHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
@@ -283,7 +283,7 @@ supervisorProc procs = do
         Just servInfo@(ServiceInfo s mref proc) -> do
           let servName = show s
           -- Fully kill the process
-          Log.warning $ "[Supervisor] " <> servName <> " service died. Cleaning up..."
+          Log.warning $ "[Supervisor] " <> servName <> " service died:\n   " <> show died
           killService oldPid servInfo
           -- Start new instance of same process
           (newPid, newServInfo) <- spawnService s proc

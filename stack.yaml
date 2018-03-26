@@ -23,10 +23,14 @@ packages:
     git: https://github.com/adjoint-io/merkle-tree.git
     commit: a942ee26f56d24473757af5d1bda48c39b2ebd44
   extra-dep: true
+- location:
+    git: https://github.com/sdiehl/repline.git
+    commit: 3474422d974cb264aa96fcfaae31e1969b134815
+  extra-dep: true
 
 extra-deps:
 - protolude-0.2.1
-- repline-0.1.7.0
+#- repline-0.1.7.0
 - pretty-hex-1.0
 - base58-bytestring-0.1.0
 - template-haskell-2.11.1.0

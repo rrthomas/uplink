@@ -94,7 +94,6 @@ module Key (
 
   getSignatureRS,
   mkSignatureRS,
-  hexRS,
 
   -- ** Diffie-Hellman
   DH.SharedKey(..),
@@ -449,9 +448,6 @@ getSignatureRS (ECDSA.Signature r s) = (r,s)
 -- | Transform (r,s) into `ECDSA.Signature r s` ( UNSAFE )
 mkSignatureRS :: (Integer, Integer) -> ECDSA.Signature
 mkSignatureRS (r,s) = ECDSA.Signature r s -- XXX position is invalid; function only used in Script/Eval.hs so far
-
-hexRS :: (Integer, Integer) -> ByteString
-hexRS (r,s) = Key.encodeSig (Key.mkSignatureRS (r,s))
 
 instance Hash.Hashable PubKey where
   toHash  = Hash.toHash . extractPoint

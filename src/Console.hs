@@ -54,6 +54,6 @@ handleConsoleInput node cmdProcId input =
 runConsole :: LocalNode -> ProcessId -> ConsoleState -> IO ()
 runConsole node cmdProcId consoleState =
     runConsoleT consoleState $
-      evalRepl ">>> " handleConsoleInput' [] completion (pure ())
+      evalRepl ">>> " handleConsoleInput' [] Nothing completion (pure ())
   where
     handleConsoleInput' = unConsoleM . handleConsoleInput node cmdProcId

@@ -203,7 +203,7 @@ validateAddress (Address s) = case unb58 s of
 parseAddress :: ByteString -> Address
 parseAddress = fromRaw
 
--- | XXXX why do we have two of these
+-- | XXX why do we have two of these
 parseAddr :: ByteString -> Maybe Address
 parseAddr bs =
   let addr = Address bs

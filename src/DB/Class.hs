@@ -65,6 +65,8 @@ class MonadDB m => MonadReadDB m where
   readBlocks      :: m (Either (DBError m) [Block])
   readLastNBlocks :: Int -> m (Either (DBError m) [Block])
 
+  readTransaction :: ByteString -> m (Either (DBError m) Transaction)
+
   readInvalidTx   :: ByteString -> m (Either (DBError m) InvalidTransaction)
   readInvalidTxs  :: m (Either (DBError m) [InvalidTransaction])
 

@@ -16,9 +16,30 @@ module Network.P2P.Simulate (
   SimulationMsg(..),
   SimulationError(..),
   SimulationSuccess(..),
+  SimKey,
+  CreateSimulation(..),
+  CreateSimulationError(..),
+  CreateSimulationSuccess(..),
+
+  UpdateSimulation(..),
+  UpdateSimulationError(..),
+  ModifyTimestamp'(..),
+  CallMethod'(..),
+
+  QuerySimulation(..),
+  QuerySimulationError(..),
+  QuerySimulationSuccess(..),
+  QueryMethods'(..),
+  QueryContract'(..),
+  QueryLedgerState'(..),
+  QueryAssets'(..),
+
+  CallMethodError(..),
 
   commSimulationProc,
-  commSimulationProc'
+  commSimulationProc',
+
+  commSimulationRemoteProc
 ) where
 
 import Protolude hiding (Type, TypeError, put, get, evalState, newChan)
@@ -52,16 +73,18 @@ import Block       (Block(..), BlockHeader(..))
 import SafeString  (SafeString, toBytes)
 import Script      (Script, Value, Name, Method(..), Arg, Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
 import Script.Typecheck (Sig, TypeErrInfo, tcMethod)
-import Script.Init (createContract)
+import Script.Init (createFauxContract)
 import Script.Eval (EvalCtx, EvalState, runEvalM, eval, initEvalState)
 import Script.Error (EvalFail)
 import Script.Pretty (prettyPrint)
+
 import Script.Parser (parseTimeDelta)
 import Time        (Timestamp)
 import NodeState   (NodeT, getLedger)
 import qualified Homomorphic as Homo
 
 import Network.P2P.Service (Service(Simulation))
+import qualified Network.Utils as NUtils
 import qualified Network.P2P.Logging as Log
 
 import qualified Contract as C
@@ -282,6 +305,7 @@ data QuerySimulation
   | QueryMethods       QueryMethods'
   | QueryAssets        QueryAssets'
   | QueryAsset         QueryAsset'
+  | QueryLedgerState   QueryLedgerState'
   deriving (Show, Generic, Typeable, B.Binary)
 
 data QuerySimulationError
@@ -293,16 +317,18 @@ type QuerySimulationResult = Either QuerySimulationError QuerySimulationSuccess
 instance Simulatable QuerySimulation where
   type SimulationResult QuerySimulation = QuerySimulationResult
   simulate sc = \case
-    QueryContract qc -> Right . Contract         <$> simulate sc qc
-    QueryMethods qmm -> Right . ContractMethods  <$> simulate sc qmm
-    QueryAssets  qam -> Right . SimulationAssets <$> simulate sc qam
-    QueryAsset   qam -> bimap QueryAssetError SimulationAsset  <$> simulate sc qam
+    QueryContract    qc   -> Right . Contract         <$> simulate sc qc
+    QueryMethods     qmm  -> Right . ContractMethods  <$> simulate sc qmm
+    QueryAssets      qam  -> Right . SimulationAssets <$> simulate sc qam
+    QueryAsset       qam  -> bimap QueryAssetError SimulationAsset <$> simulate sc qam
+    QueryLedgerState qlsm -> Right . LedgerState      <$> simulate sc qlsm
 
 data QuerySimulationSuccess
   = Contract C.Contract
   | ContractMethods  [(Name,[(Name,Type)])]
   | SimulationAssets [Asset]
   | SimulationAsset  Asset
+  | LedgerState      World
   deriving (Show, Generic, Typeable, S.Serialize)
 
 instance B.Binary QuerySimulationSuccess where
@@ -362,6 +388,16 @@ instance Simulatable QueryAsset' where
     pure $ case Ledger.lookupAsset addr world of
       Left err    -> Left (AssetDoesNotExist addr)
       Right asset -> Right asset
+
+-- Query the entire Ledger State
+--------------------------------------------------------------------------------
+
+data QueryLedgerState' = QueryLedgerState'
+  deriving (Show, Generic, Typeable, B.Binary)
+
+instance Simulatable QueryLedgerState' where
+  type SimulationResult QueryLedgerState' = World
+  simulate sc QueryLedgerState' = pure $ Eval.worldState $ evalState sc
 
 --------------------------------------------------------------------------------
 -- Simulation Process
@@ -434,11 +470,11 @@ handleSimulationMsg sims (sp, simMsg) =
         nodePrivKey <- N.askPrivateKey
         nodeAddr <- N.askSelfAddress
         contractTs <- liftBase Time.now
-        let rawScript = decodeUtf8 $ SafeString.toBytes scriptSS
+        let rawScript = toS $ SafeString.toBytes scriptSS
 
         eContract
           <- liftBase
-             $ createContract
+             $ createFauxContract
                  blockIdx
                  blockTs
                  nodeAddr
@@ -507,6 +543,15 @@ commSimulationProc' timeout simMsg = do
   (sp,rp) <- newChan
   nsend (show Simulation) (sp, simMsg)
   receiveChanTimeout timeout rp
+
+-- | Like `commSimulationProc` but sends to a remote simulation process.
+commSimulationRemoteProc
+  :: MonadProcessBase m
+  => ProcessId
+  -> SimulationMsg
+  -> m SimulationMsgResult
+commSimulationRemoteProc = NUtils.commProc
+
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -622,6 +667,8 @@ instance A.FromJSON QuerySimulation where
         "QueryAsset" -> do
           contents <- v .: "contents"
           pure $ QueryAsset $ QueryAsset' contents
+        "QueryLedgerState" ->
+          pure $ QueryLedgerState QueryLedgerState'
         invalid -> typeMismatch "QuerySimulation" invalid
     invalid  -> typeMismatch "QuerySimulation" invalid
 
@@ -643,3 +690,4 @@ instance A.ToJSON QuerySimulationSuccess where
       (prettyPrint nm, map (bimap prettyPrint prettyPrint) atys)
   toJSON (SimulationAssets as) = A.toJSON as
   toJSON (SimulationAsset a)   = A.toJSON a
+  toJSON (LedgerState world)   = A.toJSON world

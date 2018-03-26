@@ -46,7 +46,8 @@ module Block (
 
 import Protolude
 import Unsafe (unsafeFromJust)
-import Data.Aeson (ToJSON(..), object, (.=))
+import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:))
+import Data.Aeson.Types (Value(..), typeMismatch)
 import Data.Serialize (Serialize, encode)
 import Data.Hashable (Hashable(..))
 import qualified Data.Serialize as Serialize
@@ -222,18 +223,13 @@ data InvalidBlockReason
 -- 4. Transaction list matches hash
 -- 5. Merkle root validated
 -- 6. Previous block hash is correct
-validateBlock :: Time.Timestamp -> Block -> Block -> IO (Either InvalidBlock ())
-validateBlock medianTs prevBlock Block{..} = do
-  validTxs <- mapM (Tx.validateTransaction $ Tx.TxBlock blockTs) transactions
-  let blockIsValid = do
-        first InvalidBlockTx $ sequence validTxs
-        validateMerkleRoot
-        validateTimestamp
-        validatePrevHash
-
-  case blockIsValid of
-    Left err -> return $ Left $ InvalidBlock index err
-    Right _  -> return $ Right ()
+validateBlock :: Time.Timestamp -> Block -> Block -> Either InvalidBlock ()
+validateBlock medianTs prevBlock Block{..} =
+    first (InvalidBlock index) $ do
+      validateMerkleRoot
+      validateTimestamp
+      validatePrevHash
+      validateTransactions
   where
     txHashes = map Tx.base16HashTransaction transactions
     mRoot    = Merkle.mtHash $ Merkle.mkMerkleTree txHashes
@@ -253,15 +249,18 @@ validateBlock medianTs prevBlock Block{..} = do
       | prevHash header == prevHash' = Right ()
       | otherwise = Left $ InvalidPrevBlockHash (prevHash header) prevHash'
 
+    validateTransactions =
+      first InvalidBlockTx $
+        mapM_ Tx.validateTransaction transactions
+
 -- | Only used when validating a block being read from DB
 -- XXX: Come up with block integrity check, previous one not correct
-validateBlockDB :: Block -> IO Bool
+validateBlockDB :: Block -> Bool
 validateBlockDB block =
-    either (const False) (const True) . sequence <$>
-      mapM validateTx (transactions block)
+    either (const False) (const True) . sequence $
+      map Tx.validateTransaction (transactions block)
   where
     blockTs = timestamp $ header block
-    validateTx = Tx.validateTransaction $ Tx.TxBlock blockTs
 
 validateChain :: [Block] -> IO (Either InvalidBlock ())
 validateChain [] = pure $ Right ()
@@ -269,11 +268,11 @@ validateChain blks@(b:bs) = do
   case medianTimestamps of
     Left err -> pure $ Left $
       InvalidBlock (index b) $ InvalidMedianTimestamp $ toS err
-    Right tss -> do
-      validBlocks <- zipWithM validateBlock' tss descBlkPairs
-      case sequence validBlocks of
-        Left err -> return $ Left err
-        Right _  -> return $ Right ()
+    Right tss ->
+      let validBlocks = zipWith validateBlock' tss descBlkPairs
+       in case sequence validBlocks of
+            Left err -> return $ Left err
+            Right _  -> return $ Right ()
   where
     descBlks = sortBy (flip compare) blks
     descBlkPairs = zip (fromMaybe [] $ tailMay descBlks) descBlks
@@ -327,6 +326,17 @@ instance ToJSON Block where
     , "transactions" .= transactions b
     ]
 
+instance FromJSON Block where
+  parseJSON v =
+    case v of
+      Object o -> do
+        header       <- o .: "header"
+        signatures   <- Set.fromList <$>  o .: "signatures"
+        index        <- o .: "index"
+        transactions <- o .: "transactions"
+        pure $ Block {..}
+      invalid -> typeMismatch "Block" v
+
 instance ToJSON BlockHeader where
   toJSON bh = object
     [ "origin"     .= origin bh
@@ -335,11 +345,35 @@ instance ToJSON BlockHeader where
     , "timestamp"  .= timestamp bh
     , "consensus"  .= consensus bh
     ]
+
+instance FromJSON BlockHeader where
+  parseJSON v =
+    case v of
+      Object o -> do
+        origin     <- o .: "origin"
+        prevHash   <- encodeUtf8 <$> o .: "prevHash"
+        merkleRoot <- encodeUtf8 <$> o .: "merkleRoot"
+        timestamp  <- o .: "timestamp"
+        consensus  <- o .: "consensus"
+        pure $ BlockHeader {..}
+      invalid -> typeMismatch "BlockHeader" v
+
 instance ToJSON BlockSignature where
   toJSON (BlockSignature sig addr) = object
     [ "signature"  .= decodeUtf8 (Key.encodeSig sig)
     , "signerAddr" .= addr
     ]
+
+instance FromJSON BlockSignature where
+  parseJSON = \case
+    Object v -> do
+      signatureTxt <- v .: "signature"
+      case Key.decodeSig (encodeUtf8 signatureTxt) of
+        Left err -> typeMismatch "Signature" (String signatureTxt)
+        Right sig -> do
+          signerAddr <- v .: "signerAddr"
+          pure $ BlockSignature sig signerAddr
+    invalid -> typeMismatch "BlockSignature" invalid
 
 instance Serialize BlockSignature where
   put (BlockSignature sig addr) = do

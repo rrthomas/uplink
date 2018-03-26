@@ -56,8 +56,9 @@ import Data.Hashable
 import Data.Scientific
 import Data.Serialize as S (Serialize, encode, decode, put, get)
 import Data.Aeson (FromJSONKey(..), ToJSONKey(..), ToJSON(..), FromJSON(..), object, (.=), (.:))
-import Data.Aeson.Types (typeMismatch, toJSONKeyText)
+import Data.Aeson.Types (Parser, typeMismatch, toJSONKeyText)
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Types as A
 import qualified Data.Map as Map
 import qualified Data.HashMap.Strict as HM
 import qualified Data.ByteString as BS
@@ -199,12 +200,13 @@ instance FromJSON Value where
               Nothing -> typeMismatch "Invalid date format, expecting ISO8601, given:" v
         "VTimeDelta" -> VTimeDelta  <$> o .: "contents"
         "VSig"      -> VSig      <$> o .: "contents"
-        "VCrypto"   -> VCrypto   <$> o .: "contents"
+        "VCrypto"   -> VCrypto   <$> fmap toSafeInteger' (o .: "contents" :: Parser Integer)
         "VFixed"    -> VFixed    <$> o .: "contents"
         "VMsg"      -> VMsg      <$> o .: "contents"
         "VEnum"     -> VEnum     <$> o .: "contents"
         "VVoid"     -> pure VVoid
-        _           -> typeMismatch "Cannot parse object." v
+        "VUndefined" -> pure VUndefined
+        tag -> typeMismatch "Value tag as a string" v
 
 instance ToJSONKey Key where
   toJSONKey = toJSONKeyText (decodeUtf8 . unKey)

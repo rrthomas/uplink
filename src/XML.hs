@@ -126,14 +126,13 @@ xpConsensus =
 
 xpTransaction :: PU [Node Text Text] Transaction
 xpTransaction =
-   xpWrap (\((signature, origin, timestamp), header) -> Transaction header (encodeUtf8 signature) origin timestamp,
-           \(Transaction header signature origin timestamp) -> ((decodeUtf8 signature, origin, timestamp), header)) $
+   xpWrap (\((signature, origin), header) -> Transaction header (encodeUtf8 signature) origin,
+           \(Transaction header signature origin) -> ((decodeUtf8 signature, origin), header)) $
    xpElem "transaction"
-       (xpTriple
+       (xpPair
            (xpAttr "signature" xpText0)
            (xpAttr "origin" xpPrim)
-           (xpAttr "timestamp" xpPrim))
-       xpTransactionHeader
+       ) xpTransactionHeader
 
 xpTransactionHeader :: PU [UNode Text] TransactionHeader
 xpTransactionHeader =
@@ -151,14 +150,12 @@ xpTxContract :: PU [UNode Text] TxContract
 xpTxContract =
   xpAlt tag ps
   where
-    tag (CreateContract _ _) = 0
+    tag (CreateContract _) = 0
     tag (SyncLocal _ _) = 1
     tag (Call  _ _ _) = 2
-    ps = [ xpWrap (\(address, contract) -> CreateContract address (SafeString.fromBytes' contract),
-                    \(CreateContract address contract) -> (address, SafeString.toBytes contract))
-            $ xpElem "CreateContract"
-              (xpAttr "address" xpAddress)
-              (xpContent xpPrim)
+    ps = [ xpWrap (\contract -> CreateContract (SafeString.fromBytes' contract),
+                    \(CreateContract contract) -> (SafeString.toBytes contract))
+            $ xpElemNodes "CreateContract" (xpContent xpPrim)
           , xpWrap (\(address, op) -> SyncLocal address op,
             \(SyncLocal address op) -> (address, op))
             $ xpElem "SyncLocal"(xpAttr "address" xpAddress) xpSyncLocal
@@ -248,22 +245,21 @@ xpTxAsset :: PU [UNode Text] TxAsset
 xpTxAsset =
   xpAlt tag ps
   where
-    tag (CreateAsset _ _ _ _ _ _) = 0
-    tag (Transfer _ _ _)          = 1
-    tag (Circulate _ _)           = 2
-    tag (Bind  _ _ _)             = 3
-    tag (RevokeAsset _)           = 4
+    tag (CreateAsset _ _ _ _ _) = 0
+    tag (Transfer _ _ _)        = 1
+    tag (Circulate _ _)         = 2
+    tag (Bind  _ _ _)           = 3
+    tag (RevokeAsset _)         = 4
 
     getPrec :: AssetType -> Maybe Fixed.PrecN
     getPrec type_  = case type_ of
       Fractional p -> Just p
       _            -> Nothing
 
-    ps = [ xpWrap (\((addr, name, supply, reference, type_, prec), metadata) -> CreateAsset addr (SafeString.fromBytes' name) supply (fmap toEnum reference) type_ metadata,
-                  \(CreateAsset addr name supply reference type_ metadata) -> ((addr, (SafeString.toBytes name), supply, (fmap fromEnum reference), type_, getPrec type_), metadata))
+    ps = [ xpWrap (\((name, supply, reference, type_, prec), metadata) -> CreateAsset (SafeString.fromBytes' name) supply (fmap toEnum reference) type_ metadata,
+                  \(CreateAsset name supply reference type_ metadata) -> (((SafeString.toBytes name), supply, (fmap fromEnum reference), type_, getPrec type_), metadata))
           $ xpElem "CreateAsset"
-              (xp6Tuple
-              (xpAttr "assetAddr" xpAddress)
+              (xp5Tuple
               (xpAttr "assetName" xpPrim)
               (xpAttr "supply" xpPrim)
               (xpOption $ xpAttr "reference" xpPrim)

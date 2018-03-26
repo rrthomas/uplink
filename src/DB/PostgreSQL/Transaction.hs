@@ -62,7 +62,6 @@ data TransactionRow = TransactionRow
   , txHeader     :: TransactionHeader
   , txSignature  :: ByteString
   , txOrigin     :: Address
-  , txTimestamp  :: Int64
   } deriving (Generic)
 
 instance ToRow TransactionRow
@@ -77,19 +76,18 @@ transactionToRowType blockIdx tx@Transaction{..} =
     , txHeader     = header
     , txSignature  = signature
     , txOrigin     = origin
-    , txTimestamp  = timestamp
     }
   where
     getTxType txHdr =
       case txHdr of
         TxContract txc ->
           case txc of
-            TX.CreateContract _ _ -> "CreateContract"
+            TX.CreateContract _ -> "CreateContract"
             TX.SyncLocal _ _      -> "SyncLocal"
             TX.Call _ _ _         -> "Call"
         TxAsset txa    ->
           case txa of
-            TX.CreateAsset _ _ _ _ _ _ -> "CreateAsset"
+            TX.CreateAsset _ _ _ _ _ -> "CreateAsset"
             TX.Transfer _ _ _        -> "Transfer"
             TX.Circulate _ _         -> "Circulate"
             TX.Bind _ _ _            -> "Bind"
@@ -105,7 +103,6 @@ rowTypeToTransaction TransactionRow{..} = do
     { header    = txHeader
     , signature = txSignature
     , origin    = txOrigin
-    , timestamp = txTimestamp
     }
 
 --------------------------------------------------------------------------------
@@ -159,7 +156,7 @@ insertTransactionRows
   -> [TransactionRow]
   -> IO (Either PostgreSQLError Int64)
 insertTransactionRows conn txRows =
-  executeManySafe conn "INSERT INTO transactions VALUES (?,?,?,?,?,?,?)" txRows
+  executeManySafe conn "INSERT INTO transactions VALUES (?,?,?,?,?,?)" txRows
 
 --------------------------------------------------------------------------------
 -- Deletions

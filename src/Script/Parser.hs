@@ -21,9 +21,10 @@ module Script.Parser (
   parseTimeDelta,
   parseDateTime,
 
+
   expr,
   callExpr,
-
+  datetimeParser,
   -- ** Parser Errors
   ParseError,
   ParseErrInfo(..),
@@ -38,6 +39,7 @@ module Script.Parser (
   lit,
   commaSep,
   parens,
+  name,
 
   testParse,
   ) where

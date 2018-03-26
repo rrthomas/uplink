@@ -24,7 +24,6 @@ import qualified Asset
 import qualified Key
 import qualified NodeState
 import qualified Time
-import qualified Derivation
 import qualified Network.P2P.Message as Message
 import qualified Network.P2P.Cmd as Cmd
 
@@ -65,14 +64,20 @@ txAssetTests =
               -- XXX Initialize ApplyCtx in a better way
               genesisBlk <- run Ref.testGenesis
               let applyCtx = Validate.ApplyCtx genesisBlk addr1 acc1PrivKey
-              run $ Validate.applyTransactions applyCtx world [tx]
+              let applyState = Validate.initApplyState world
+              run $
+                Validate.execApplyT applyState applyCtx $
+                  mapM_ Validate.applyTransaction [tx]
 
         let mkCirculateTx amnt world = do
               let hdr = Transaction.TxAsset (Transaction.Circulate assetAddr amnt)
               tx <- run $ Transaction.newTransaction addr1 acc1PrivKey hdr
               genesisBlk <- run Ref.testGenesis
               let applyCtx = Validate.ApplyCtx genesisBlk addr1 acc1PrivKey
-              run $ Validate.applyTransactions applyCtx world [tx]
+              let applyState = Validate.initApplyState world
+              run $
+                Validate.execApplyT applyState applyCtx $
+                  mapM_ Validate.applyTransaction [tx]
 
         -- Transfer Asset supply to issuer holdings:
         (world1, errs1, _) <- mkCirculateTx 50000 assetWorld

@@ -1,5 +1,6 @@
 module Console.Parser (
   parseConsoleCmd,
+  addressParser
 ) where
 
 import Protolude hiding ((<|>), try, optional)

@@ -51,6 +51,7 @@ module Script.Pretty (
   assign,
   token,
   spaced,
+  punctuate,
 
   -- ** Testing
   testPpr,

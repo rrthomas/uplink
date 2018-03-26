@@ -39,6 +39,7 @@ import Crypto.Number.Serialize (os2ip, i2ospOf_)
 import Data.Serialize as S
 import Data.ByteString.Char8 as B
 import Data.Aeson hiding (encode)
+import Data.Aeson.Types (typeMismatch)
 import qualified Hash
 import qualified Data.Aeson as A
 
@@ -94,16 +95,14 @@ toBytes :: SafeString -> ByteString
 toBytes (SafeString s) = s
 
 instance ToJSON SafeString where
-  toJSON (SafeString bs) =
-    toJSON $ decodeUtf8 bs
+  toJSON = toJSON . decodeUtf8 . toBytes
 
 instance FromJSON SafeString where
   parseJSON (String str) =
     case fromBytes (encodeUtf8 str) of
       Left err -> fail $ show err
       Right ss -> pure ss
-
-  parseJSON _ = fail "parseJSON SafeString fail"
+  parseJSON invalid = typeMismatch "SafeString" invalid
 
 {- Serialization Note:
 

@@ -46,7 +46,7 @@ instance ToJSON PrecN where
   toJSON p = toJSON (fromEnum p + 1)
 
 instance FromJSON PrecN where
-  parseJSON = fmap (toEnum . (+1)) . parseJSON
+  parseJSON = fmap (toEnum . (\x -> x - 1)) . parseJSON
 
 instance Serialize PrecN
 instance Hashable PrecN

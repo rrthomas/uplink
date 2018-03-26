@@ -11,7 +11,7 @@ module Network.P2P.Consensus (
 
 ) where
 
-import Protolude hiding (newChan)
+import Protolude hiding (link)
 
 import Control.Monad (fail)
 import Control.Monad.Base (liftBase)
@@ -66,7 +66,7 @@ consensusProc msgService = do
     register "consensusproc" =<< getSelfPid
     Log.info "Consensus process started."
 
-    spawnLocal blockGenProc
+    link =<< spawnLocal blockGenProc
     consensusProc'
   where
     -- Process that handles Consensus messages
@@ -86,8 +86,9 @@ consensusProc msgService = do
       -- Validate block with respect to ledger state
       ledgerValid <-
         NodeState.withApplyCtx $ \applyCtx ->
-          NodeState.withLedgerState $ \world ->
-            liftIO $ V.validateBlock applyCtx world block
+          NodeState.withLedgerState $ \ledgerState -> lift $ do
+            let applyState = V.initApplyState ledgerState
+            V.verifyValidateAndApplyBlock applyState applyCtx block
 
       let bidxStr = show $ Block.index block
       let borigStr = show $ Block.origin $ Block.header block

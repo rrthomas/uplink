@@ -45,7 +45,6 @@ import Time (Timestamp, posixMicroSecsToDatetime)
 import Ledger (World)
 import Storage
 import Contract (Contract, LocalStorageVars(..))
-import Derivation (addrContract')
 import Account (Account,  address, publicKey)
 import Script.Prim (PrimOp(..))
 import Script.Error as Error

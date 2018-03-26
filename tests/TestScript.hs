@@ -273,38 +273,42 @@ scriptGoldenTests = testGroup "Script Compiler Golden Tests"
                "init"
     , goldenVsStringDiff "Eval crypto vals outputs correct deltas" differ evalCryptoOutFile $ do
         Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
-        eSigs <- Compile.compileFile evalCryptoFile
-        case eSigs of
+        eBS <- Utils.safeRead evalCryptoFile
+        case eBS of
           Left err -> return $ toSL err
-          Right (_,s) -> do
+          Right bs -> do
             now <- Time.now
-            contract <- Init.scriptToContract
-                          0
-                          now
-                          Ref.testAddr
-                          (Transaction.signature $ Ref.testTx Ref.testCall)
-                          Ref.testAddr
-                          Ref.testPriv
-                          now
-                          Ref.testAddr
-                          Ledger.genesisWorld
-                          s
-            let gstore = Storage.GlobalStorage $ encryptStorage pub $
-                  Storage.unGlobalStorage $ Contract.globalStorage contract
-            let contract' = contract { Contract.globalStorage = gstore }
-            now <- Time.now
-            evalCtx <- initTestEvalCtx pub
-            let evalState = Eval.initEvalState contract' Ledger.genesisWorld
-            case Script.lookupMethod "f" s of
-              Nothing -> fail "Could not find method"
-              Just method -> do
-                eResEvalState <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
-                case eResEvalState of
-                  Left err -> return $ show err
-                  Right resEvalState -> do
-                    let dglobalStore = decryptStorage priv pub $
-                          Eval.globalStorage resEvalState
-                    return $ toSL $ Utils.ppShow dglobalStore
+            eContract <-
+              Init.createFauxContract
+                0
+                now
+                Ref.testAddr
+                (Transaction.signature $ Ref.testTx Ref.testCall)
+                Ref.testAddr
+                Ref.testPriv
+                now
+                Ref.testAddr
+                Ledger.genesisWorld
+                (toS bs)
+            case eContract of
+              Left err -> return $ toSL err
+              Right contract -> do
+                let gstore = Storage.GlobalStorage $ encryptStorage pub $
+                      Storage.unGlobalStorage $ Contract.globalStorage contract
+                let contract' = contract { Contract.globalStorage = gstore }
+                now <- Time.now
+                evalCtx <- initTestEvalCtx pub
+                let evalState = Eval.initEvalState contract' Ledger.genesisWorld
+                case Contract.lookupContractMethod "f" contract of
+                  Left err -> fail $ show err
+                  Right method -> do
+                    eResEvalState <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
+                    case eResEvalState of
+                      Left err -> return $ show err
+                      Right resEvalState -> do
+                        let dglobalStore = decryptStorage priv pub $
+                              Eval.globalStorage resEvalState
+                        return $ toSL $ Utils.ppShow dglobalStore
 
     , goldenVsStringDiff "Compile escrow.s" differ escrowOutFile $ do
         eSigs <- Compile.compileFile escrowFile
@@ -363,35 +367,38 @@ evalTest
   -> FilePath -- ^ expected output
   -> Name -- ^ method name to test (assumed to have no arguments)
   -> TestTree
-evalTest testName inputFp outputFp testMethodName
-  = goldenVsStringDiff testName differ outputFp $ do
-      eSigs <- Compile.compileFile inputFp
-      case eSigs of
-        Left err -> return $ toSL err
-        Right (_,s) -> do
-          now <- Time.now
-          Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
-          contract <- Init.scriptToContract
-                        0
-                        now
-                        Ref.testAddr
-                        (Transaction.signature $ Ref.testTx Ref.testCall)
-                        Ref.testAddr
-                        Ref.testPriv
-                        now
-                        Ref.testAddr
-                        Ledger.genesisWorld
-                        s
-          evalCtx <- initTestEvalCtx pub
-          let evalState = Eval.initEvalState contract Ledger.genesisWorld
-          case Script.lookupMethod testMethodName s of
-            Nothing -> fail "Could not find method"
-            Just method -> do
-              eRes <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
-              case eRes of
-                Left err -> return $ show err
-                Right res -> return $ toSL $ Utils.ppShow $ Eval.deltas res
-  
+evalTest testName inputFp outputFp testMethodName =
+  goldenVsStringDiff testName differ outputFp $ do
+    eBS <- Utils.safeRead inputFp
+    case eBS of
+      Left err -> return $ toSL err
+      Right bs -> do
+        now <- Time.now
+        Right (pub,priv) <- Homo.genRSAKeyPairSafe 2048
+        eContract <-
+          Init.createFauxContract
+            0
+            now
+            Ref.testAddr
+            (Transaction.signature $ Ref.testTx Ref.testCall)
+            Ref.testAddr
+            Ref.testPriv
+            now
+            Ref.testAddr
+            Ledger.genesisWorld
+            (toS bs)
+        case eContract of
+          Left err   -> return $ toSL err
+          Right contract -> do
+            evalCtx <- initTestEvalCtx pub
+            let evalState = Eval.initEvalState contract Ledger.genesisWorld
+            case Contract.lookupContractMethod testMethodName contract of
+              Left err -> fail $ show err
+              Right method -> do
+                eRes <- Eval.execEvalM evalCtx evalState $ Eval.evalMethod method []
+                case eRes of
+                  Left err -> return $ show err
+                  Right res -> return $ toSL $ Utils.ppShow $ Eval.deltas res
 
 scriptAnalysisGoldenTests :: TestTree
 scriptAnalysisGoldenTests = testGroup "Script analysis golden tests"

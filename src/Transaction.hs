@@ -28,6 +28,9 @@ module Transaction (
   hashTransaction,
   base16HashTransaction,
 
+  -- ** Address Derivation
+  transactionToAddress,
+
   -- ** Serialization
   encodeTransaction,
   decodeTransaction,
@@ -44,12 +47,9 @@ module Transaction (
   TxValidationError(..),
   InvalidTxField(..),
 
-  TxValidationCtx(..),
-
   -- ** Validation / Verification
   verifyTransaction,
   validateTransaction,
-  validateTransactionNoTs,
 
 ) where
 
@@ -87,7 +87,6 @@ import qualified SafeInteger
 import qualified Script
 
 import Script (Value(..))
-import qualified Script.Init
 import qualified Script.Eval
 import qualified Script.Graph as Graph
 import qualified Script.Typecheck
@@ -113,7 +112,6 @@ data Transaction = Transaction
   { header    :: TransactionHeader
   , signature :: ByteString
   , origin    :: Address
-  , timestamp :: Time.Timestamp
   } deriving (Show, Eq, Generic, NFData, Serialize, Hash.Hashable)
 
 -- | Transaction header
@@ -135,8 +133,7 @@ data Status
 
 data TxContract
   = CreateContract {
-      address  :: Address
-    , contract :: SafeString.SafeString
+      contract :: SafeString.SafeString
   }
   | SyncLocal {
       address :: Address
@@ -149,16 +146,16 @@ data TxContract
   }
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
+-- XXX This is currently unused anywhere in Uplink
 data SyncLocalOp
   = InitialCommit (SafeInteger.SafeInteger, SafeInteger.SafeInteger)
   | Sync
   | Finalize Address SafeInteger.SafeInteger
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, Serialize)
 
 data TxAsset
   = CreateAsset {
-      assetAddr :: Address                    -- ^ Address of asset
-    , assetName :: SafeString.SafeString      -- ^ Asset name
+      assetName :: SafeString.SafeString      -- ^ Asset name
     , supply    :: Int64                      -- ^ Asset supply
     , reference :: Maybe Asset.Ref            -- ^ Asset reference
     , assetType :: Asset.AssetType            -- ^ Asset type
@@ -189,9 +186,9 @@ data TxAsset
 
 data TxAccount
   = CreateAccount {
-      pubKey   :: ByteString                  -- ^ Public key associated with the account
-    , timezone :: ByteString                  -- ^ Time zone
-    , metadata :: Metadata                    -- ^ Arbitrary additional metadata
+      pubKey   :: SafeString.SafeString -- ^ Public key associated with the account
+    , timezone :: SafeString.SafeString -- ^ Time zone
+    , metadata :: Metadata              -- ^ Arbitrary additional metadata
   }
   | RevokeAccount {
       address   :: Address                    -- ^ Issue a revocation of an account
@@ -258,11 +255,8 @@ instance Serialize TransactionHeader where
 
 
 getTxContract :: Int -> Get TransactionHeader
-getTxContract 1000 = do
-  addr     <- getAddress
-  contract <- get
-  pure $ TxContract $
-    CreateContract addr contract
+getTxContract 1000 =
+  TxContract . CreateContract <$> get
 getTxContract 1001 = do
   addr <- getAddress
   op   <- get
@@ -278,8 +272,7 @@ getTxContract n = fail $ "getTxContract " <> show n
 
 getTxAsset :: Int -> Get TransactionHeader
 getTxAsset 1003 = do
-  addr   <- getAddress
-  name   <- SafeString.getSafeString
+  name   <- get
   supply <- getInt64be
   ref    <- getWord16be
   mRef <- do
@@ -290,7 +283,7 @@ getTxAsset 1003 = do
   assetType <- getAssetType
   md <- get
   pure $ TxAsset $
-    CreateAsset addr name supply mRef assetType md
+    CreateAsset name supply mRef assetType md
 getTxAsset 1004 = do
   asset <- getAddress
   to    <- getAddress
@@ -316,10 +309,8 @@ getTxAsset n = fail $ "getTxAsset " <> show n
 
 getTxAccount :: Int -> Get TransactionHeader
 getTxAccount 1008 = do
-  pubKeyLen <- getWord16be
-  pubKey <- getBytes $ (toInt pubKeyLen :: Int)
-  tzLen <- getWord16be
-  tz <- getBytes $ toInt tzLen
+  pubKey <- get
+  tz <- get
   md <- get
   pure $ TxAccount $ CreateAccount pubKey tz md
 getTxAccount 1009 = do
@@ -330,9 +321,8 @@ getTxAccount n = fail $ "getTxAccount " <> show n
 
 instance Serialize TxContract where
   put txc = case txc of
-    CreateContract addr contract -> do
+    CreateContract contract -> do
       putWord16be 1000
-      putAddress addr
       put contract
 
     SyncLocal addr op -> do
@@ -348,10 +338,9 @@ instance Serialize TxContract where
 
 instance Serialize TxAsset where
   put txa = case txa of
-    CreateAsset addr name supply mRef assetType md -> do
+    CreateAsset name supply mRef assetType md -> do
       putWord16be 1003
-      putAddress addr
-      SafeString.putSafeString name
+      put name
       putInt64be supply
 
       case mRef of
@@ -388,22 +377,13 @@ instance Serialize TxAccount where
   put txa = case txa of
     CreateAccount pubKey tz md -> do
       putWord16be 1008
-      putWord16be $ toWord16 $ BS.length pubKey
-      putByteString pubKey
-      putWord16be $ toWord16 $ BS.length tz
-      putByteString tz
+      put pubKey
+      put tz
       put md
 
     RevokeAccount addr -> do
       putWord16be 1009
       putAddress addr
-
--- XXX incomplete, only deserialized InitialCommit
-instance Serialize SyncLocalOp where
-  put op = case op of
-        (InitialCommit sig) -> put sig
-        _ -> undefined
-  get = InitialCommit <$> get
 
 txCall :: Address -> ByteString -> [Storage.Value] -> TxContract
 txCall = Call
@@ -417,7 +397,6 @@ instance ToJSON Transaction where
     object $
         [ "header"    .= header t
         , "signature" .= decodeUtf8 (signature t)
-        , "timestamp" .= timestamp t
         , "origin"    .= origin t
         ]
 
@@ -426,15 +405,15 @@ instance FromJSON Transaction where
     hd     <- v .: "header"
     sig    <- v .: "signature"
     origin <- v .: "origin"
-    ts     <- v .: "timestamp"
     pure $ Transaction
       { header    = hd
       , signature = encodeUtf8 sig
       , origin    = origin
-      , timestamp = ts
       }
 
   parseJSON invalid = typeMismatch "Transaction" invalid
+
+-------------------------------------------------------------------------------
 
 instance ToJSON TransactionHeader where
   toJSON (TxAsset txa) = object
@@ -465,29 +444,21 @@ instance FromJSON TransactionHeader where
 
   parseJSON invalid = typeMismatch "TransactionHeader" invalid
 
+-------------------------------------------------------------------------------
+
 -- | FromJSON/ToJSON is not idempotent
 instance ToJSON TxContract where
-  toJSON (CreateContract addr con) = object
+  toJSON (CreateContract con) = object
     [ "tag"      .= ("CreateContract" :: Text)
-    , "contents" .= object
-        [ "address"  .= addr
-        , "contract" .= con
-        ]
+    , "contents" .= object [ "contract" .= con ]
     ]
   toJSON (SyncLocal contractAddr op) = object
     [ "tag"      .= ("SyncLocal" :: Text)
-    , "address"  .= contractAddr
-    , "contents" .= contents
+    , "contents" .= object
+        [ "address" .= contractAddr
+        , "op" .= op
+        ]
     ]
-    where
-      contents = case op of
-                    (InitialCommit (x,y)) -> object
-                      [
-                        "tag" .= ("InitialCommit" ::Text)
-                      ,  "x" .= x
-                      ,  "y" .= y
-                      ]
-                    _ -> undefined  --- XXX handle other transaction types
 
   toJSON (Call addr method args) = object
     [ "tag"      .= ("Call" :: Text)
@@ -498,12 +469,25 @@ instance ToJSON TxContract where
       ]
     ]
 
+-- XXX This is currently unused anywhere in Uplink
+instance ToJSON SyncLocalOp where
+  toJSON = \case
+    InitialCommit (r,s) -> object
+      [ "tag" .= ("InitialCommit" :: Text)
+      , "contents" .= object
+          [ "r" .= r, "s" .= s ]
+      ]
+    Sync -> object [ "tag" .= ("Sync" :: Text) ]
+    Finalize addr x -> object
+      [ "tag" .= ("Finalize" :: Text)
+      , "contents" .= object [ "address" .= addr, "x" .= x ]
+      ]
+
 instance ToJSON TxAsset where
-  toJSON (CreateAsset addr name supply ref assetType md) = object
+  toJSON (CreateAsset name supply ref assetType md) = object
     [ "tag"      .= ("CreateAsset" :: Text)
     , "contents" .= object
-        [ "assetAddr" .= addr
-        , "assetName" .= (toS $ SafeString.toBytes name :: [Char])
+        [ "assetName" .= name
         , "supply"    .= supply
         , "reference" .= ref
         , "assetType" .= assetType
@@ -530,7 +514,7 @@ instance ToJSON TxAsset where
     , "contents" .= object
       [ "asset"    .= asset
       , "contract" .= con
-      , "proof"    .= (toS (Key.hexRS $ bimap fromSafeInteger fromSafeInteger sig) :: Text)
+      , "proof"    .= sig
       ]
     ]
   toJSON (RevokeAsset addr) = object
@@ -545,8 +529,7 @@ instance FromJSON TxAsset where
     if | tagV == "CreateAsset" -> do
           c <- v .: "contents"
           CreateAsset
-            <$> c .: "assetAddr"
-            <*> c .: "assetName"
+            <$> c .: "assetName"
             <*> c .: "supply"
             <*> c .:? "reference"
             <*> c .: "assetType"
@@ -575,47 +558,67 @@ instance FromJSON TxAsset where
 
   parseJSON invalid = typeMismatch "TxAsset" invalid
 
--- | FromJSON/ToJSON is not idempotent
 instance FromJSON TxContract where
-  parseJSON (Object v) = do
-    tagV <- v .: "tag" :: Parser [Char]
-    if | tagV == "CreateContract" -> do
-          c <- v .: "contents"
-          script <- c .: "script"
-          addr   <- c .: "address"
-          timestamp <- c .: "timestamp" :: Parser Time.Timestamp
-          owner  <- c .: "owner" :: Parser Address
-          -- Parse and type check script
+  parseJSON = \case
+    Object o -> do
+      tag <- o .: "tag" :: Parser [Char]
+      case tag of
+        "CreateContract" -> do
+          c <- o .: "contents"
+          script <- c .: "contract"
+          -- Parse and type check script XXX Should we do this here?
           case Compile.compile (toS (SafeString.toBytes script)) of
             Left err -> fail (toS err)
-            Right _ -> pure (CreateContract addr script)
+            Right _  -> pure (CreateContract script)
 
-       | tagV == "Call" -> do
-          c <- v .: "contents"
+        "Call" -> do
+          c <- o .: "contents"
           Call <$> c .: "address"
                <*> liftA encodeUtf8 (c .: "method")
                <*> c .: "args"
 
-       | otherwise -> fail $ "Unknown tag in TxContract: " <> tagV
+        "SyncLocal" -> do
+          c <- o .: "contents"
+          contractAddr <- c .: "address"
+          syncLocalOp  <- c .: "op"
+          pure $ SyncLocal contractAddr syncLocalOp
 
-  parseJSON x = fail $ "JSON not a TxContract but: \n" <> (show x)
+        invalid -> fail $ "Invalid TxContract 'tag' field: " <> invalid
+
+    invalid -> typeMismatch "TxContract" invalid
+
+instance FromJSON SyncLocalOp where
+  parseJSON = \case
+    Object o -> do
+      tag <-  o .: "tag" :: Parser Text
+      case tag of
+        "InitialCommit" -> do
+          c <- o .: "contents"
+          r <- c .: "r"
+          s <- c .: "s"
+          pure $ InitialCommit (r,s)
+        "Sync" -> pure Sync
+        "Finalize" -> do
+          c    <- o .: "contents"
+          addr <- c .: "address"
+          x    <- c .: "x"
+          pure $ Finalize addr x
+        invalid -> fail $ "Invalid SyncLocalOp 'tag' field: " <> toS invalid
+    invalid -> typeMismatch "SyncLocalOp" invalid
 
 instance ToJSON TxAccount where
   toJSON (CreateAccount pk tz md) = object
     [ "tag"      .= ("CreateAccount" :: Text)
     , "contents" .= object
-      [ "pubKey"     .= decodeUtf8 pk
-      , "timezone"   .= decodeUtf8 tz
+      [ "pubKey"     .= pk
+      , "timezone"   .= tz
       , "metadata"   .= md
       ]
     ]
 
   toJSON (RevokeAccount addr) = object
     [ "tag"      .= ("RevokeAccount" :: Text)
-    , "contents" .= object
-      [
-        "address" .= addr
-      ]
+    , "contents" .= object [ "address" .= addr ]
     ]
 
 instance FromJSON TxAccount where
@@ -627,9 +630,7 @@ instance FromJSON TxAccount where
         pk <- contents .: "pubKey"
         tz <- contents .: "timezone"
         md <- contents .: "metadata"
-        let pk' = encodeUtf8 pk
-            tz' = encodeUtf8 tz
-        pure $ CreateAccount pk' tz' md
+        pure $ CreateAccount pk tz md
       "RevokeAccount" -> RevokeAccount <$> contents .: "address"
       _ -> fail $ "Unknown tag in TxAccount: " <> tagV
 
@@ -663,6 +664,12 @@ hashTransaction = Hash.toHash
 base16HashTransaction :: Transaction -> ByteString
 base16HashTransaction = Encoding.base16 . Hash.getHash . hashTransaction
 
+-- | Computes a Ledger value address using a transaction hash:
+-- base58Encode ( sha3_256 ( base16Encode ( sha3_256 ( binary ( TX ) ) ) ) )
+transactionToAddress :: Transaction -> Address
+transactionToAddress =
+  Address.fromRaw . Encoding.b58 . Hash.sha256Raw . base16HashTransaction
+
 -------------------------------------------------------------------------------
 -- Creation
 -------------------------------------------------------------------------------
@@ -674,13 +681,11 @@ newTransaction
   -> TransactionHeader  -- ^ Transaction payload
   -> IO Transaction
 newTransaction origin privKey header = do
-  ts     <- Time.now
   sig    <- Key.sign privKey $ S.encode header
   pure $ Transaction {
     header    = header
   , origin    = origin
   , signature = Key.encodeSig sig
-  , timestamp = ts
   }
 
 -- | Sign a transaction with a private key
@@ -732,8 +737,7 @@ data InvalidTxAccount
   deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxAsset
-  = DerivedAddressesDontMatch Address Address
-  | AssetError Ledger.AssetError
+  = AssetError Ledger.AssetError
   deriving (Show, Eq, Generic, S.Serialize)
 
 data InvalidTxContract
@@ -751,10 +755,11 @@ data InvalidTxHeader
   deriving (Show, Eq, Generic, S.Serialize)
 
 data TxValidationError
-  = NoSuchOriginAccount Address
-  | InvalidTxField InvalidTxField
-  | InvalidTxHeader InvalidTxHeader
-  | InvalidPubKey
+  = NoSuchOriginAccount Address      -- ^ Origin account does not exist on the ledger
+  | DuplicateTransaction             -- ^ Transaction is not unique
+  | InvalidTxField InvalidTxField    -- ^ One of the transaction fields is invalid
+  | InvalidTxHeader InvalidTxHeader  -- ^ The transaction header is invalid
+  | InvalidPubKey                    -- ^ The public key cannot be decoded
   deriving (Show, Eq, Generic, S.Serialize)
 
 -- | Verify a transaction with a public key
@@ -770,35 +775,10 @@ verifyTransaction key t = do
       | Key.verify key sig encodedHeader -> Right ()
       | otherwise -> Left $ Key.InvalidSignature sig encodedHeader
 
-data TxValidationCtx = TxBlock Time.Timestamp | TxMemPool | TxInvalid
-
--- | Validate a transaction without looking up the origin account
--- by using cryptography magic (public key recovery from signature)
-validateTransaction
-  :: TxValidationCtx
-  -> Transaction
-  -> IO (Either InvalidTransaction ())
-validateTransaction txvctx tx@Transaction{..} = do
-    isTimeValid <-
-      case txvctx of
-        TxBlock blockTs -> pure $
-          Time.validateTimestampAgainst blockTs timestamp
-        TxMemPool ->
-          Time.validateTimestamp timestamp
-        -- For "validating" the data integrity of invalid txs
-        TxInvalid -> pure True
-    return $
-      unless isTimeValid $
-        Left $ mkInvalidTx $ InvalidTxTimestamp timestamp
- where
-    mkInvalidTx = InvalidTransaction tx . InvalidTxField
-
 -- | Validate a transaction without looking up the origin account
 -- by using cryptography magic (public key recovery from signature).
--- This function does no timestamp validation, and used when validating
--- transactions from the database.
-validateTransactionNoTs :: Transaction -> Either InvalidTransaction ()
-validateTransactionNoTs tx@Transaction{..} = do
+validateTransaction :: Transaction -> Either InvalidTransaction ()
+validateTransaction tx@Transaction{..} = do
     -- Validate transaction signature
     first (mkInvalidTx . InvalidTxSignature) $
       let headerBS = S.encode header in

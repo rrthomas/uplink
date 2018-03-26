@@ -56,6 +56,7 @@ import qualified Key
 import qualified Hash
 import qualified Utils
 import qualified Address
+import qualified SafeString
 import Metadata (Metadata(..), parseMetadata)
 import Data.Aeson ((.=), (.:))
 import Data.Aeson.Types (typeMismatch)
@@ -98,7 +99,7 @@ import System.Posix.Files
 data Account = Account
   { publicKey   :: Key.PubKey
   , address     :: Address.Address
-  , timezone    :: ByteString
+  , timezone    :: SafeString.SafeString
   , metadata    :: Metadata.Metadata
   } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
 
@@ -113,7 +114,7 @@ validateAccount Account {..} = and [
 -- | Create a new Acccount
 createAccount
   :: Key.PubKey
-  -> ByteString
+  -> SafeString.SafeString
   -> Metadata
   -> Account
 createAccount pub timezone metadata =
@@ -126,7 +127,7 @@ createAccount pub timezone metadata =
 
 -- | Generate a new Acccount (random seed)
 -- returns private key so the new account can be written to disk
-newAccount :: ByteString -> Metadata -> IO (Account, Key.ECDSAKeyPair)
+newAccount :: SafeString.SafeString -> Metadata -> IO (Account, Key.ECDSAKeyPair)
 newAccount timezone metadata = do
   keys@(pub,_) <- Key.new
   return $ (,keys) $
@@ -384,7 +385,7 @@ instance A.ToJSON Account where
   toJSON acc = A.object
     [ "publicKey" .= publicKey acc
     , "address"   .= address acc
-    , "timezone"  .= decodeUtf8 (timezone acc)
+    , "timezone"  .= timezone acc
     , "metadata"  .= metadata acc
     ]
 
@@ -398,7 +399,7 @@ instance A.FromJSON Account where
     pure $ Account
       pubKey
       addr
-      (encodeUtf8 timezone)
+      timezone
       (Metadata.parseMetadata metadata)
 
   parseJSON invalid = typeMismatch "Account" invalid

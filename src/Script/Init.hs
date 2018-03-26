@@ -1,9 +1,10 @@
 {-# LANGUAGE TupleSections #-}
 
 module Script.Init (
-  scriptToContract,
   createContract,
   createContractWithEvalCtx,
+
+  createFauxContract,
 ) where
 
 import Protolude
@@ -20,58 +21,21 @@ import Time (Timestamp)
 import qualified Script
 import qualified Storage
 import qualified Contract
+import qualified SafeString
 import qualified Hash
+import qualified Transaction as TX
 import qualified Script.Graph as Graph
 import qualified Script.Storage as Storage
 import qualified Script.Compile as Compile
-import qualified Derivation
+import qualified Script.Pretty as Pretty
 import Ledger (World)
 import Script.Eval (EvalCtx(..))
 import qualified Homomorphic as Homo
 
-scriptToContract
-  :: Int64      -- ^ Current Block Index
-  -> Timestamp  -- ^ Current Block Timestamp
-  -> Address    -- ^ Address of Evaluating node
-  -> ByteString -- ^ Current Transaction hash
-  -> Address    -- ^ Issuer of transaction (tx origin field)
-  -> PrivateKey -- ^ Node private key for signing
-  -> Timestamp  -- ^ Contract timestamp
-  -> Address    -- ^ Contract owner
-  -> World      -- ^ Initial world
-  -> Script
-  -> IO Contract
-scriptToContract blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world s = do
-  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
-  let evalCtx = EvalCtx
-        { currentBlock = blockIdx
-        , currentValidator = nodeAddr
-        , currentTransaction = txHash
-        , currentTimestamp = blockTs
-        , currentCreated = cTimestamp
-        , currentDeployer = cOwner
-        , currentTxIssuer = txOrigin
-        , currentAddress = mempty  -- XXX The emptyAddr here is possibly very bad
-        , currentPrivKey = privKey
-        , currentStorageKey = pub
-        }
-  gs <- Storage.initStorage evalCtx world s
-  let cAddress = Derivation.addrContract' cTimestamp gs
-  pure Contract.Contract
-    { timestamp        = cTimestamp
-    , script           = s
-    , localStorage     = Map.empty
-    , globalStorage    = gs
-    , localStorageVars = Storage.initLocalStorageVars s
-    , methods          = Script.methodNames s
-    , state            = Graph.GraphInitial
-    , owner            = cOwner
-    , address          = cAddress
-    }
-
--- | Create a contract and derive an address in the process
+-- | Create a contract
 createContract
-  :: Int64      -- ^ Current Block Index
+  :: Address    -- ^ Contract Address
+  -> Int64      -- ^ Current Block Index
   -> Timestamp  -- ^ Current Block Timestamp
   -> Address    -- ^ Address of Evaluating node
   -> ByteString -- ^ Current Transaction hash
@@ -82,7 +46,7 @@ createContract
   -> World      -- ^ Initial world
   -> Text       -- ^ Raw FCL code
   -> IO (Either Text Contract)
-createContract blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
+createContract contractAddr blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
   (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
   let evalCtx = EvalCtx
         { currentBlock = blockIdx
@@ -92,22 +56,13 @@ createContract blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwn
         , currentCreated = cTimestamp
         , currentDeployer = cOwner
         , currentTxIssuer = txOrigin
-        , currentAddress = cAddress
+        , currentAddress = contractAddr
         , currentPrivKey = privKey
         , currentStorageKey = pub
         }
   createContractWithEvalCtx evalCtx world body
-  where
-    cAddress =
-      fromRaw $ b58 $ Hash.sha256Raw $
-        mconcat $ map Hash.getHash
-          [ Hash.toHash cOwner, Hash.toHash cTimestamp , Hash.toHash body ]
 
--- XXX old args
---  :: Address         -- ^ Owner Address
---  -> Address         -- ^ Address of Contract
---  -> Time.Timestamp  -- ^ Timestamp of creation
--- | Create a contract with a supplied address
+-- | Create a contract with a supplied evaluation context
 createContractWithEvalCtx
   :: EvalCtx    -- ^ Context to evaluate the top-level definitions in
   -> World      -- ^ Initial world
@@ -131,3 +86,26 @@ createContractWithEvalCtx evalCtx world body
                , Contract.owner            = currentDeployer evalCtx
                , Contract.address          = currentAddress evalCtx
                }
+
+-- | This function is used to create Contracts that explicitly _won't_ be
+-- submitted to the ledger. This function creates a transaction and then derives
+-- an address from the transaction. Notably, this address is _not_ guaranteed to
+-- be unique, because the transaction will NOT be submitted to the network for
+-- uniqueness verification. This is to be used in places like the REPL and the
+-- Simulation process.
+createFauxContract
+  :: Int64      -- ^ Current Block Index
+  -> Timestamp  -- ^ Current Block Timestamp
+  -> Address    -- ^ Address of Evaluating node
+  -> ByteString -- ^ Current Transaction hash
+  -> Address    -- ^ Issuer of transaction (tx origin field)
+  -> PrivateKey -- ^ Node private key for signing
+  -> Timestamp  -- ^ Contract timestamp
+  -> Address    -- ^ Contract owner
+  -> World      -- ^ Initial world
+  -> Text       -- ^ Raw FCL code
+  -> IO (Either Text Contract)
+createFauxContract blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
+  let contractHdr = TX.TxContract $ TX.CreateContract (SafeString.fromBytes' $ toS body)
+  contractAddr <- TX.transactionToAddress <$> TX.newTransaction nodeAddr privKey contractHdr
+  createContract contractAddr blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body

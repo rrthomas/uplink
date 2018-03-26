@@ -6,6 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module NodeState
@@ -88,6 +89,7 @@ module NodeState
 import Protolude hiding (try)
 
 import qualified Control.Concurrent.MVar as MVar
+import qualified Control.Concurrent.MVar.Lifted as MVarL
 
 import Control.Arrow ((&&&))
 
@@ -134,7 +136,7 @@ import qualified Transaction as Tx
 import qualified TxLog
 import qualified MemPool
 import qualified Hash
-import qualified Validate
+import qualified Validate as V
 
 import Node.Peer
 import Node.Files
@@ -262,6 +264,17 @@ modifyNodeState
 modifyNodeState g f = do
   mvar <- getNodeState g
   liftBase $ modifyMVar mvar f
+
+-- | Modify the node state MVar atomically but allow reading the database within
+-- the body of the modification function.
+modifyNodeStateReadDB_
+  :: (MonadReadDB m, MonadBaseControl IO m)
+  => (NodeState -> MVar a)
+  -> (a -> NodeT m (a,b))
+  -> NodeT m b
+modifyNodeStateReadDB_ g f = do
+  mvar <- getNodeState g
+  MVarL.modifyMVar mvar f
 
 -------------------------------------------------------------------------------
 -- Getters & Setters
@@ -424,22 +437,30 @@ resetTxMemPool = modifyNodeState_ txPool $ const $ pure MemPool.emptyMemPool
 
 -- | Atomically remove all invalid transactions from the mempool
 -- and return the valid transactions.
-pruneTxMemPool :: MonadBase IO m => NodeT m ([Tx.Transaction],[Tx.InvalidTransaction])
+pruneTxMemPool
+  :: (MonadBaseControl IO m, MonadReadDB m)
+  => NodeT m ([Tx.Transaction],[Tx.InvalidTransaction])
 pruneTxMemPool =
   withLedgerState $ \world -> do
-    nodeEnv <- ask
-    modifyNodeState txPool $ \memPool -> do
+    modifyNodeStateReadDB_ txPool $ \memPool -> do
       let memPoolTxs = DL.toList $ MemPool.transactions $ memPool
-      validTxs <- runNodeT nodeEnv $
-        withApplyCtx $ \applyCtx ->
-          liftBase $ Validate.validateTransactions applyCtx world memPoolTxs
-      case validTxs of
-        Right _ -> pure (memPool, (memPoolTxs,[]))
-        Left errs ->
-          let invalidTxs   = flip map errs $ \(Tx.InvalidTransaction tx _) -> tx
-              newMemPool   = MemPool.removeTxs memPool invalidTxs
-              txsInMemPool = DL.toList $ MemPool.transactions newMemPool
-          in pure (newMemPool, (txsInMemPool, errs))
+      (_,invalidTxs,_) <-
+        withApplyCtx $ \applyCtx -> do
+          -- Validate transactions, collecting the invalid ones
+          let applyState = V.initApplyState world
+          lift $ V.execApplyT applyState applyCtx $
+            mapM V.validateAndApplyTransaction memPoolTxs
+      pure $ mkNewMemPool memPool invalidTxs
+  where
+    mkNewMemPool
+      :: MemPool.MemPool
+      -> [Tx.InvalidTransaction]
+      -> (MemPool.MemPool, ([Tx.Transaction], [Tx.InvalidTransaction]))
+    mkNewMemPool oldMemPool itxs =
+      let invalidTxs   = flip map itxs $ \(Tx.InvalidTransaction tx _) -> tx
+          newMemPool   = MemPool.removeTxs oldMemPool invalidTxs
+          txsInMemPool = DL.toList $ MemPool.transactions newMemPool
+       in (newMemPool, (txsInMemPool, itxs))
 
 -- | Atomically remove all specified transactions from the MemPool
 removeTxsFromMemPool :: MonadBase IO m => [Tx.Transaction] -> NodeT m ()
@@ -476,12 +497,12 @@ getValidatorPeers = do
   return $ flip Set.filter peers $ \peer ->
     peerAccAddr peer `Set.member` validatorAddrs
 
-withApplyCtx :: MonadBase IO m => (Validate.ApplyCtx -> NodeT m a) -> NodeT m a
+withApplyCtx :: MonadBase IO m => (V.ApplyCtx -> NodeT m a) -> NodeT m a
 withApplyCtx f = do
   latestBlk   <- getLastBlock
   nodeAddress <- askSelfAddress
   nodePrivKey <- askPrivateKey
-  f Validate.ApplyCtx
+  f V.ApplyCtx
     { applyCurrBlock   = latestBlk
     , applyNodeAddress = nodeAddress
     , applyNodePrivKey = nodePrivKey
@@ -516,33 +537,47 @@ lookupAccount = lookupInLedger . Ledger.lookupAccount
 -- Sync Ledger State & DB
 -------------------------------------------------------------------------------
 
+-- | Critical Error during application of block transactions to ledger state and
+-- synchronization of ledger state with the database
+data ApplyBlockError
+  = InvalidBlock Block.InvalidBlock
+  | ErrorSyncingDatabase Text
+  deriving Show
+
 applyBlock
-  :: MonadBase IO m
+  :: (MonadBaseControl IO m, MonadReadWriteDB m)
   => Block.Block
-  -> NodeT m (Either Tx.InvalidTransaction ())
-applyBlock block =
-  withLedgerState $ \ledgerState ->
-    withApplyCtx $ \applyCtx -> do
-      (newWorld, errs, deltasMap) <- liftBase $
-        Validate.applyBlock applyCtx ledgerState block
-      -- New block should only be applied if 0 errors in block
-      case head errs of
-        Just err -> return $ Left err
-        Nothing  -> fmap Right $ do
+  -> NodeT m (Either ApplyBlockError ())
+applyBlock block = do
+  eRes <-
+    withLedgerState $ \ledgerState ->
+      withApplyCtx $ \applyCtx -> do
+        let applyState = V.initApplyState ledgerState
+        lift $ V.verifyValidateAndApplyBlock applyState applyCtx block
+  -- New block should only be applied if 0 errors in block
+  case eRes of
+    Left err -> pure $ Left $ InvalidBlock err
+    Right (newLedgerState, deltasMap) -> do
+      -- Sync World with DB
+      eSyncRes <- NodeState.syncNodeStateWithDBs
+      case eSyncRes of
+        Left err -> pure $ Left $ ErrorSyncingDatabase $ show err
+        Right _  -> do
+
           -- Atomically remove transactions in this block from NodeState mempool
           removeTxsFromMemPool $ Block.transactions block
-
           -- Update Latest block in NodeState
           setLastBlock block
-
           -- Update New World state in NodeState
-          setLedger newWorld
+          setLedger newLedgerState
 
-          -- Write Deltas collected during applyBlock to TxLog
           let blockIdx = Block.index block
           txLogFile <- askTxLogFilePath
+          -- Write Deltas collected during applyBlock to TxLog
           liftBase $ forM_ (Map.toList deltasMap) $ \(addr,deltas) ->
             TxLog.writeDeltas txLogFile (fromIntegral blockIdx) addr deltas
+
+          pure $ Right ()
 
 syncNodeStateWithDBs
   :: (MonadBaseControl IO m, MonadWriteDB m)

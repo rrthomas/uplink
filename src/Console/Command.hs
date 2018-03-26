@@ -31,12 +31,10 @@ import Text.Parsec
 
 import Account (Account)
 import Address (Address)
-import Derivation (addrAsset)
 import qualified Time
 import qualified NodeState
 import qualified Transaction
 import qualified Key
-import qualified Derivation
 import qualified Storage
 import qualified Address
 import qualified Asset
@@ -80,7 +78,7 @@ data ConsoleCmd =
   | CallContract
 
   | Transaction FilePath
-  | TransactionRaw Transaction.TransactionHeader (Maybe Time.Timestamp)
+  | TransactionRaw Transaction.TransactionHeader
 
   -- Misc
   | SetAccount (Maybe FilePath)
@@ -134,44 +132,41 @@ getCmd c = do
           name <- liftIO $ Utils.prompt "Name: "
           tz <- liftIO $ Utils.prompt "Timezone: "
 
-          let hdr = Transaction.TxAccount Transaction.CreateAccount {
-            pubKey = Key.exportPub $ fst priv
-          , timezone = encodeUtf8 tz
-          , metadata = Metadata.Metadata $
-                         Map.singleton "name" $ encodeUtf8 name
-          }
+          let metadata' = Metadata.Metadata $ Map.singleton "name" $ encodeUtf8 name
+              hdr = Transaction.TxAccount $
+                Transaction.CreateAccount
+                  { pubKey   = SafeString.fromBytes' $ Key.exportPub $ fst priv
+                  , timezone = SafeString.fromBytes' $ encodeUtf8 tz
+                  , metadata = metadata'
+                  }
 
-          getCmd (TransactionRaw hdr Nothing)
+          getCmd (TransactionRaw hdr)
 
     CreateAsset name supply mref typ -> do
       mAcc <- gets account
       acc <- case mAcc of
         Nothing -> accountPrompt Nothing
         Just acc -> pure acc
-      hdrTs <- liftIO Time.now
-      let addr = addrAsset (toS name) (Account.address acc) (fromInteger supply) mref typ hdrTs
+      ts <- liftIO Time.now
       let hdr = Transaction.TxAsset $
             Transaction.CreateAsset {
-                assetAddr = addr
-              , assetName = SafeString.fromBytes' $ toS name
+                assetName = SafeString.fromBytes' $ toS name
               , supply    = fromInteger supply
               , reference = mref
               , assetType = Asset.Discrete
               , metadata = mempty -- XXX make metadata prompt
               }
-      getCmd (TransactionRaw hdr $ Just hdrTs)
+      getCmd (TransactionRaw hdr)
 
     (CreateContract path) -> do
       timestamp <- liftIO Time.now
       file <- liftIO $ Utils.safeRead path
       contents <- hoistErr file
 
-      let addr = Derivation.addrContract' timestamp (Storage.GlobalStorage Map.empty)
-      let hdr = Transaction.TxContract Transaction.CreateContract {
-        address = addr
-      , contract = SafeString.fromBytes' $ toS contents
-      }
-      getCmd (TransactionRaw hdr Nothing)
+      let hdr = Transaction.TxContract
+            Transaction.CreateContract
+              { contract = SafeString.fromBytes' $ toS contents }
+      getCmd (TransactionRaw hdr)
 
     TransferAsset assetAddr' toAddr amount -> do
       let hdr = Transaction.TxAsset Transaction.Transfer {
@@ -179,14 +174,14 @@ getCmd c = do
           , toAddr    = toAddr
           , balance   = fromInteger amount
           }
-      getCmd (TransactionRaw hdr Nothing)
+      getCmd (TransactionRaw hdr)
 
     CirculateAsset addr amount -> do
       let hdr = Transaction.TxAsset Transaction.Circulate {
             assetAddr = addr
           , amount    = fromInteger amount
           }
-      getCmd (TransactionRaw hdr Nothing)
+      getCmd (TransactionRaw hdr)
 
     CallContract -> do
       contract <- liftIO $ Utils.prompt "Contract address: "
@@ -198,17 +193,17 @@ getCmd c = do
       , method = encodeUtf8 method
       , args = map evalLit args
       }
-      getCmd (TransactionRaw hdr Nothing)
+      getCmd (TransactionRaw hdr)
 
     Transaction path -> do
       contents <- liftIO $ BS.readFile path
 
       let hdrE = eitherDecodeStrict contents :: Either String.String Transaction.TransactionHeader
       hdr <- hoistErr $ first toS $ hdrE
-      getCmd (TransactionRaw hdr Nothing)
+      getCmd (TransactionRaw hdr)
 
-    (TransactionRaw hdr mTs) -> do
-        txE <- maybe (createTx hdr) (createTx' hdr) mTs
+    (TransactionRaw hdr) -> do
+        txE <- createTx hdr
         case txE of
           Left err -> do
             print err
@@ -242,13 +237,7 @@ getCmd c = do
 createTx
   :: Transaction.TransactionHeader
   -> ConsoleM (Either Text Transaction.Transaction)
-createTx hdr = createTx' hdr =<< liftIO Time.now
-
-createTx'
-  :: Transaction.TransactionHeader
-  -> Time.Timestamp
-  -> ConsoleM (Either Text Transaction.Transaction)
-createTx' hdr timestamp = do
+createTx hdr = do
   consoleState <- get
   case (privKey consoleState, account consoleState) of
     (Just privKey, Just acc) -> do
@@ -258,7 +247,6 @@ createTx' hdr timestamp = do
           header    = hdr
         , origin    = Account.address acc
         , signature = Key.encodeSig sig
-        , timestamp = timestamp
         }
     _ -> do
       putText "Attempting to issue a transaction, but no account is set."

@@ -51,7 +51,6 @@ data InvalidTxRow = InvalidTxRow
   , itxHeader     :: TransactionHeader
   , itxSignature  :: ByteString
   , itxOrigin     :: Address
-  , itxTimestamp  :: Int64
   , itxReason     :: TxValidationError
   } deriving (Generic)
 
@@ -65,7 +64,6 @@ invalidTxToRowType itx@(InvalidTransaction Transaction{..} reason) =
     , itxHeader     = header
     , itxSignature  = signature
     , itxOrigin     = origin
-    , itxTimestamp  = timestamp
     , itxReason     = reason
     }
 
@@ -80,7 +78,6 @@ rowTypeToInvalidTx InvalidTxRow{..} = do
       { header    = itxHeader
       , signature = itxSignature
       , origin    = itxOrigin
-      , timestamp = itxTimestamp
       }
 
 --------------------------------------------------------------------------------
@@ -92,7 +89,7 @@ queryInvalidTxByHash
   -> ByteString -- ^ must be base16 encoded sha3_256 hash
   -> IO (Either PostgreSQLError InvalidTransaction)
 queryInvalidTxByHash conn b16itxHash = do
-  eRows <- querySafe conn "SELECT (hash,header,signature,origin,timestamp,reason FROM invalidtxs WHERE hash=?" (Only b16itxHash)
+  eRows <- querySafe conn "SELECT * FROM invalidtxs WHERE hash=?" (Only b16itxHash)
   case fmap headMay eRows of
     Left err         -> pure $ Left err
     Right Nothing    -> pure $ Left $ InvalidTxDoesNotExist b16itxHash
@@ -104,7 +101,7 @@ queryInvalidTxs conn =
 
 queryInvalidTxRows :: Connection -> IO (Either PostgreSQLError [InvalidTxRow])
 queryInvalidTxRows conn =
-  querySafe_ conn "SELECT hash,header,signature,origin,timestamp,reason FROM invalidtxs"
+  querySafe_ conn "SELECT * FROM invalidtxs"
 
 --------------------------------------------------------------------------------
 -- Inserts
@@ -123,7 +120,7 @@ insertInvalidTxRow conn itxRow = insertInvalidTxRows conn [itxRow]
 
 insertInvalidTxRows :: Connection -> [InvalidTxRow] -> IO (Either PostgreSQLError Int64)
 insertInvalidTxRows conn itxRows =
-  executeManySafe conn "INSERT INTO invalidtxs (hash,header,signature,origin,timestamp,reason) VALUES (?,?,?,?,?,?)" itxRows
+  executeManySafe conn "INSERT INTO invalidtxs VALUES (?,?,?,?,?)" itxRows
 
 --------------------------------------------------------------------------------
 -- Deletions

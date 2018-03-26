@@ -172,9 +172,9 @@ emptyHoldings :: Holdings
 emptyHoldings = mempty
 
 -- | Verify that an asset value contains valid data
-validateAsset :: Asset -> IO Bool
+validateAsset :: Asset -> Bool
 validateAsset Asset{..} = do
-    return $ and [ totalHoldings <= supply ]
+    and [ totalHoldings <= supply ]
   where
     totalHoldings = foldl (+) 0 $ unHoldings holdings
 

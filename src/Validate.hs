@@ -13,36 +13,44 @@ the most validation logic when validating against the current world state.
 -}
 
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 module Validate (
 
   ApplyCtx(..),
+  ApplyState(..),
 
   -- ** Block Validation
-  validateBlock,
-  verifyBlock,
-  verifyAndValidateBlock,
+  verifyValidateAndApplyBlock,
+  validateAndApplyBlock,
 
   -- ** Transaction Validation
+  validateAndApplyTransaction,
   validateTransactionOrigin,
-  validateTransactions,
   verifyTransaction,
 
   -- ** Apply Block to World
+  execApplyT,
+  initApplyState,
   applyBlock,
-  applyTransactions,
+  applyTransaction,
 
 ) where
 
-import Protolude hiding (throwError)
+import Protolude hiding (get)
 
+import Control.Monad.Base
 import Control.Monad.State
 
 import Data.DList (DList)
 import qualified Data.DList as DL
 import qualified Data.Map as Map
+
+import qualified DB
 
 import Address (Address)
 import Asset (Asset, createAsset)
@@ -51,7 +59,7 @@ import Contract (Contract)
 import Delta (Delta(..))
 import Ledger (World)
 import Transaction (Transaction(..))
-import SafeString (toBytes)
+import SafeString (toBytes, fromBytes)
 
 import qualified Key
 import qualified Time
@@ -63,7 +71,6 @@ import qualified Account
 import qualified Address
 import qualified Storage
 import qualified Contract
-import qualified Derivation as D
 import qualified Transaction as Tx
 import qualified Homomorphic as Homo
 
@@ -75,30 +82,65 @@ import qualified Script.Typecheck as TC
 
 import qualified Consensus.Authority.Params as CAP
 
--- | Verifies a block by verifying and validating all transactions
-verifyAndValidateBlock :: ApplyCtx -> World -> Block -> IO (Either Block.InvalidBlock ())
-verifyAndValidateBlock applyCtx world block = do
-  let blockVerf = verifyBlock world block
-  blockValid <- validateBlock applyCtx world block
-  pure $ blockVerf >> blockValid
+-- | Verifies, validates, and applys and validating all transactions
+-- Note: Short circuits on un-verifiable transaction, but not on invalid
+-- invalid transaction with respect to ledger state (XXX fix?)
+verifyValidateAndApplyBlock
+  :: DB.MonadReadDB m
+  => ApplyState
+  -> ApplyCtx
+  -> Block
+  -> m (Either Block.InvalidBlock (World, Map Address [Delta]))
+verifyValidateAndApplyBlock applyState applyCtx block =
+  case verifyBlock (accumWorld applyState) block of
+    Left err -> pure $ Left err
+    Right _  -> do
+      (newLedgerState, itxs, deltas) <-
+        execApplyT applyState applyCtx $
+          validateAndApplyBlock block
+      case itxs of
+        []    -> pure $ Right (newLedgerState, deltas)
+        (itx:_) -> pure $ Left $
+          Block.InvalidBlock (Block.index block) $
+            Block.InvalidBlockTx itx
 
 -------------------------------------------------------------------------------
 -- Block Validation w/ Respect to World State
 -------------------------------------------------------------------------------
 
--- | Validate a block w/ Respect to World state
-validateBlock :: ApplyCtx -> World -> Block -> IO (Either Block.InvalidBlock ())
-validateBlock ctx world block = do
-  (_,invalidTxs,_) <- applyBlock ctx world block
-  case head invalidTxs of
-    Nothing  -> pure $ Right ()
-    Just err -> pure $ Left $
-      Block.InvalidBlock (Block.index block) $
-        Block.InvalidBlockTx err
+-- | Validate a block w/ Respect to World state and apply transactions in order,
+-- accumulating a world state such that each transaction is evaluated in the
+-- ledger state context determined by the initial ledger state and all other
+-- preceding transactions in the block.
+validateAndApplyBlock
+  :: DB.MonadReadDB m
+  => Block
+  -> ApplyT m ()
+validateAndApplyBlock block =
+  mapM_ validateAndApplyTransaction $
+    Block.transactions block
 
 -------------------------------------------------------------------------------
 -- Transaction Validation w/ Respect to World State
 -------------------------------------------------------------------------------
+
+-- | Validates a transaction in the context of Applying a block of transaction
+-- to the ledger state. This function does not short circuit on error, but
+-- accumulates them in the ApplyState.
+validateAndApplyTransaction
+  :: DB.MonadReadDB m
+  => Transaction
+  -> ApplyT m ()
+validateAndApplyTransaction tx = do
+  txUnique <- lift $ DB.isTransactionUnique tx
+  if txUnique
+     then do
+       ledgerState <- gets accumWorld
+       case validateTransactionOrigin ledgerState tx of
+         Left err -> accumInvalidTx err
+         Right _  -> applyTransaction tx
+     else
+       accumInvalidTx $ Tx.InvalidTransaction tx Tx.DuplicateTransaction
 
 -- | Validate a transaction based on world state (Issuer address exists & is valid)
 validateTransactionOrigin :: World -> Transaction -> Either Tx.InvalidTransaction ()
@@ -112,18 +154,6 @@ validateTransactionOrigin world tx@Transaction{..} =
         Right _ -> Right ()
   where
     mkInvalidTx = Tx.InvalidTransaction tx
-
--- | Validate a sequence of transactions with accumulating world state
-validateTransactions
-  :: ApplyCtx
-  -> World
-  -> [Transaction]
-  -> IO (Either [Tx.InvalidTransaction] ())
-validateTransactions ctx world txs = do
-  (_,invalidTxErrs,_) <- applyTransactions ctx world txs
-  case invalidTxErrs of
-    []   -> pure $ Right ()
-    errs -> pure $ Left errs
 
 -------------------------------------------------------------------------------
 -- Block & Transaction Verification (Signatures)
@@ -165,7 +195,7 @@ verifyTransaction world tx@Transaction{..} = do
   case header of
     -- In the strange case of a CreateAccount transaction...
     Tx.TxAccount (Tx.CreateAccount pub _ _) ->
-      case Key.tryDecodePub pub of
+      case Key.tryDecodePub (toBytes pub) of
         Left _ -> Left $ mkInvalidTx Tx.InvalidPubKey
         Right pub'
           -- If self-signed, verify sig with pubkey in TxHeader
@@ -199,50 +229,62 @@ data ApplyCtx = ApplyCtx
   { applyCurrBlock      :: Block
   , applyNodeAddress    :: Address
   , applyNodePrivKey    :: Key.PrivateKey
-  } deriving (Generic, NFData)
+  } deriving (Generic)
 
 -- | The state that is being modified during transaction application
-data ApplyState e = ApplyState
-  { accumWorld  :: World
-  , accumErrs   :: DList e
-  , accumDeltas :: Map Address [Delta]  -- ^ Map of Contract Addrs -> Deltas
+data ApplyState = ApplyState
+  { accumWorld  :: World                       -- ^ Accumulated ledger state
+  , accumErrs   :: DList Tx.InvalidTransaction -- ^ Accumulated list of invalid transactions
+  , accumDeltas :: Map Address [Delta]         -- ^ Map of Contract Addrs -> Deltas
   }
 
 -- | The Monad used for functions accessing ApplyCtx env and ApplyState state
-type ApplyM e = ReaderT ApplyCtx (StateT (ApplyState e) IO)
+newtype ApplyT m a = ApplyT { unApplyT :: ReaderT ApplyCtx (StateT ApplyState m) a }
+  deriving (Functor, Applicative, Monad, MonadReader ApplyCtx, MonadState ApplyState)
 
-initApplyState :: World -> ApplyState e
+instance MonadBase IO m => MonadBase IO (ApplyT m) where
+  liftBase = ApplyT . liftBase
+
+instance MonadTrans ApplyT where
+  lift = ApplyT . lift . lift
+
+initApplyState :: World -> ApplyState
 initApplyState world = ApplyState
   { accumWorld  = world
   , accumErrs   = mempty
   , accumDeltas = mempty
   }
 
-execApplyM
-  :: ApplyCtx     -- ^ Initial environment values
-  -> ApplyState e -- ^ Initial state to modify
-  -> ApplyM e a   -- ^ Computation
-  -> IO (World, [e], Map Address [Delta])
-execApplyM r s m = f <$> execStateT (runReaderT m r) s
+-- | Evaluate a computation in the ApplyT monad
+execApplyT
+  :: Monad m
+  => ApplyState -- ^ Initial state to modify
+  -> ApplyCtx   -- ^ Initial environment values
+  -> ApplyT m a -- ^ Computation
+  -> m (World, [Tx.InvalidTransaction], Map Address [Delta])
+execApplyT s r =
+    fmap reifyApplyState .
+      flip execStateT s .
+        flip runReaderT r .
+          unApplyT
   where
-    f :: ApplyState e -> (World, [e], Map Address [Delta])
-    f (ApplyState w e' d) = (w,e,d)
-      where
-        e = e' `DL.apply` []
+    -- | Evaluates the DList accumulating errors
+    reifyApplyState :: ApplyState -> (World, [Tx.InvalidTransaction], Map Address [Delta])
+    reifyApplyState (ApplyState w itxs' d) = let itxs = itxs' `DL.apply` [] in (w,itxs,d)
 
 -- | Set the world state
-putWorld :: World -> ApplyM e ()
+putWorld :: Monad m => World -> ApplyT m ()
 putWorld w = modify $ \applyState ->
   applyState { accumWorld = w }
 
 -- | Add an error to ApplyState
-throwError :: e -> ApplyM e ()
-throwError e = modify $ \applyState ->
+accumInvalidTx :: Monad m => Tx.InvalidTransaction -> ApplyT m ()
+accumInvalidTx itx = modify $ \applyState ->
   let accumErrs' = accumErrs applyState in
-  applyState { accumErrs = accumErrs' `DL.append` DL.fromList [e] }
+  applyState { accumErrs = accumErrs' `DL.append` DL.fromList [itx] }
 
 -- | Add a list of Deltas to ApplyState
-appendDeltas :: Address -> [Delta] -> ApplyM e ()
+appendDeltas :: Monad m => Address -> [Delta] -> ApplyT m ()
 appendDeltas addr ds = modify $ \applyState ->
   let accumDeltas' = accumDeltas applyState in
   applyState {
@@ -252,43 +294,21 @@ appendDeltas addr ds = modify $ \applyState ->
 
 -------------------------------------------------------------------------------
 
--- | Applies the transactions in a block to the world state
+-- | Applies a block's transactions to the ledger state, accumulating state
+-- along the way such that transactions that come later in the block can depend
+-- on transaction state modifications performed by txs earlier in the block
 applyBlock
-  :: ApplyCtx
-  -> World
-  -> Block.Block
-  -> IO (World, [Tx.InvalidTransaction], Map Address [Delta])
-applyBlock applyCtx initWorld =
-  applyTransactions applyCtx initWorld . Block.transactions
-
-applyTransactions
-  :: ApplyCtx
-  -> World
-  -> [Tx.Transaction]
-  -> IO (World, [Tx.InvalidTransaction], Map Address [Delta])
-applyTransactions ctx world =
-    execApplyM ctx initState . mapM applyTransaction
-  where
-    initState = initApplyState world
-
--- | Validates a transaction and then applies it to the world state
-applyTransaction :: Transaction -> ApplyM Tx.InvalidTransaction ()
-applyTransaction tx = do
-  world <- gets accumWorld
-  -- Validate and attempt to apply block
-  let validTxOrigin = validateTransactionOrigin world tx
-  -- If validation or application fails, accum error
-  case validTxOrigin of
-    Left err       -> throwError err
-    Right newWorld -> applyTxHeader tx
-
--------------------------------------------------------------------------------
+  :: MonadBase IO m
+  => Block
+  -> ApplyT m ()
+applyBlock = mapM_ applyTransaction . Block.transactions
 
 -- | Applies the contents of the TxHeader to the world state
-applyTxHeader
-  :: Transaction
-  -> ApplyM Tx.InvalidTransaction ()
-applyTxHeader tx@Transaction{..} =
+applyTransaction
+  :: MonadBase IO m
+  => Transaction
+  -> ApplyT m ()
+applyTransaction tx@Transaction{..} =
     case header of
 
       -- Accounts
@@ -305,24 +325,23 @@ applyTxHeader tx@Transaction{..} =
 
 -- | Applies TxAsset headers to world state
 applyTxAsset
-  :: Transaction
+  :: Monad m
+  => Transaction
   -> Tx.TxAsset
-  -> ApplyM Tx.InvalidTransaction ()
+  -> ApplyT m ()
 applyTxAsset tx txAsset = do
 
+  blockTs <- Block.timestamp . Block.header <$> asks applyCurrBlock
   world <- gets accumWorld
 
   case txAsset of
 
-    Tx.CreateAsset addr name supply mRef atyp metadata -> do
-      let assetAddr = D.addrAsset (toBytes name) origin supply mRef atyp txTimestamp
-      if assetAddr /= addr
-        then throwInvalidTxAsset $ Tx.DerivedAddressesDontMatch assetAddr addr
-        else do
-          let asset = createAsset (toBytes name) origin supply mRef atyp txTimestamp assetAddr metadata
-          case Ledger.addAsset addr asset world of
-            Left err -> throwInvalidTxAsset $ Tx.AssetError err
-            Right newworld -> putWorld newworld
+    Tx.CreateAsset name supply mRef atyp metadata -> do
+      let assetAddr = Tx.transactionToAddress tx
+          asset = createAsset (toBytes name) origin supply mRef atyp blockTs assetAddr metadata
+       in case Ledger.addAsset assetAddr asset world of
+                Left err -> throwInvalidTxAsset $ Tx.AssetError err
+                Right newworld -> putWorld newworld
 
     Tx.Transfer assetAddr toAddr amnt -> do
       let eLedger = Ledger.transferAsset assetAddr origin toAddr amnt world
@@ -355,16 +374,16 @@ applyTxAsset tx txAsset = do
 
   where
     origin = Tx.origin tx
-    txTimestamp = Tx.timestamp tx
 
     throwInvalidTxAsset =
-      throwError . mkInvalidTx tx . Tx.InvalidTxAsset
+      accumInvalidTx . mkInvalidTx tx . Tx.InvalidTxAsset
 
 -- | Applies TxAccount headers to world state
 applyTxAccount
-  :: Transaction
+  :: Monad m
+  => Transaction
   -> Tx.TxAccount
-  -> ApplyM Tx.InvalidTransaction ()
+  -> ApplyT m ()
 applyTxAccount tx txAccount = do
 
   world <- gets accumWorld
@@ -372,20 +391,19 @@ applyTxAccount tx txAccount = do
   case txAccount of
 
     Tx.CreateAccount pub tz md ->
-      case Key.tryDecodePub pub of
-        Left err -> throwError $ mkInvalidTx tx $
+      case Key.tryDecodePub (toBytes pub) of
+        Left err -> accumInvalidTx $ mkInvalidTx tx $
           Tx.InvalidTxAccount $ Tx.InvalidPubKeyByteString $ toS err
         Right pub' -> do
           let newAccount = Account.createAccount pub' tz md
-          let eWorld = first Tx.AccountError $
-                Ledger.addAccount newAccount world
+          let eWorld = first Tx.AccountError $ Ledger.addAccount newAccount world
           case eWorld of
-            Left err -> throwError $ mkInvalidTx tx $ Tx.InvalidTxAccount err
+            Left err -> accumInvalidTx $ mkInvalidTx tx $ Tx.InvalidTxAccount err
             Right newWorld -> putWorld newWorld
 
     Tx.RevokeAccount accAddr ->
       case Ledger.lookupAccount accAddr world of
-        Left err -> throwError $ mkInvalidTx tx $
+        Left err -> accumInvalidTx $ mkInvalidTx tx $
           Tx.InvalidTxAccount $ Tx.AccountError err
         Right acc -> do
           currBlock <- asks applyCurrBlock
@@ -393,43 +411,40 @@ applyTxAccount tx txAccount = do
           let accAddr = Account.address acc
           -- If account is validator account, do not allow revocation
           if accAddr `CAP.isValidatorAddr` validatorSet'
-            then throwError $ mkInvalidTx tx $
+            then accumInvalidTx $ mkInvalidTx tx $
               Tx.InvalidTxAccount $ Tx.RevokeValidatorError accAddr
             else do
               let eWorld = first Tx.AccountError $ Ledger.removeAccount acc world
               case eWorld of
-                Left err -> throwError $ mkInvalidTx tx $ Tx.InvalidTxAccount err
+                Left err -> accumInvalidTx $ mkInvalidTx tx $ Tx.InvalidTxAccount err
                 Right newWorld -> putWorld newWorld
 
 -- | Applies TxContract headers to world state
 applyTxContract
-  :: Transaction   -- ^ For error throwing InvalidTransaction
+  :: forall m. MonadBase IO m
+  => Transaction   -- ^ For error throwing InvalidTransaction
   -> Tx.TxContract
-  -> ApplyM Tx.InvalidTransaction ()
+  -> ApplyT m ()
 applyTxContract tx txContract = do
 
-  let ts = Tx.timestamp tx
   let issuer = Tx.origin tx
 
   case txContract of
 
-    Tx.CreateContract addr scriptSS -> do
-      let scriptText = decodeUtf8 $ SafeString.toBytes scriptSS
+    Tx.CreateContract scriptSS -> do
+      let scriptText = decodeUtf8 $ toBytes scriptSS
+          contractAddr = Tx.transactionToAddress tx
 
       world <- gets accumWorld
       applyCtx <- ask
-      evalCtx <- liftIO $ initEvalCtxTxCreateContract applyCtx tx addr
-      eContract
-        <- liftIO
-           $ Script.Init.createContractWithEvalCtx
-               evalCtx
-               world
-               scriptText
+      eContract <- liftBase $ do
+        evalCtx <- initEvalCtxTxCreateContract applyCtx tx contractAddr
+        Script.Init.createContractWithEvalCtx evalCtx world scriptText
       case eContract of
         Left err -> throwTxContract $ Tx.InvalidContract $ toS err
         Right contract -> do
           world <- gets accumWorld
-          let eContract = Ledger.addContract addr contract world
+          let eContract = Ledger.addContract contractAddr contract world
           case eContract of
             Left err -> throwTxContract $ Tx.ContractError err
             Right newWorld -> putWorld newWorld
@@ -463,23 +478,25 @@ applyTxContract tx txContract = do
           first Tx.InvalidCallArgType $
             TC.tcMethod enums method args
           Right method
+
     applyCall
       :: Contract.Contract -- Contract from which to exec method
       -> Script.Method     -- Method to eval
       -> [Script.Value]    -- Method args
-      -> ApplyM Tx.InvalidTransaction ()
+      -> ApplyT m ()
     applyCall contract method argVals = do
 
       -- Setup evalCtx and evalState
       applyCtx <- ask
       world <- gets accumWorld
-      evalCtx <- liftIO $ initEvalCtxTxCall applyCtx contract tx
-      let evalState = Eval.initEvalState contract world
 
       -- Evaluate the method call
-      evalRes <- liftIO $
+      evalRes <- liftBase $ do
+        evalCtx <- initEvalCtxTxCall applyCtx contract tx
+        let evalState = Eval.initEvalState contract world
         Eval.execEvalM evalCtx evalState $
           Eval.evalMethod method argVals
+
       case evalRes of
         Left err -> throwTxContract $ Tx.EvalFail err
         Right resEvalState -> do
@@ -511,8 +528,11 @@ applyTxContract tx txContract = do
       Ledger.updateContract (Contract.address c) newContract $ Eval.worldState es
 
     -- Error helpers
-    throwTxContract = throwError . mkInvalidTx tx . Tx.InvalidTxContract
-    throwTxAsset = throwError . mkInvalidTx tx . Tx.InvalidTxAsset
+    throwTxContract :: Tx.InvalidTxContract -> ApplyT m ()
+    throwTxContract = accumInvalidTx . mkInvalidTx tx . Tx.InvalidTxContract
+
+    throwTxAsset :: Tx.InvalidTxAsset -> ApplyT m ()
+    throwTxAsset = accumInvalidTx . mkInvalidTx tx . Tx.InvalidTxAsset
 
 -- | Intializes an evaluation context from values available
 -- to the TxContract Call transaction in `applyTxContract` case
@@ -548,7 +568,7 @@ initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr = do
     , currentValidator = applyNodeAddress
     , currentTransaction = Tx.base16HashTransaction tx
     , currentTimestamp = Block.timestamp $ Block.header applyCurrBlock
-    , currentCreated = Tx.timestamp tx
+    , currentCreated = Block.timestamp $ Block.header applyCurrBlock
     , currentDeployer = Tx.origin tx
     , currentTxIssuer = Tx.origin tx
     , currentAddress = contractAddr

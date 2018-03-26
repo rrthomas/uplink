@@ -26,6 +26,7 @@ module Reference (
   testCirculate,
   testCreateAccount,
   testCreateAsset,
+  testRevokeAsset,
   testCreateContract,
   testRevokeAccount,
   testCall,
@@ -50,6 +51,7 @@ module Reference (
   testAsset3,
   testAsset3',
   testAssets,
+  testAssetsDB,
   testHoldings,
 
   -- ** Account
@@ -166,7 +168,6 @@ import qualified Script
 import qualified Address
 import qualified Account
 import qualified SafeString
-import qualified Derivation
 import qualified Transaction
 import qualified Data.Map as Map
 import qualified Network.P2P.Consensus as NPC
@@ -246,25 +247,26 @@ testTransfer = TxAsset Transfer {
 
 testCreateAccount :: TransactionHeader
 testCreateAccount = TxAccount CreateAccount {
-    pubKey   = Key.unHexPub (Key.hexPub testPub)
+    pubKey   = SafeString.fromBytes' $ Key.unHexPub (Key.hexPub testPub)
   , timezone = "GMT"
   , metadata = mempty
   }
 
 testCreateAsset :: TransactionHeader
 testCreateAsset = TxAsset CreateAsset {
-    assetAddr = testAddr
-  , assetName = "test"
+    assetName = "test"
   , supply    = 1000
   , reference = Just Asset.Token
   , assetType = Asset.Discrete
   , metadata = testMetadata
   }
 
+testRevokeAsset :: TransactionHeader
+testRevokeAsset = TxAsset $ RevokeAsset testAddr
+
 testCreateContract :: TransactionHeader
 testCreateContract = TxContract CreateContract {
-    address = testAddr
-  , contract = SafeString.fromBytes' testCode
+    contract = SafeString.fromBytes' $ toS testCode
   }
 
 testRevokeAccount :: TransactionHeader
@@ -303,8 +305,17 @@ testTx hdr = tx
       header    = hdr
     , origin    = testAddr
     , signature = Key.encodeSig sig
-    , timestamp = testTimestamp
     }
+
+testTx_ :: TransactionHeader -> IO Transaction
+testTx_ hdr = mkTx <$> Key.signS testPriv hdr
+  where
+    mkTx sig = Transaction {
+      header    = hdr
+    , origin    = testAddr
+    , signature = Key.encodeSig sig
+    }
+
 
 testTxs :: [Transaction]
 testTxs = map testTx
@@ -325,9 +336,6 @@ testInvalidTxs =
     itxs =
       [ (testCreateAccount
         , itxhdr $ InvalidTxAccount (InvalidPubKeyByteString "thisisnotapublickey")
-        )
-      , (testCreateAsset
-        , itxhdr $ InvalidTxAsset (DerivedAddressesDontMatch testAddr testAddr2)
         )
       , (testTransfer
         , itxhdr $ InvalidTxAsset $ Transaction.AssetError (ReceiverDoesNotExist testAddr)
@@ -432,13 +440,8 @@ mkTestAsset name supply ref typ = Asset{..}
     metadata = testMetadata
 
     address =
-      Derivation.addrAsset
-        name
-        issuer
-        supply
-        reference
-        assetType
-        issuedOn
+      transactionToAddress $
+        testTx testCreateAsset
 
 testAsset1 :: Asset
 testAsset1 =
@@ -474,9 +477,26 @@ testAsset3' =
         Map.fromList [(testAddr, 10000),(testAddr2, 10000)]
   in testAsset3 {holdings = holdings, supply = 10000000}
 
+-- | Warning: All assets will have the same address
 testAssets :: [Asset]
 testAssets =
   [testAsset1, testAsset2, testAsset3]
+
+-- | Create test assets with random addresses
+testAssetsDB :: IO [Asset]
+testAssetsDB = do
+    addr1 <- randAddr
+    addr2 <- randAddr
+    addr3 <- randAddr
+    pure $
+      [ testAsset1 { Asset.address = addr1 }
+      , testAsset2 { Asset.address = addr2 }
+      , testAsset3 { Asset.address = addr3 }
+      ]
+  where
+    randAddr = do
+      pub <- fst <$> Key.new
+      pure $ deriveAddress pub
 
 testHoldings :: IO (Either Asset.AssetError Asset)
 testHoldings = do
@@ -605,34 +625,112 @@ transX = [
 testScript :: Script
 testScript = Script [enumE] [defX, defY] transX [setY, getX, setX]
 
-testCode :: ByteString
+testCode :: Text
 testCode =
-  "global float x = 0.0; \
-  \ local int y = 7;\
-  \ asset z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
-  \ contract c = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
+  " global float x = 0.0; \
+  \ global fixed3 f = 1.234f; \
+  \ global fixed2 q; \
+  \ local int y = 7; \
+  \ local float v; \
+  \ assetFrac5 z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
+  \ contract c = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';  \
   \ account a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
-  \ setX (int z) { \
-  \   x = 42.0;\
-  \   y = y * z;\
-  \   return x;\
-  \ }\
-  \ getX () {\
-  \   j = 10 + 7 * 10;\
-  \   k = j;\
-  \   l = k;\
-  \   return l; \
-  \ }\
-  \ f (int j, bool k) { \
-  \   if (k) { return j; } else { return -1; }; \
-  \ }\
-  \ g (asset f, account t) { \
+  \  \
+  \ datetime dt; \
+  \  \
+  \ transition initial -> setX; \
+  \ transition setX -> update; \
+  \ transition update -> setX; \
+  \ transition setX -> setup; \
+  \ transition update -> setup; \
+  \ transition setup -> confirmation; \
+  \ transition confirmation -> settlement; \
+  \ transition settlement -> terminal; \
+  \  \
+  \ transition initial -> circulated; \
+  \ transition circulated -> terminal; \
+  \  \
+  \ @setDate \
+  \ setDate() { \
+  \   dt = \"2020-10-20T15:50:12+00:00\"; \
+  \ } \
+  \  \
+  \ @initial \
+  \ initialize () { \
+  \   transitionTo(:setX); \
+  \ } \
+  \  \
+  \ @setup \
+  \ confirm () { \
+  \   transitionTo(:confirmation); \
+  \ } \
+  \  \
+  \ @confirmation \
+  \ settle () { \
+  \   transitionTo(:settlement); \
+  \ } \
+  \  \
+  \ @settlement \
+  \ finalize () { \
+  \   transitionTo(:terminal); \
+  \ } \
+  \  \
+  \ @setX \
+  \ setX (int j, float k) { \
+  \   x = k; \
+  \   y = y * j; \
+  \   f = 2.516f + f; \
+  \   x = fixed3ToFloat(floatToFixed3(k)) + x; \
+  \   transitionTo(:update); \
+  \ } \
+  \  \
+  \ @setX \
+  \ fixX () { \
+  \   transitionTo(:setup); \
+  \ } \
+  \  \
+  \ @update \
+  \ fixY () { \
+  \   transitionTo(:setup); \
+  \ } \
+  \  \
+  \ @update \
+  \ update () { \
+  \   j = 10 + 7 * 10; \
+  \   k = j; \
+  \   l = k; \
+  \   m = 1.23f + 4.56f - 7.89f * 9.87f / 65.43f; \
+  \   q = m + 1.00f + floatToFixed2(x); \
+  \   transitionTo(:setX); \
+  \ } \
+  \  \
+  \ @f \
+  \ f (int j, bool k) {  \
+  \   if (k) { \
+  \   } else { \
+  \   }; \
+  \ } \
+  \  \
+  \  \
+  \  \
+  \ @g \
+  \ g (assetDisc f, account t) { \
   \   if (assetExists(f) && accountExists(t)) { \
-  \     transferTo(f,20); \
-  \     transferFrom(f, 20, t);\
-  \   } else {\
-  \     return void; \
-  \   };\
+  \     transferTo(f, 20); \
+  \     transferFrom(f, 20, t); \
+  \   }; \
+  \ } \
+  \  \
+  \ @initial \
+  \ circulate(assetFrac2 a, fixed2 amount) { \
+  \   circulate(a,amount); \
+  \   transitionTo(:circulated); \
+  \ } \
+  \  \
+  \ @circulated \
+  \ transfer(assetBin a, account from, account to, bool amount) { \
+  \   transferHoldings(from,a,amount,to); \
+  \   terminate(\"finished transfer\"); \
   \ }"
 
 -------------------------------------------------------------------------------

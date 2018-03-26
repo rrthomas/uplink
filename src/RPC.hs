@@ -51,7 +51,6 @@ import qualified Contract
 import qualified Validate
 import qualified NodeState
 import qualified Node.Peer
-import qualified Derivation
 import qualified Transaction as Tx
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
@@ -541,7 +540,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
         runProcess localNode $ do
           -- XXX handle potential failure on submission
           _ <- Cmd.commTasksProc $ Cmd.Transaction tx
-          let txHashText = decodeUtf8 $ Tx.base16HashTransaction tx
+          let txHashText = toS $ Tx.base16HashTransaction tx
           liftBase $ putMVar rpcRespMVar $ RPCTransactionOK txHashText
 
       Query textQ -> do

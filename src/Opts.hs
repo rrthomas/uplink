@@ -16,6 +16,9 @@ module Opts (
 
   KeyCommand(..),
   DataCommand(..),
+  DataFormat(..),
+  ExportData(..),
+  ImportData(..),
   ChainCommand(..),
   ScriptCommand(..),
 ) where
@@ -36,6 +39,7 @@ data Command
   | Script  ScriptCommand
   | Data    DataCommand
   | Version
+  | Repl { script :: FilePath, verbose :: Bool, worldState :: Maybe FilePath }
   deriving (Eq, Ord, Show)
 
 data KeyCommand
@@ -44,11 +48,18 @@ data KeyCommand
 
 data ScriptCommand
   = CompileScript { file :: FilePath, localStorage :: Maybe FilePath }
-  | ReplScript { script :: Maybe FilePath, verbose :: Bool }
   | Lint { file :: FilePath }
   | Format { file :: FilePath }
   | Graph { file :: FilePath }
   deriving (Eq, Ord, Show)
+
+data DataFormat = XML | JSON
+  deriving (Eq, Ord, Read, Show)
+
+data ExportData
+  = ExportBlocks DataFormat -- ^ Export blocks as JSON or XML
+  | ExportLedgerState       -- ^ Export the Ledger State as JSON
+  deriving (Eq, Ord, Read, Show)
 
 data DataCommand
   = Get Address.Address
@@ -58,14 +69,22 @@ data DataCommand
     , contractAddr :: Address.Address
     , accountAddr  :: Address.Address
     }
-  | Export { fPath :: FilePath }
+  | Export
+    { exportType :: ExportData
+    , fPath      :: FilePath
+    }
   | LoadAsset FilePath Address.Address
   | LoadAccount FilePath
   deriving (Eq, Ord, Show)
 
+data ImportData
+  = ImportBlocks FilePath
+  | ImportLedger FilePath
+  deriving (Eq, Ord, Show)
+
 data ChainCommand
   = Run
-  | Init Account.AccountPrompt
+  | Init Account.AccountPrompt (Maybe ImportData)
   deriving (Eq, Ord, Show)
 
 -- Overloaded configuration settings passed on the commandline that supercede

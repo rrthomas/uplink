@@ -40,6 +40,7 @@ import qualified Storage
 import qualified Address
 
 import Script (Script, Name, lookupMethod)
+import Script.Pretty (prettyPrint, (<+>), ppr)
 import Script.Graph (GraphState(..), initialLabel, terminalLabel)
 import qualified Script
 import qualified Storage
@@ -97,12 +98,11 @@ data Contract = Contract
 
 
 -- XXX: Implement full validation
-validateContract :: Contract -> IO Bool
+validateContract :: Contract -> Bool
 validateContract Contract {..} = do
-  return $ and
-    [ (length methods) > 0
-    , isRight (Typecheck.signatures script)
-    ]
+  and [ (length methods) > 0
+      , isRight (Typecheck.signatures script)
+      ]
 
 -- | Digitally sign a contract with a private key.
 signContract :: Key.PrivateKey -> Contract -> IO Key.Signature
@@ -148,6 +148,10 @@ lookupContractMethod nm c =
     Just method
       | method `elem` callableMethods c -> Right method
       | otherwise -> Left $ MethodNotCallable nm (state c)
+
+instance Pretty.Pretty InvalidMethodName where
+  ppr (MethodDoesNotExist nm) = "Method does not exist:" <+> ppr nm
+  ppr (MethodNotCallable nm state) = "Method " <+> ppr nm <+> "not callable in current state:" <+> ppr state
 
 -------------------------------------------------------------------------------
 -- Serialization

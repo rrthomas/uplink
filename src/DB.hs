@@ -14,7 +14,9 @@ module DB (
   loadWorld,
 
   initGenesisBlock,
-  loadBlocks
+  loadBlocks,
+
+  isTransactionUnique
 
 ) where
 
@@ -31,6 +33,7 @@ import Block
 import Time
 import qualified Account
 import qualified Ledger
+import qualified Transaction as Tx
 import qualified Utils
 
 import qualified Consensus.Authority.Params as CAP
@@ -121,3 +124,12 @@ initGenesisBlock genesisHash genesisTimestamp genPoa runDB = do
     Left err -> Utils.dieRed $
       "Failed to write genesis block to database: " <> show err
     Right _ -> pure ()
+
+--------------------------------------------------------------------------------
+
+-- | Looks up a transaction in the database and returns whether or not the
+-- transaction was found or not.
+isTransactionUnique :: MonadReadDB m => Tx.Transaction -> m Bool
+isTransactionUnique tx =
+  either (const True) (const False) <$>
+    readTransaction (Tx.base16HashTransaction tx)
