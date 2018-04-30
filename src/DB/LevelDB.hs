@@ -65,16 +65,13 @@ import Control.Arrow ((&&&))
 import Account (Account)
 import Asset (Asset)
 import Contract (Contract)
-import Address (Address)
+import Address (Address, AAccount, AAsset, AContract)
 
 import qualified Block
 import qualified Transaction as Tx
 import qualified Asset
-import qualified Address
 import qualified Account
 import qualified Contract
-import qualified Key
-import qualified Storage
 import qualified Ledger
 
 import Control.Monad.Base
@@ -87,15 +84,13 @@ import qualified DB.Class as DBC
 import System.FilePath
 import System.FileLock
 import System.Directory
-import System.Posix.Files
 
-import Data.List (unzip)
 import qualified Data.Map as Map
-import qualified Data.ByteString as BS
 import qualified Database.LevelDB.Base as LevelDB
 import qualified Database.LevelDB.Internal as DBInternal (unsafeClose)
 import qualified Data.Serialize as S
-
+import qualified Encoding
+import qualified Hash
 import System.IO.Error
 
 newtype LevelDBT m a = LevelDBT
@@ -285,12 +280,12 @@ class (Show (Key a), LevelDB db) => HasDB a db | a -> db where
   {-# MINIMAL validate, getKey #-}
 
 instance HasDB Account.Account AcctDB where
-  type Key Account.Account = Address
+  type Key Account.Account = Address AAccount
   getKey   = Account.address
   validate = Account.validateAccount
 
 instance HasDB Asset.Asset AssetDB where
-  type Key Asset.Asset = Address
+  type Key Asset.Asset = Address AAsset
   getKey   = Asset.address
   validate = Asset.validateAsset
 
@@ -300,20 +295,20 @@ instance HasDB Block.Block BlockDB where
   validate = Block.validateBlockDB
 
 instance HasDB Contract.Contract ContractDB where
-  type Key Contract = Address
+  type Key Contract = Address AContract
   getKey   = Contract.address
   validate = Contract.validateContract
 
 instance HasDB Tx.Transaction TxDB where
-  type Key Tx.Transaction = ByteString
-  getKey = Tx.base16HashTransaction
+  type Key Tx.Transaction = Hash.Hash Encoding.Base16ByteString
+  getKey = Tx.hashTransaction
   validate tx =
     either (const False) (const True) $
       Tx.validateTransaction tx
 
 instance HasDB Tx.InvalidTransaction InvalidTxDB where
-  type Key Tx.InvalidTransaction = ByteString
-  getKey = Tx.base16HashInvalidTx
+  type Key Tx.InvalidTransaction = Hash.Hash Encoding.Base16ByteString
+  getKey = Tx.hashInvalidTx
   validate (Tx.InvalidTransaction tx err) =
     either (const False) (const True) $
       Tx.validateTransaction tx
@@ -354,7 +349,7 @@ toWriteFailErr = first (WriteFail . show)
 -------------------------------------------------------------------------------
 
 tryDB :: IO a -> IO (Either IOError a)
-tryDB action = try action
+tryDB = try
 
 lookupDB
   :: (Show a, HasDB a db)
@@ -611,7 +606,7 @@ mkWriteBatchOps world = do
     let putContracts = keysToPuts $ Map.toList $ Ledger.contracts world
     pure (putAccs, putAssets, putContracts)
   where
-    keysToPuts :: HasDB a db => [(Address,a)] -> TaggedBatchOps a
+    keysToPuts :: HasDB a db => [(Address b,a)] -> TaggedBatchOps a
     keysToPuts = TaggedBatchOps . map (uncurry LevelDB.Put . bimap show encodeValue)
 
 -- | Load world state from database.
@@ -641,7 +636,7 @@ mkDeleteBatchOps dbs = do
     -- Read current world
     eWorld <- readWorld dbs
     case eWorld of
-      Left err -> do
+      Left err ->
         panic (show err)
       Right world -> do
         -- construct BatchOp Del operations
@@ -650,6 +645,7 @@ mkDeleteBatchOps dbs = do
         let contractsDel = keysToPut $ Ledger.contracts world
         pure (accountsDel, assetsDel, contractsDel)
   where
+    keysToPut :: Map.Map (Address b) a -> TaggedBatchOps a
     keysToPut = TaggedBatchOps . map (LevelDB.Del . show) . Map.keys
 
 -------------------------------------------------------------------------------

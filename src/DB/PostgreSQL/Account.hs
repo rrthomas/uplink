@@ -13,16 +13,15 @@ module DB.PostgreSQL.Account (
 
 import Protolude
 
-import qualified Data.Text as Text
 
 import Account
-import Address
+import Address (Address, AAccount)
 
 import Database.PostgreSQL.Simple
 
 import DB.PostgreSQL.Error
 
-queryAccount :: Connection -> Address -> IO (Either PostgreSQLError Account)
+queryAccount :: Connection -> (Address AAccount) -> IO (Either PostgreSQLError Account)
 queryAccount conn addr = do
   eAccs <- querySafe conn "SELECT * FROM accounts WHERE address=?" (Only addr)
   case fmap headMay eAccs of
@@ -52,7 +51,7 @@ insertAccounts conn accs =
 
 deleteAccount
   :: Connection
-  -> Address
+  -> Address AAccount
   -> IO (Either PostgreSQLError Int64)
 deleteAccount conn addr =
   executeSafe conn "DELETE FROM accounts WHERE address=?" (Only addr)

@@ -16,6 +16,7 @@ import Crypto.PubKey.ECC.Generate (generateQ)
 
 import qualified Key
 import qualified Address
+import qualified Encoding
 
 instance QC.Arbitrary Key.PubKey where
   arbitrary = do
@@ -39,10 +40,12 @@ keyTests =
 
     , localOption (QC.QuickCheckTests 10000) $
         QC.testProperty "dehexPub (encodeUtf8 $ hexPub pubKey) == pubKey)" $ \pubKey ->
-          let pubKeyHexBS = decodeUtf8 (Key.unHexPub $ Key.hexPub pubKey)
-              ePubKey = Key.dehexPub $ encodeUtf8 pubKeyHexBS
+          let
+            pubKeyHexBS = decodeUtf8 (Key.unHexPub $ Key.encodeHexPub pubKey)
+            ePubKey = case Encoding.parseEncodedBS $ encodeUtf8 pubKeyHexBS of
+              Left (Encoding.BadEncoding err) -> Left (show err)
+              Right b -> Key.decodeHexPub (Key.HexPub b)
           in case ePubKey of
             Left err      -> False
             Right pubKey' -> pubKey == pubKey'
-
     ]

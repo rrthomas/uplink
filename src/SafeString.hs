@@ -42,10 +42,10 @@ import Data.Aeson hiding (encode)
 import Data.Aeson.Types (typeMismatch)
 import qualified Hash
 import qualified Data.Aeson as A
+import qualified Data.Binary as BI
 
 import Script.Pretty (Pretty(..))
 
-import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.ToField
 import Database.PostgreSQL.Simple.FromField
 
@@ -55,7 +55,7 @@ maxSize = 10000
 
 -- | Strings safe for network serialization
 newtype SafeString = SafeString ByteString
-  deriving (Read, Eq, Ord, IsString, Generic, NFData, Hashable, ToField, FromField)
+  deriving (Read, Eq, Ord, IsString, Generic, NFData, BI.Binary, Hashable, ToField, FromField)
 
 -- Exceptions for handling invalid string construction
 data HugeString = HugeString

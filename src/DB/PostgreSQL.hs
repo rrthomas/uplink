@@ -44,8 +44,6 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
 import Control.Distributed.Process.Lifted.Class
 
-import Control.Exception.Lifted (try)
-
 import Data.FileEmbed
 
 import Data.Map as Map
@@ -131,7 +129,7 @@ instance (MonadBase IO m) => MonadReadDB (PostgresT m) where
 
   readTransaction    = withConn . flip queryTransactionByHash
 
-  readInvalidTx hash = withConn (flip queryInvalidTxByHash hash)
+  readInvalidTx      = withConn . flip queryInvalidTxByHash
   readInvalidTxs     = withConn queryInvalidTxs
 
   readWorld          = withConn readWorld

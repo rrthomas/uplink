@@ -1,4 +1,4 @@
-{-|
+{-
 
 Driver for command line option handling.
 
@@ -14,19 +14,17 @@ module Driver (
 
 import Protolude hiding (link, newChan)
 
-import qualified Control.Concurrent.Chan as Chan
-
 import Control.Monad.Base
 import Control.Distributed.Process hiding (try)
 import qualified Control.Distributed.Process.Node as DPN
-import Control.Distributed.Process.Node (initRemoteTable, runProcess)
+import Control.Distributed.Process.Node (runProcess)
 
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Aeson.Encode.Pretty as A
 import qualified Data.Aeson as A
+import qualified Data.Coerce as Coerce
 
 import Opts
 import Config (Config(..), ChainSettings(..), handleChain)
@@ -46,41 +44,27 @@ import qualified Authority
 import qualified MemPool
 import qualified Contract
 import qualified Storage
-import qualified TxLog
-import qualified Consensus.Authority.Params as CAP
 import qualified Consensus.Authority.State  as CAS
 import qualified Script.Pretty as Pretty
 import qualified Script.Analysis as Anal
 import qualified Script.Compile as Compile
 import qualified Script.Typecheck as Typecheck
 import qualified System.Console.ANSI as ANSI
-import System.Directory
 import qualified System.Exit
 
-import DB.Class
 import qualified DB
 import qualified DB.PostgreSQL
 import qualified DB.LevelDB
 
-import Crypto.Random.EntropyPool as Entropy
-import qualified Pedersen
-
-import qualified Network.Transport.TCP as TCP
-
 import Network.Utils
-import qualified Network.P2P.Cmd as Cmd
 import qualified Network.P2P as P2P
 import qualified Network.P2P.Service as Service
-import qualified Network.Utils as NUtils
 
 import qualified XML
-import qualified Text.XML.Expat.Tree as XML
-import qualified Text.XML.Expat.Pickle as XML
-import qualified Text.XML.Expat.Format as XML
 import qualified REPL
 
-import Utils
 import SafeString
+
 --------------------------------------------------------------------------------
 -- Uplink
 --------------------------------------------------------------------------------
@@ -99,14 +83,18 @@ driver (Chain cmd) opts (config @ Config {..}) = do
   -- ==========================
   chainSettings <- handleChain False chainConfigFile
 
-  -- Setup entropy pool with 4096 bytes of entropy
-  -- ========================================
-  pool <- Entropy.createEntropyPool
-  seed <- Entropy.getEntropyFrom pool 128 :: IO ByteString
-
   when nonetwork $ do
     logInfo "Not connecting because --no-network"
     System.Exit.exitSuccess
+
+  -- Read Network Access Token
+  -- =========================
+  accessToken <- do
+    eAccessToken <- Key.readKeys (Config.accessToken config)
+    case eAccessToken of
+      Left err -> Utils.dieRed $
+        "Failed to read network access token: " <> err
+      Right atok -> pure atok
 
   -- Setup Node Data Files
   -- =====================
@@ -137,38 +125,22 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       Right nodeData -> pure (nodeData, accType)
 
   let nodeDataFps = NF.mkNodeDataFilePaths nodeDataDir
-  let (NF.NodeData nodeAcc (nodePubKey, nodePrivKey) nodePeers) = nodeData
 
-  let fingerprint = toS $ Key.fingerprint nodePubKey
+  let fingerprint = toS $ Key.fingerprint (fst $ NF.nodeKeys nodeData)
   Utils.putGreen $ "Found existing account with fingerprint:\n  " <> fingerprint
 
   -- Initialize NodeEnv (NodeConfig & NodeState)
   -- ===========================================
-  let mkNodeEnv world genesisBlock lastBlock = do
-        let eInvalidTxPool = MemPool.mkInvalidTxPool 100
-        case eInvalidTxPool of
-          Left err -> Utils.dieRed
-            "Invalid size specified for Invalid Transaction pool."
-          Right invalidTxPool -> do
-            nodeState <-
-              NodeState.initNodeState
-                world
-                Set.empty
-                MemPool.emptyMemPool
-                invalidTxPool
-                CAS.defPoAState
-                lastBlock
-            let nodeConfig =
-                  NodeState.NodeConfig {
-                    NodeState.account      = nodeAcc
-                  , NodeState.privKey  = nodePrivKey
-                  , NodeState.accountType  = nodeAccType
-                  , NodeState.dataFilePaths = nodeDataFps
-                  , NodeState.genesisBlock = genesisBlock
-                  , NodeState.config       = config
-                  }
-            pure $ NodeState.NodeEnv nodeConfig nodeState
-
+  let initNodeEnv initWorld genesisBlock lastBlock = do
+        eNodeEnv <- do
+          let testMode = Config.testMode config
+              preallocated = Config.preallocated config
+          NodeState.initNodeEnv
+            nodeData nodeDataFps nodeAccType genesisBlock preallocated testMode accessToken -- NodeConfig args
+            initWorld Set.empty MemPool.emptyMemPool 100 CAS.defPoAState lastBlock -- NodeState args
+        case eNodeEnv of
+          Left err -> Utils.dieRed $ "Failed to intialize Uplink node environment: " <> show err
+          Right nodeEnv -> pure nodeEnv
 
   -- Run RPC Server & boot P2P processes:
   --   Dispatches on backend, using different MonadDB runner
@@ -221,7 +193,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       world <- DB.loadWorld runPostgresT'
       Utils.putGreen "Loading genesis block from DB."
       (genesisBlock, lastBlock) <- DB.loadBlocks runPostgresT'
-      nodeEnv <- mkNodeEnv world genesisBlock lastBlock
+      nodeEnv <- initNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
       -- Create the cloud haskell local node
@@ -239,7 +211,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       -- Launch P2P Server
       Utils.putGreen "Starting P2P processes..."
       runProcess localNode . runPostgresT' . runNodeT' $
-          P2P.p2p config
+        P2P.p2p config
 
     -- LevelDB Backend
     -----------------------
@@ -276,7 +248,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       world <- DB.loadWorld runLevelDBT'
       Utils.putGreen "Loading genesis block from DB."
       (genesisBlock, lastBlock) <- DB.loadBlocks runLevelDBT'
-      nodeEnv <- mkNodeEnv world genesisBlock lastBlock
+      nodeEnv <- initNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
       -- Create the cloud haskell local node
@@ -585,8 +557,8 @@ driverData cmd opts (config @ Config {..}) =
         Utils.putGreen (Pretty.prettyPrint addr)
 
       account  <- DB.readAccount addr
-      asset    <- DB.readAsset addr
-      contract <- DB.readContract addr
+      asset    <- DB.readAsset (Coerce.coerce addr)
+      contract <- DB.readContract (Coerce.coerce addr)
 
       liftBase $ do
         case account of

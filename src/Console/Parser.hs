@@ -11,19 +11,14 @@ import qualified Data.String as String
 
 import Text.Parsec
 import Text.Parsec.Text
-import qualified Text.Parsec.Token as Tok
-import qualified Text.Parsec.Language as Lang
 
-import Address (Address, parseAddr)
+import Address (Address, parseAddress, AAccount)
+import Asset (Holder(..))
 import Asset (Ref(..), AssetType(..))
-import Script.Parser (contents, mkParseErrInfo, ParseErrInfo, textLit)
-import qualified Utils
+import Script.Parser (mkParseErrInfo, ParseErrInfo)
 
 import Console.Command
-import Console.Config
 import Console.Lexer
-
-import System.FilePath.Posix
 
 literal :: Parser Text
 literal = lexeme $ T.pack <$> many1 (noneOf " \n")
@@ -81,7 +76,7 @@ parseConsoleCmd = consoleParse command
 parseTransferAsset :: Parser ConsoleCmd
 parseTransferAsset = TransferAsset
   <$> addressParser
-  <*> addressParser
+  <*> holderParser
   <*> integer
 
 parseCreateAsset :: Parser ConsoleCmd
@@ -126,9 +121,16 @@ assetTypeParser =
         Nothing   -> parserFail "Fractional asset denominations must be between 1 and 7"
         Just prec -> pure $ Fractional prec
 
-addressParser :: Parser Address
+addressParser :: Parser (Address a)
 addressParser = do
   s <- literal
-  case Address.parseAddr (encodeUtf8 s) of
-    Nothing -> parserFail "Invalid Address"
-    Just addr -> pure addr
+  case Address.parseAddress (encodeUtf8 s) of
+    Left err   -> parserFail "Invalid Address"
+    Right addr -> pure addr
+
+holderParser :: Parser Holder
+holderParser = do
+  addr <- addressParser
+
+  -- The address tag is arbitrary, to make the type checker happy
+  pure (Holder (addr :: Address AAccount))

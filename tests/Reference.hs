@@ -19,7 +19,6 @@ module Reference (
   testAddr,
   testAddr2,
   testAddrValid,
-  testShowAddr,
 
   -- ** Transaction Headers
   testTransfer,
@@ -77,14 +76,11 @@ module Reference (
 
   -- ** Network.P2P.Message
   txMsg,
-  syncMsg,
-  poolMsg,
   pingMsg,
   pongMsg,
   blockMsg,
   getBlockAtIdxMsg,
   versionMsg,
-  notFoundMsg,
   serviceRestartMsg,
   resetMemPoolMsg,
 
@@ -194,20 +190,22 @@ unsafeTimestamp = unsafePerformIO Time.now
 -- Address Fixtures
 -------------------------------------------------------------------------------
 
-testAddr :: Address
+testAddr :: Address a
 testAddr = deriveAddress testPub
 
-testAddr2 :: Address
+testAddr2 :: Address a
 testAddr2 = deriveAddress testPub2
+
+testHolder :: Holder
+testHolder = Holder (testAddr :: Address AAccount)
+
+testHolder2 :: Holder
+testHolder2 = Holder (testAddr2 :: Address AAccount)
 
 testAddrValid :: IO ()
 testAddrValid = do
   (pub, addr) <- newPair
-  print $ validateAddress addr
   print $ verifyAddress pub addr
-
-testShowAddr :: Text
-testShowAddr = showAddr (undefined :: AContract, testAddr)
 
 -------------------------------------------------------------------------------
 -- Transaction Header Fixtures
@@ -215,9 +213,12 @@ testShowAddr = showAddr (undefined :: AContract, testAddr)
 
 -- XXX Make test tx headers for all tx header types
 
-assetAddr_, toAddr_ :: Address.Address
-assetAddr_ = Address.parseAddress "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB"
-toAddr_ = Address.parseAddress "7mR5d7s6cKB4qjuX1kiwwNtygfURhFQ9TKvEd9kmq6QL"
+assetAddr_, toAddr_ :: Address a
+assetAddr_ = Address.fromRaw "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB"
+toAddr_ = Address.fromRaw "7mR5d7s6cKB4qjuX1kiwwNtygfURhFQ9TKvEd9kmq6QL"
+
+toHolder_ :: Holder
+toHolder_ = Holder (toAddr_ :: Address AAccount)
 
 testArgs :: [Value]
 testArgs = [
@@ -234,20 +235,20 @@ testArgs = [
 testCirculate :: TransactionHeader
 testCirculate = TxAsset Transfer {
     assetAddr = Reference.assetAddr_
-  , toAddr    = Reference.toAddr_
+  , toAddr    = Reference.toHolder_
   , balance   = 1
   }
 
 testTransfer :: TransactionHeader
 testTransfer = TxAsset Transfer {
     assetAddr = Reference.assetAddr_
-  , toAddr    = Reference.toAddr_
+  , toAddr    = Reference.toHolder_
   , balance   = 1
   }
 
 testCreateAccount :: TransactionHeader
 testCreateAccount = TxAccount CreateAccount {
-    pubKey   = SafeString.fromBytes' $ Key.unHexPub (Key.hexPub testPub)
+    pubKey   = SafeString.fromBytes' $ Key.unHexPub (Key.encodeHexPub testPub)
   , timezone = "GMT"
   , metadata = mempty
   }
@@ -338,7 +339,7 @@ testInvalidTxs =
         , itxhdr $ InvalidTxAccount (InvalidPubKeyByteString "thisisnotapublickey")
         )
       , (testTransfer
-        , itxhdr $ InvalidTxAsset $ Transaction.AssetError (ReceiverDoesNotExist testAddr)
+        , itxhdr $ InvalidTxAsset $ Transaction.AssetError (ReceiverDoesNotExist testHolder)
         )
       , (testCreateContract
         , itxhdr $ InvalidTxContract (InvalidContract "this is not a valid script")
@@ -370,13 +371,12 @@ testGenesis = do
     txs       = []
     ts        = testTimestamp
     origin    = testAddr
-    prevBlock = ""
     priv      = testPriv
     index     = 0
 
     header = BlockHeader {
       origin     = origin
-    , prevHash   = prevBlock
+    , prevHash   = Hash.emptyHash
     , merkleRoot = Merkle.mtHash (Merkle.mkMerkleTree txs)
     , timestamp  = ts
     , consensus  = testPoA
@@ -412,7 +412,7 @@ testChain = do
   block3 <- testBlock block2 []
   return [block0, block1, block2, block3]
 
-testBlockHash :: IO ByteString
+testBlockHash :: IO (Hash Base16ByteString)
 testBlockHash = do
   genesisBlock <- genesisBlock "29c9abd5" testTimestamp testPoA
   return $ hashBlock genesisBlock
@@ -425,7 +425,7 @@ testBalance :: Text
 testBalance = displayType (Fractional Prec6) 42
 
 mkTestAsset
-  :: ByteString
+  :: Text
   -> Asset.Balance
   -> Asset.Ref
   -> Asset.AssetType
@@ -474,7 +474,7 @@ testAsset3 =
 testAsset3' :: Asset
 testAsset3' =
   let holdings = Holdings $
-        Map.fromList [(testAddr, 10000),(testAddr2, 10000)]
+        Map.fromList [(testHolder, 10000),(testHolder, 10000)]
   in testAsset3 {holdings = holdings, supply = 10000000}
 
 -- | Warning: All assets will have the same address
@@ -500,13 +500,18 @@ testAssetsDB = do
 
 testHoldings :: IO (Either Asset.AssetError Asset)
 testHoldings = do
-  a1 <- Address.newAddr
-  a2 <- Address.newAddr
+  a1 <- newHolder
+  a2 <- newHolder
 
   let x = testAsset1
   let transaction = pure testAsset1 >>=
         circulateSupply a1 1000 >>= circulateSupply a2 1000
   return transaction
+  where
+    newHolder :: IO Holder
+    newHolder = do
+      a <- Address.newAddr
+      return $ Holder (a :: Address AAccount)
 
 -------------------------------------------------------------------------------
 -- Account
@@ -744,27 +749,11 @@ txMsg = do
   let msg = NPM.SendTransactionMsg tx
   pure (NPM.SendTx msg)
 
-poolMsg :: IO Message
-poolMsg = do
-  let hdr = testCreateAccount
-  let tx0 = testTx hdr
-
-  let msg = NPM.GetPoolMsg 30 (replicate 30 tx0)
-  pure (NPM.MemPool msg)
-
-syncMsg :: IO Message
-syncMsg = do
-  let msg = NPM.SyncHeadMsg (Hash.sha256 "") 0
-  pure (NPM.SyncHead msg)
-
 pingMsg :: IO Message
 pingMsg = pure (NPM.Ping "")
 
 pongMsg :: IO Message
 pongMsg = pure (NPM.Pong "")
-
-notFoundMsg :: IO Message
-notFoundMsg = pure NPM.NotFound
 
 versionMsg :: IO Message
 versionMsg = pure (NPM.Version NPM.version)
@@ -811,7 +800,7 @@ testBlockSigMsg = do
   let tx1 = testTx testCreateAccount
   let tx2 = testTx testCreateAccount
   block <- Block.newBlock accAddr pbHash [tx1,tx2] 1337 sk testPoA
-  blockSig' <- Key.sign sk (Block.hashBlock block)
+  blockSig' <- Key.sign sk (Hash.getRawHash $ Block.hashBlock block)
   let blockSig = Block.BlockSignature blockSig' accAddr
   return $ NPC.BlockSigMsg blockSig
 
@@ -868,7 +857,7 @@ testDHPoint :: ECDSA.PublicPoint
 testDHPoint = DH.calculatePublic Key.sec_p256k1 (ECDSA.private_d testPriv)
 
 testDHSecret :: ByteString
-testDHSecret = Encoding.base16 $ B.convert $ DH.getShared Key.sec_p256k1 (ECDSA.private_d testPriv) testDHPoint
+testDHSecret = B.convert $ DH.getShared Key.sec_p256k1 (ECDSA.private_d testPriv) testDHPoint
 
 testDHSecret' :: Integer
 testDHSecret' = CNS.os2ip $ DH.getShared Key.sec_p256k1 (ECDSA.private_d testPriv) testDHPoint

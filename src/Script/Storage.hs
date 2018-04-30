@@ -15,8 +15,6 @@ module Script.Storage (
 import Protolude hiding ((<>))
 
 import Ledger (World)
-import Time (Timestamp)
-import Key (PrivateKey)
 import Address
 import Script
 import Storage
@@ -27,10 +25,8 @@ import qualified Script.Eval as Eval
 import qualified Contract
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Script.Graph (GraphState(..), terminalLabel, initialLabel)
-import qualified Homomorphic as Homo
+import Script.Graph (GraphState(..))
 
-import Data.Foldable (foldlM)
 import Control.Monad.State.Strict (modify')
 
 initLocalStorageVars :: Script -> Contract.LocalStorageVars
@@ -45,13 +41,13 @@ initGlobalStorage (Script _ defns _ _)
     buildStores :: Storage -> Def -> Storage
     buildStores gstore = \case
       LocalDef TInt (Name nm) lit ->
-        Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
+        Map.insert (Key nm) VUndefined gstore
 
       GlobalDef type_ (Name nm) expr ->
-        Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
+        Map.insert (Key nm) VUndefined gstore
 
       GlobalDefNull _ (Located _ (Name nm)) ->
-        Map.insert (Key $ encodeUtf8 nm) VUndefined gstore
+        Map.insert (Key nm) VUndefined gstore
 
       -- XXX what are we supposed to do with local vars?
       _ -> gstore
@@ -78,11 +74,9 @@ initStorage evalCtx world s@(Script _ defns _ _)
         modify' (insertVar nm val)
       _ -> pure ()
 
-    insertVar nm val st
-      = st { globalStorage = Map.insert
-                               (Key . encodeUtf8 . unName $ nm)
-                               val
-                               (globalStorage st)
+    insertVar (Name nm) val st
+      = st { globalStorage =
+               Map.insert (Key nm) val (globalStorage st)
            }
 
     emptyEvalState :: EvalState
@@ -103,9 +97,9 @@ toVCrypto TInt (VInt n) = VCrypto $ toSafeInteger' n
 toVCrypto t     v       = convAddr t v
 
 convAddr :: Script.Type -> Value -> Value
-convAddr TAccount (VAddress addr) = VAccount addr
-convAddr (TAsset _)(VAddress addr) = VAsset addr
-convAddr TContract (VAddress addr) = VContract addr
+convAddr TAccount (VAddress addr) = VAccount (addrFromUnknown addr)
+convAddr (TAsset _)(VAddress addr) = VAsset (addrFromUnknown addr)
+convAddr TContract (VAddress addr) = VContract (addrFromUnknown addr)
 convAddr _ x = x
 
 -- | Pretty print storage map

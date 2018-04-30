@@ -4,8 +4,8 @@
 
 module REPL.Config where
 import Protolude hiding (Type)
-import Control.Distributed.Process (Process, ProcessId)
-import Control.Distributed.Process.Node (LocalNode, runProcess)
+import Control.Distributed.Process (ProcessId)
+import Control.Distributed.Process.Node (LocalNode)
 
 
 import System.Console.Repline
@@ -16,7 +16,7 @@ import Address
 
 data REPLContext = REPLContext {
     simKey  :: SimKey
-  , sender  :: Address
+  , sender  :: Address AAccount
   , verbose :: Bool
   , callableMethods :: [(Name,[(Name,Type)])]
   }

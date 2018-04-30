@@ -21,62 +21,37 @@ module Network.P2P (
 
 import Protolude hiding (newChan, catch)
 
-import Control.Arrow ((&&&))
-import Control.Monad.Base
-import Control.Monad.Catch (catch)
-
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
 import qualified Control.Distributed.Process.Node as DPN
-import qualified Control.Distributed.Process.Node.Lifted as DPNL
-import Control.Distributed.Process.Serializable (Serializable)
 
-import qualified Control.Concurrent.Chan as Chan
-
-import Network (PortID(..), PortNumber, connectTo)
-import Network.Socket (HostName, ServiceName, inet_ntoa)
+import Network.Socket (HostName, ServiceName)
 import qualified Network.Transport.TCP as TCP
 import qualified Network.Transport.InMemory as Mem
 
-import Network.BSD (getHostName, getHostByName, hostAddress)
-
 import qualified Data.Binary as Binary
-import qualified Data.Text as T
 import qualified Data.Map as Map
-import qualified Data.Set as Set
-import qualified Data.List as List
-import qualified Data.ByteString.Char8 as BS
-import qualified Data.Serialize as S
-
-import qualified System.Timeout
-import qualified System.Console.Haskeline as Readline
 
 import DB
 import NodeState
 import qualified Key
 import qualified Utils
-import qualified Asset
-import qualified Ledger
-import qualified Script
 import qualified SafeString
 import qualified Config
 import qualified Account
 import qualified Block
-import qualified Storage
-import qualified NodeState
-import qualified Node.Peer
 import qualified Transaction
-import qualified Console
-import qualified Console.Config
 
 import qualified Network.P2P.Cmd as Cmd
 import qualified Network.P2P.Consensus as P2PConsensus
 import qualified Network.P2P.Simulate as Simulate
 import Network.P2P.Controller
+import Network.P2P.Send (MatchProcBase(..), receiveWaitProcBase)
+import Network.P2P.SignedMsg (nsendPeersSigned)
 import qualified Network.P2P.Logging as Log
 import qualified Network.P2P.Message as Message
 import Network.P2P.Service (Service(..))
-import Network.Utils (mkNodeId, extractNodeId, waitForLocalService, waitForLocalService')
+import Network.Utils (waitForLocalService, waitForLocalService')
 
 -------------------------------------------------------------------------------
 -- Node Creation
@@ -146,7 +121,7 @@ p2p config = do
   let loggingRules = Config.loggingRules config
   spawnLocal (Log.loggerProc loggingRules) >>= register (show Logger)
   -- Initialize PeerController process
-  spawnLocal peerControllerProc
+  spawnLocal (peerControllerProc $ Config.bootnodes config)
   -- Run main process
   waitForLocalService' PeerController 1000000 mainProcess
 
@@ -196,7 +171,7 @@ mainProcess = do
     -- Join the network by asking for next block
     lastBlockIdx <- Block.index <$> NodeState.getLastBlock
     getBlockAtIdx1Msg <- Message.mkGetBlockAtIdxMsg $ lastBlockIdx + 1
-    nsendPeers' msgService getBlockAtIdx1Msg
+    nsendPeersSigned msgService getBlockAtIdx1Msg
 
   case mres of
     Nothing -> do
@@ -217,7 +192,7 @@ mainProcess = do
         NodeState.Existing -> return ()
         NodeState.New      -> do
           nodeAcc <- NodeState.askAccount
-          let pub      = SafeString.fromBytes' $ Key.unHexPub $ Key.hexPub $ Account.publicKey nodeAcc
+          let pub      = SafeString.fromBytes' $ Key.unHexPub $ Key.encodeHexPub $ Account.publicKey nodeAcc
               tz       = Account.timezone nodeAcc
               md       = Account.metadata nodeAcc
               accTxHdr = Transaction.TxAccount $ Transaction.CreateAccount pub tz md
@@ -251,6 +226,10 @@ type ProcessMap m = Map ProcessId (ServiceInfo m)
 data KillAllProcs = KillAllProcs
   deriving (Generic, Binary.Binary)
 
+-- | This process monitors all other uplink processes. It does not used the
+-- `SignedMsg` interface, because all messages this process handles are sent
+-- from the local node itself and does not communicate with any remote
+-- processes.
 supervisorProc
   :: forall m. MonadProcessBase m
   => [(Service, NodeT m ())]
@@ -263,11 +242,10 @@ supervisorProc procs = do
     procsMVar <- liftIO $ newMVar $ Map.fromList procInfos
 
     -- Wait for ProcessMonitorNotifications or QUIT from cmd line
-    controlP $ \runInBase ->
-      forever $ receiveWait
-        [ match $ runInBase . onMonitorNotif procsMVar
-        , match $ runInBase . onKillAllProcs procsMVar
-        ]
+    forever $ receiveWaitProcBase
+      [ MatchProcBase $ onMonitorNotif procsMVar
+      , MatchProcBase $ onKillAllProcs procsMVar
+      ]
   where
     onMonitorNotif
       :: MVar (ProcessMap m)
@@ -321,7 +299,7 @@ spawnService service nproc = do
       isAlive <- whereis (show service)
       case isAlive of
         Nothing -> do
-          liftIO $ threadDelay 100000
+          liftIO $ threadDelay 10000
           waitSpawn pid
         Just _  -> Log.info $
           show service <> " spawned successfully!"

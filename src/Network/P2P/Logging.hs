@@ -28,7 +28,6 @@ import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Hourglass as Hourglass
 import qualified System.Hourglass as Hourglass (dateCurrent)
-import qualified System.Console.ANSI as ANSI
 import qualified System.Directory as Dir
 
 import qualified Network.P2P.Service as Service

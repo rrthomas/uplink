@@ -12,15 +12,20 @@ Script
       , GlobalDef
           (TAsset (TFractional Prec5))
           Name { unName = "z" }
-          (ELit (LAsset H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
+          (ELit
+             (LAsset (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
       , GlobalDef
           TContract
           Name { unName = "c" }
-          (ELit (LContract H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
+          (ELit
+             (LContract
+                (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
       , GlobalDef
           TAccount
           Name { unName = "a" }
-          (ELit (LAccount H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65))
+          (ELit
+             (LAccount
+                (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
       , GlobalDefNull TDateTime Name { unName = "dt" }
       ]
   , scriptTransitions =

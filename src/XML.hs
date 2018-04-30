@@ -9,11 +9,9 @@ module XML (
 import Protolude
 
 import Text.XML.Expat.Pickle
-import Text.XML.Expat.Tree
 import Text.XML.Expat.Format
 import Unsafe (unsafeFromJust)
 
-import Utils
 import Block
 import Asset
 import Script
@@ -26,6 +24,8 @@ import Script.Parser
 import Datetime.Types
 import Consensus.Authority.Params
 import qualified Key
+import qualified Encoding
+import qualified Hash
 import qualified Fixed
 import qualified Data.Set as Set
 import qualified Script.Pretty as Pretty
@@ -54,7 +54,7 @@ instance ToXML Transaction where
 instance ToXML TransactionHeader where
   toXML = renderXML "transactionHeaders" xpTransactionHeader
 
-renderXML :: Text -> (PU [Node Text Text] a) -> [a] -> LByteString
+renderXML :: Text -> PU [Node Text Text] a -> [a] -> LByteString
 renderXML label f v = format (indent 4 (pickleTree body v))
   where
     body = xpRoot (xpElemNodes label $ xpList f)
@@ -63,17 +63,37 @@ renderXML label f v = format (indent 4 (pickleTree body v))
 -- Serializers
 -------------------------------------------------------------------------------
 
-xpAddress :: PU Text Address
+xpAddress :: PU Text (Address a)
 xpAddress =
   xpWrap (fromRaw, rawAddr) xpByteString
+
+xpHolder :: PU Text Holder
+xpHolder =
+  xpWrap (toHolder, holderToAccount) xpAddress
+  where
+    -- The address tag is arbitrary, to make the type checker happy
+    toHolder addr = Holder (addr :: Address AAccount)
 
 xpByteString :: PU Text ByteString
 xpByteString =
   xpWrap (encodeUtf8, decodeUtf8) xpText0
 
+xpBase64PByteString :: PU Text Encoding.Base64PByteString
+xpBase64PByteString =
+  xpWrap (base64P . encodeUtf8, decodeUtf8 . Encoding.unbase64P) xpText0
+  where
+    base64P bs = case Encoding.parseEncodedBS bs of
+      Left err -> panic $ "Base64PByteString encoding error: " <> toS bs
+      Right b -> b
+
+xpHash :: Encoding.ByteStringEncoding a => PU Text (Hash.Hash a)
+xpHash =
+  xpWrap (Hash.toHash . encodeUtf8, decodeUtf8 . Hash.getRawHash) xpText0
+
 xpMetadata :: PU [Node Text Text] Metadata
 xpMetadata =
-  xpWrap (Metadata, unMetadata) $ xpMap "key" "value" xpByteString (xpContent xpByteString)
+  xpWrap (Metadata, unMetadata) $
+    xpMap "key" "value" xpText (xpContent xpText)
 
 xpBlock :: PU [Node Text Text] Block
 xpBlock =
@@ -93,7 +113,7 @@ xpBlockHeader =
   xpElem "header"
     (xp4Tuple
       (xpAttr "origin" xpPrim)
-      (xpAttr "prevHash" xpPrim)
+      (xpAttr "prevHash" xpHash)
       (xpAttr "merkleRoot" xpPrim)
       (xpAttr "timestamp" xpPrim)
       )
@@ -106,10 +126,15 @@ xpBlockSignature =
       xpPair (xpAttr "signature" xpPrim) (xpAttr "signerAddr" xpAddress)
   where
     sigToText :: Key.Signature -> Text
-    sigToText = toS . Key.encodeSig
+    sigToText = toS . Encoding.unbase64P . Key.encodeSig
 
     textToSig :: Text -> Key.Signature
-    textToSig = Key.decodeSig' . toS
+    textToSig = Key.decodeSig' . base64P . toS
+
+    base64P :: ByteString -> Encoding.Base64PByteString
+    base64P bs = case Encoding.parseEncodedBS bs of
+      Left err -> panic $ "Base64PByteString encoding error: " <> toS bs
+      Right b -> b
 
 xpConsensus :: PU [UNode Text] PoA
 xpConsensus =
@@ -126,11 +151,11 @@ xpConsensus =
 
 xpTransaction :: PU [Node Text Text] Transaction
 xpTransaction =
-   xpWrap (\((signature, origin), header) -> Transaction header (encodeUtf8 signature) origin,
-           \(Transaction header signature origin) -> ((decodeUtf8 signature, origin), header)) $
+   xpWrap (\((signature, origin), header) -> Transaction header signature origin,
+           \(Transaction header signature origin) -> ((signature, origin), header)) $
    xpElem "transaction"
        (xpPair
-           (xpAttr "signature" xpText0)
+           (xpAttr "signature" xpBase64PByteString)
            (xpAttr "origin" xpPrim)
        ) xpTransactionHeader
 
@@ -272,7 +297,7 @@ xpTxAsset =
           $ xpElemAttrs "Transfer"
             (xpTriple
               (xpAttr "address" xpAddress)
-              (xpAttr "to" xpPrim)
+              (xpAttr "to" xpHolder)
               (xpAttr "balance" xpPrim))
        , xpWrap (\(assetAddr, amount) -> Circulate assetAddr amount,
                   \(Circulate assetAddr amount) -> (assetAddr, amount))
@@ -291,24 +316,6 @@ xpTxAsset =
           $ xpElemAttrs "RevokeAsset"
             (xpAttr "address" xpAddress)
       ]
-
-{-xpAssetType :: PU (Attributes Text [Char]) AssetType-}
-{-xpAssetType =-}
-  {-xpAlt tag ps-}
-  {-where-}
-    {-tag Discrete = 0-}
-    {-tag (Fractional _) = 1-}
-    {-tag Binary = 2-}
-    {-ps = [xpWrap (\_ -> Discrete, \Discrete -> ())-}
-           {-$ xpAttr "Discrete" xpUnit-}
-
-        {-, xpWrap (Fractional, \(Fractional prec) -> prec)-}
-          {-$ xpElemAttrs "Fractional"-}
-            {-(xpAttr "prec" xpPrim)-}
-
-        {-, xpWrap (\_ -> Binary, \Binary -> ())-}
-           {-$ xpElemNodes "Binary" xpUnit-}
-      {-]-}
 
 xpTxAccount :: PU [UNode Text] TxAccount
 xpTxAccount =

@@ -31,20 +31,16 @@ module DB.PostgreSQL.Block (
 
 import Protolude
 
-import qualified Data.Map as Map
-import qualified Data.Text as Text
-import qualified Data.Serialize as S
-
 import Address
 import Block (Block(..), BlockHeader(..), BlockSignatures)
-import Time
+import qualified Encoding
+import qualified Hash
 import qualified Consensus.Authority.Params as CAP
 
 import DB.PostgreSQL.Error
 import DB.PostgreSQL.Transaction
 
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.ToRow
 
 --------------------------------------------------------------------------------
 -- Types and Conversions
@@ -52,8 +48,8 @@ import Database.PostgreSQL.Simple.ToRow
 
 data BlockRow = BlockRow
   { blockIndex      :: Int
-  , blockOrigin     :: Address
-  , blockPrevHash   :: ByteString
+  , blockOrigin     :: Address AAccount
+  , blockPrevHash   :: Hash.Hash Encoding.Base16ByteString
   , blockMerkleRoot :: ByteString
   , blockTimestamp  :: Int64
   , blockConsensus  :: CAP.PoA

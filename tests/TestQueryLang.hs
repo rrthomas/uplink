@@ -20,6 +20,8 @@ import qualified Test.Tasty.HUnit as HUnit
 import Control.Monad.Base (liftBase)
 import Control.Exception.Lifted (bracket_)
 
+import qualified Data.List.NonEmpty as NE
+
 import qualified DB
 import DB.PostgreSQL
 import DB.PostgreSQL.Asset
@@ -34,6 +36,7 @@ import qualified Data.Map as Map
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.ToField
 
+import qualified Address
 import qualified Account
 import qualified Asset
 import qualified Contract
@@ -80,8 +83,6 @@ instance Arbitrary AccountCol where
   arbitrary = QC.oneof
     [ AccountAddress  <$> arbitrary
     , AccountTimezone <$> QC.elements ["GMT", "EST", "EDT"]
-    -- Account public keys can't be written in the query string
-    -- , AccountPubKey   <$> arbitrary
     ]
 
 --------------------------------------------------------------------------------
@@ -168,11 +169,12 @@ instance Arbitrary TransactionCol where
 
 instance (HasColName a, Arbitrary a, ToField a) => Arbitrary (Cond a) where
   arbitrary = QC.oneof
-    [ ColEquals <$> arbitrary
-    , ColGT     <$> arbitrary
-    , ColGTE    <$> arbitrary
-    , ColLT     <$> arbitrary
-    , ColLTE    <$> arbitrary
+    [ ColEq  <$> arbitrary
+    , ColGT  <$> arbitrary
+    , ColGTE <$> arbitrary
+    , ColLT  <$> arbitrary
+    , ColLTE <$> arbitrary
+    , ColIn . NE.fromList . take 1 . QC.getNonEmpty <$> arbitrary
     ]
 
 instance Arbitrary Conj where
@@ -196,6 +198,12 @@ instance Arbitrary Select where
     , SelectBlocks . Select' BlocksTable             <$> arbitrary
     , SelectTransactions . Select' TransactionsTable <$> arbitrary
     ]
+
+--------------------------------------------------------------
+
+instance Arbitrary Asset.Holder where
+  -- The address tag is arbitrary, to make the type checker happy
+  arbitrary = fmap (\addr -> Asset.Holder (addr :: Address.Address Address.AAccount)) arbitrary
 
 --------------------------------------------------------------------------------
 -- Generate Random Columns from existing Ledger Values
@@ -255,6 +263,10 @@ contractColGen = genRandomCols . contractToCols
 holdingsColGen :: Asset.Asset -> QC.Gen [HoldingsCol]
 holdingsColGen Asset.Asset{..} = genRandomCols $ holdingsToCols address holdings
 
+-- XXX For right now, only `Eq` and `In`, because these are isomorphic.
+condGen :: (ToField a, HasColName a) => a -> QC.Gen (Cond a)
+condGen c = QC.oneof [ pure (ColEq c), pure (ColIn $ NE.fromList [c]) ]
+
 -- blocksColGen :: Block.Block -> QC.Gen [BlockCol]
 -- transactionsColGen :: Tx.Transaction -> QC.Gen [TransactionCol]
 
@@ -262,24 +274,31 @@ holdingsColGen Asset.Asset{..} = genRandomCols $ holdingsToCols address holdings
 -- Construct Select values from Ledger Value Columns
 --------------------------------------------------------------------------------
 
--- | Currently only creates ColEqual conditions
-colsToWhereClause :: (ToField a, HasColName a) => [a] -> Maybe (WhereClause a)
-colsToWhereClause = foldr addColCond Nothing
+-- | Currently only creates ColEqual & ColIn conditions
+colsToWhereClause
+  :: (ToField a, HasColName a)
+  => [a]
+  -> QC.Gen (Maybe (WhereClause a))
+colsToWhereClause = foldrM addColCond Nothing
   where
-    addColCond c Nothing   = Just $ Where (ColEquals c)
-    addColCond c (Just wc) = Just $ WhereConj (ColEquals c) And wc
+    addColCond c Nothing   = Just . Where <$> condGen c
+    addColCond c (Just wc) = fmap Just $ WhereConj <$> condGen c <*> pure And <*> pure wc
 
 accountSelectGen :: Account.Account -> QC.Gen (Select' AccountsTable)
-accountSelectGen = fmap (Select' AccountsTable . colsToWhereClause) . accountColGen
+accountSelectGen =
+  fmap (Select' AccountsTable) . colsToWhereClause <=< accountColGen
 
 assetSelectGen :: Asset.Asset -> QC.Gen (Select' AssetsTable)
-assetSelectGen = fmap (Select' AssetsTable . colsToWhereClause) . assetColGen
+assetSelectGen =
+  fmap (Select' AssetsTable) . colsToWhereClause <=< assetColGen
 
 holdingsSelectGen :: Asset.Asset -> QC.Gen (Select' HoldingsTable)
-holdingsSelectGen = fmap (Select' HoldingsTable . colsToWhereClause) . holdingsColGen
+holdingsSelectGen =
+  fmap (Select' HoldingsTable) . colsToWhereClause <=< holdingsColGen
 
 contractSelectGen :: Contract.Contract -> QC.Gen (Select' ContractsTable)
-contractSelectGen = fmap (Select' ContractsTable . colsToWhereClause) . contractColGen
+contractSelectGen =
+  fmap (Select' ContractsTable) . colsToWhereClause <=< contractColGen
 
 --------------------------------------------------------------------------------
 
@@ -292,7 +311,7 @@ queryLangTests runDB =
           QC.testProperty "Test Select == parseQuery(prettyPrint(Select))" $ \select ->
             let ppr = Pretty.prettyPrint select
                 select' = DB.parseQuery ppr
-             in Right select == select'
+             in select' QC.=== (Right select)
       , localOption (QC.QuickCheckTests 10000) $
           QC.testProperty "Test validity of generated SQL statements" $ \select ->
             QC.monadicIO $ do
@@ -300,10 +319,14 @@ queryLangTests runDB =
               QC.run $ runDB $ do
                 eRes <- runSelectDB select
                 liftBase $ case eRes of
-                  Left err -> putMVar mvar False
-                  Right _  -> putMVar mvar True
+                  Left err -> putMVar mvar (Just err)
+                  Right _  -> putMVar mvar Nothing
               res <- QC.run $ takeMVar mvar
-              QC.assert res
+              case res of
+                Nothing  -> QC.assert True
+                Just err -> do
+                  putText $ show err
+                  QC.assert False
         , testGroup "Test correct results returned by queries" $
             [ QC.testProperty "Test Account queries" $
                 queryProp

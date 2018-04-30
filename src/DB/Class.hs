@@ -7,7 +7,7 @@ module DB.Class where
 
 import Protolude
 
-import Address
+import Address (Address, AAccount, AAsset, AContract)
 import Asset
 import Account
 import Block
@@ -16,8 +16,9 @@ import Ledger
 import Transaction
 
 import Control.Monad.Base
-import Control.Monad.Trans
-import Control.Monad.Trans.Control
+
+import qualified Encoding
+import qualified Hash
 
 -- | This type class embodies the idea of some Monad `m` having a connection to
 -- a database (`DBConn m`), and on failed operations using the connection,
@@ -51,13 +52,13 @@ instance (MonadDB m) => MonadDB (ReaderT r m) where
 -- | Instances of this class should adhere to the invariant that readDB be readonly
 class MonadDB m => MonadReadDB m where
 
-  readAsset       :: Address -> m (Either (DBError m) Asset)
+  readAsset       :: (Address AAsset) -> m (Either (DBError m) Asset)
   readAssets      :: m (Either (DBError m) [Asset])
 
-  readAccount     :: Address -> m (Either (DBError m) Account)
+  readAccount     :: (Address AAccount) -> m (Either (DBError m) Account)
   readAccounts    :: m (Either (DBError m) [Account])
 
-  readContract    :: Address -> m (Either (DBError m) Contract)
+  readContract    :: (Address AContract) -> m (Either (DBError m) Contract)
   readContracts   :: m (Either (DBError m) [Contract])
 
   readBlock       :: Int -> m (Either (DBError m) Block)
@@ -65,9 +66,9 @@ class MonadDB m => MonadReadDB m where
   readBlocks      :: m (Either (DBError m) [Block])
   readLastNBlocks :: Int -> m (Either (DBError m) [Block])
 
-  readTransaction :: ByteString -> m (Either (DBError m) Transaction)
+  readTransaction :: Hash.Hash Encoding.Base16ByteString -> m (Either (DBError m) Transaction)
 
-  readInvalidTx   :: ByteString -> m (Either (DBError m) InvalidTransaction)
+  readInvalidTx   :: Hash.Hash Encoding.Base16ByteString -> m (Either (DBError m) InvalidTransaction)
   readInvalidTxs  :: m (Either (DBError m) [InvalidTransaction])
 
   readWorld       :: m (Either (DBError m) World)

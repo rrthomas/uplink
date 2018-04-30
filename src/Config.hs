@@ -13,6 +13,7 @@ There are three different configurations that are avaiable on a node.
 -}
 
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TupleSections #-}
 
 module Config (
   -- ** Types
@@ -46,9 +47,7 @@ import Protolude
 
 import Data.List (elemIndex)
 import Data.Configurator.Types (KeyError(..))
-import qualified Data.Configurator.Types as C (Config)
 
-import Address (Address)
 import qualified Utils
 import qualified Network.Utils as NU
 import qualified Network.P2P.Logging as Log
@@ -79,7 +78,7 @@ data Config = Config
   , maxPeers     :: Int           -- ^ Maximum peer count
   , minPeers     :: Int           -- ^ Minimum peer count
   , closed       :: Bool          -- ^ Closed network
-  , storageBackend :: StorageBackend
+  , storageBackend :: StorageBackend -- ^ Type of Database to be used
   , nonetwork    :: Bool          -- ^ Disable networking
   , configFile   :: FilePath      -- ^ Config file
   , chainConfigFile :: FilePath   -- ^ Chain configuration file
@@ -87,6 +86,7 @@ data Config = Config
   , rpcReadOnly  :: Bool          -- ^ Can RPC cmds change state of ledger
   , preallocated :: FilePath      -- ^ Pre-allocated accounts directory
   , testMode     :: Bool          -- ^ Is node in "test" mode
+  , accessToken  :: FilePath      -- ^ Filepath to network-access-token
   } deriving (Show)
 
 data ChainSettings = ChainSettings
@@ -162,7 +162,8 @@ readConfig silent cfgFile = errorHandler $ do
   rpcKey       <- C.require cfg "rpc.key"
 
   port         <- C.require cfg "network.port"
-  hostname     <- getHostname cfg
+  hostname     <- getHostname port =<<
+                    C.lookup cfg "network.hostname"
   nonetwork    <- C.require cfg "network.nonetwork"
   bootnodes    <- C.require cfg "network.bootnodes"
   closed       <- C.require cfg "network.closed"
@@ -170,6 +171,7 @@ readConfig silent cfgFile = errorHandler $ do
   maxPeers     <- C.require cfg "network.max-peers"
 
   preallocated <- C.require cfg "network.preallocated"
+  accessToken  <- C.require cfg "network.access-token"
 
   case Log.verifyRules loggingRules of
     Left err
@@ -195,14 +197,18 @@ readConfig silent cfgFile = errorHandler $ do
          , rpcReadOnly  = False
          , preallocated = preallocated
          , testMode     = False
+         , accessToken  = accessToken
          }
 
-getHostname :: C.Config -> IO [Char]
-getHostname cfg = do
-  mHostname <- C.lookup cfg "network.hostname"
-  case mHostname of
-    Nothing -> NU.resolveHostname =<< getHostName
-    Just hn -> NU.resolveHostname hn
+getHostname :: Int -> Maybe [Char] -> IO [Char]
+getHostname port mHostname = do
+  host <-
+    case mHostname of
+      Nothing -> getHostName
+      Just hn -> pure hn
+  errorHandler $
+    fmap (fmap fst) $
+      NU.resolve (host, show port)
 
 getStorageBackend :: [Char] -> IO StorageBackend
 getStorageBackend cs =
@@ -300,7 +306,6 @@ readChain silent cfgFile = do
   timestamp     <- C.require cfg "genesis.timestamp"
   genesisHash   <- C.require cfg "genesis.hash"
 
-  -- XXX: hardcoded
   return ChainSettings {
     genesisTimestamp  = timestamp
   , genesisHash       = genesisHash

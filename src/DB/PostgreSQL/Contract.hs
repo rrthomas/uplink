@@ -30,9 +30,7 @@ import Protolude
 
 import Control.Arrow ((&&&))
 
-import Data.Int as Int
 import qualified Data.Map as Map
-import qualified Data.Text as Text
 import qualified Data.Serialize as S
 
 import Address
@@ -40,15 +38,10 @@ import Contract (Contract(..), LocalStorageVars(..))
 import Storage (GlobalStorage(..), LocalStorage(..), Key(..))
 import Script (Script, Name, Value)
 import Script.Graph (GraphState(..), Label(..), terminalLabel, initialLabel)
-import qualified Contract
-import qualified Script.Pretty as Pretty
-import qualified Storage
-import qualified Time
 
 import DB.PostgreSQL.Error
 
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.ToRow
 
 import Database.PostgreSQL.Simple.ToField
 import Database.PostgreSQL.Simple.FromField
@@ -81,15 +74,15 @@ data ContractRow = ContractRow
   , contractLSVars  :: LocalStorageVars
   , contractMethods :: MethodsCol
   , contractState   :: Text
-  , contractOwner   :: Address
-  , contractAddress :: Address
+  , contractOwner   :: (Address AAccount)
+  , contractAddress :: (Address AContract)
   } deriving (Generic)
 
 instance ToRow ContractRow
 instance FromRow ContractRow
 
 data GlobalStorageRow = GlobalStorageRow
-  { gsContract :: Address
+  { gsContract :: Address AContract
   , gsKey      :: Key
   , gsValue    :: Value
   } deriving (Generic)
@@ -98,8 +91,8 @@ instance ToRow GlobalStorageRow
 instance FromRow GlobalStorageRow
 
 data LocalStorageRow = LocalStorageRow
-  { lsContract :: Address
-  , lsAccount  :: Address
+  { lsContract :: Address AContract
+  , lsAccount  :: Address AAccount
   , lsKey      :: Key
   , lsValue    :: Value
   } deriving (Generic)
@@ -199,7 +192,7 @@ rowTypesToContract (contractRow, gsRows, lsRows) = do
 
 queryContract
   :: Connection
-  -> Address
+  -> Address AContract
   -> IO (Either PostgreSQLError Contract)
 queryContract conn contractAddr = do
   eContractRow <- queryContractRow conn contractAddr
@@ -217,7 +210,7 @@ queryContracts conn = do
 
 queryContractsByAddrs
   :: Connection
-  -> [Address]
+  -> [Address AContract]
   -> IO (Either PostgreSQLError [Contract])
 queryContractsByAddrs conn addrs = do
   queryContractRowsByAddrs conn addrs >>=
@@ -251,7 +244,7 @@ queryContractRows conn =
 
 queryContractRowsByAddrs
   :: Connection
-  -> [Address]
+  -> [Address AContract]
   -> IO (Either PostgreSQLError [ContractRow])
 queryContractRowsByAddrs conn addrs = do
   querySafe conn "SELECT * FROM contracts WHERE address IN ?" $
@@ -259,14 +252,14 @@ queryContractRowsByAddrs conn addrs = do
 
 queryContractRow
   :: Connection
-  -> Address
+  -> Address AContract
   -> IO (Either PostgreSQLError (Maybe ContractRow))
 queryContractRow conn contractAddr = fmap headMay <$>
   querySafe conn "SELECT * FROM contracts where address=?" (Only contractAddr)
 
 queryGlobalStorageRows
   :: Connection
-  -> Address
+  -> Address AContract
   -> IO (Either PostgreSQLError [GlobalStorageRow])
 queryGlobalStorageRows conn contractAddr =
   querySafe conn
@@ -275,7 +268,7 @@ queryGlobalStorageRows conn contractAddr =
 
 queryLocalStorageRows
   :: Connection
-  -> Address
+  -> Address AContract
   -> IO (Either PostgreSQLError [LocalStorageRow])
 queryLocalStorageRows conn contractAddr =
   querySafe conn
@@ -319,7 +312,7 @@ insertLocalStorageRows conn lsRows =
 -- Deletes
 --------------------------------------------------------------------------------
 
-deleteContract :: Connection -> Address -> IO (Either PostgreSQLError Int64)
+deleteContract :: Connection -> Address AContract -> IO (Either PostgreSQLError Int64)
 deleteContract conn addr = do
   _ <- executeSafe conn "DELETE FROM contracts WHERE address = ?" (Only addr)
   _ <- executeSafe conn "DELETE FROM local_storage WHERE contract = ?" (Only addr)

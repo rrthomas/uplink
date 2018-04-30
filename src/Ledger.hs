@@ -45,25 +45,20 @@ module Ledger (
 
 import Protolude hiding (from, to, get, put)
 
-import Control.Monad.State
 import Control.Arrow ((&&&))
 
 import Data.Aeson (ToJSON, FromJSON, eitherDecode)
-import Data.Serialize (Serialize, encode)
+import Data.Serialize (Serialize)
 import qualified Data.Map as Map
 
-import Asset (Asset)
+import Asset (Asset, Holder(..), holderToAccount, holderToContract)
 import Account (Account)
-import Address (Address)
+import Address (Address, AAccount, AAsset, AContract)
 import Contract (Contract)
-import Storage (LocalStorage(..))
 
-import qualified Key
 import qualified Asset
 import qualified Account
 import qualified Contract
-import qualified Address
-import qualified Storage
 import qualified Utils
 
 -------------------------------------------------------------------------------
@@ -93,9 +88,9 @@ three registries.
 
 -- | The world state in-memory.
 data World = World
-  { contracts :: Map.Map Address Contract
-  , assets    :: Map.Map Address Asset
-  , accounts  :: Map.Map Address Account.Account
+  { contracts :: Map.Map (Address AContract) Contract
+  , assets    :: Map.Map (Address AAsset) Asset
+  , accounts  :: Map.Map (Address AAccount) Account.Account
   } deriving (Show, Eq, Generic, NFData, Serialize, ToJSON, FromJSON)
 
 instance Monoid World where
@@ -106,23 +101,23 @@ instance Monoid World where
     (accounts w1  `mappend` accounts w2)
 
 data ContractError
-  = ContractDoesNotExist Address
-  | ContractExists Address
+  = ContractDoesNotExist (Address AContract)
+  | ContractExists (Address AContract)
   deriving (Show, Eq, Generic, Serialize)
 
 data AssetError
-  = AssetDoesNotExist Address
-  | AssetExists Address
+  = AssetDoesNotExist (Address AAsset)
+  | AssetExists (Address AAsset)
   | AssetError Asset.AssetError
-  | CirculatorIsNotIssuer Address Asset
-  | SenderDoesNotExist Address
-  | ReceiverDoesNotExist Address
-  | RevokerIsNotIssuer Address Asset
+  | CirculatorIsNotIssuer (Address AAccount) Asset
+  | SenderDoesNotExist Holder
+  | ReceiverDoesNotExist Holder
+  | RevokerIsNotIssuer (Address AAccount) Asset
   deriving (Show, Eq, Generic, Serialize)
 
 data AccountError
-  = AccountDoesNotExist Address
-  | AccountExists Address
+  = AccountDoesNotExist (Address AAccount)
+  | AccountExists (Address AAccount)
   deriving (Show, Eq, Generic, Serialize)
 
 -- | Empty world state
@@ -155,23 +150,23 @@ loadLedgerFromJSON fp = do
 -- Polymorphic Funcs
 -------------------------------------------------------------------------------
 
-lookup :: (World -> Map Address a) -> Address -> World -> Maybe a
+lookup :: (World -> Map (Address b) a) -> Address b -> World -> Maybe a
 lookup f addr = Map.lookup addr . f
 
-exists :: (World -> Map Address a) -> Address -> World -> Bool
+exists :: (World -> Map (Address b) a) -> Address b -> World -> Bool
 exists f addr = isJust . lookup f addr
 
 -------------------------------------------------------------------------------
 -- Accounts
 -------------------------------------------------------------------------------
 
-lookupAccount :: Address -> World -> Either AccountError Account.Account
+lookupAccount :: Address AAccount -> World -> Either AccountError Account.Account
 lookupAccount addr world =
   case lookup accounts addr world of
     Nothing   -> Left $ AccountDoesNotExist addr
     Just acc  -> Right acc
 
-accountExists :: Address -> World -> Bool
+accountExists :: Address AAccount -> World -> Bool
 accountExists addr = exists accounts addr
 
 addAccount :: Account.Account -> World -> Either AccountError World
@@ -197,24 +192,24 @@ removeAccount acct world =
 -- Assets
 -------------------------------------------------------------------------------
 
-lookupAsset :: Address -> World -> Either AssetError Asset
+lookupAsset :: Address AAsset -> World -> Either AssetError Asset
 lookupAsset addr world =
   case lookup assets addr world of
     Nothing -> Left $ AssetDoesNotExist addr
     Just asset -> Right asset
 
-assetExists :: Address -> World -> Bool
+assetExists :: Address AAsset -> World -> Bool
 assetExists addr = exists assets addr
 
 -- | Adds a new asset to world state. Fails if the asset already exists.
-addAsset :: Address -> Asset -> World -> Either AssetError World
+addAsset :: Address AAsset -> Asset -> World -> Either AssetError World
 addAsset addr ass world =
   case lookupAsset addr world of
     Left _ -> Right $ updateAsset addr ass world
     Right _ -> Left $ AssetExists addr
 
 -- | Remove an asset from the world
-removeAsset :: Address -> World -> Either AssetError World
+removeAsset :: Address AAsset -> World -> Either AssetError World
 removeAsset addr world =
   case lookup assets addr world of
     Nothing -> Left $ AssetDoesNotExist addr
@@ -223,7 +218,7 @@ removeAsset addr world =
       in Right $ world { assets = assets' }
 
 -- | Overwrites the asset at a given address
-updateAsset :: Address -> Asset -> World -> World
+updateAsset :: Address AAsset -> Asset -> World -> World
 updateAsset addr ass world =
   let assets' = Map.insert addr ass (assets world) in
   world { assets = assets' }
@@ -231,11 +226,11 @@ updateAsset addr ass world =
 -- | Transfer holdings of an asset from one holder to another
 -- Note: Holder can be a contract address, to hold funds in escrow
 transferAsset
-  :: Address       -- ^ Asset Address
-  -> Address       -- ^ Sender (Origin, From) Address
-  -> Address       -- ^ Receiver (To) Address
-  -> Asset.Balance -- ^ Amount to send
-  -> World         -- ^ World State
+  :: Address AAsset         -- ^ Asset Address
+  -> Holder       -- ^ Sender (Origin, From) Address
+  -> Holder       -- ^ Receiver (To) Address
+  -> Asset.Balance          -- ^ Amount to send
+  -> World                  -- ^ World State
   -> Either AssetError World
 transferAsset assetAddr from to bal world = do
     validateTransferAddrs world from to
@@ -248,29 +243,29 @@ transferAsset assetAddr from to bal world = do
   where
     validateTransferAddrs
       :: World
-      -> Address -- ^ Sender Address (account or contract)
-      -> Address -- ^ Receiver Address (account or contract)
+      -> Holder -- ^ Sender Address (account or contract)
+      -> Holder -- ^ Receiver Address (account or contract)
       -> Either AssetError ()
     validateTransferAddrs world from to = void $ do
       -- Check if origin account/contract exists
       first (const $ Ledger.SenderDoesNotExist from) $
-        case Ledger.lookupAccount from world of
+        case Ledger.lookupAccount (holderToAccount from) world of
           Left err -> second (const ()) $
-            Ledger.lookupContract from world
+            Ledger.lookupContract (holderToContract from) world
           Right acc -> Right ()
       -- Check if toAddr account/contract exists
       first (const $ Ledger.ReceiverDoesNotExist to) $
-        case Ledger.lookupAccount to world of
+        case Ledger.lookupAccount (holderToAccount to) world of
           Left err -> second (const ()) $
-            Ledger.lookupContract to world
+            Ledger.lookupContract (holderToContract to) world
           Right acc -> Right ()
 
 -- | Moves an amount of an asset's supply to the holdings of the asset issuer
 circulateAsset
-  :: Address        -- ^ Asset Address
-  -> Address        -- ^ Origin Address
-  -> Asset.Balance  -- ^ Amount to circulate
-  -> World          -- ^ World state
+  :: Address AAsset     -- ^ Asset Address
+  -> Address AAccount   -- ^ Origin Address
+  -> Asset.Balance      -- ^ Amount to circulate
+  -> World              -- ^ World state
   -> Either AssetError World
 circulateAsset assetAddr txOrigin amount world =
   case lookupAsset assetAddr world of
@@ -281,31 +276,31 @@ circulateAsset assetAddr txOrigin amount world =
         then Left $ CirculatorIsNotIssuer txOrigin asset
         else do
           asset' <- first AssetError $
-            Asset.circulateSupply assetIssuer amount asset
+            Asset.circulateSupply (Holder assetIssuer) amount asset
           Right $ world { assets = Map.insert assetAddr asset' (assets world) }
 
 -------------------------------------------------------------------------------
 -- Contracts
 -------------------------------------------------------------------------------
 
-lookupContract :: Address -> World -> Either ContractError Contract
+lookupContract :: Address AContract -> World -> Either ContractError Contract
 lookupContract addr world =
   case lookup contracts addr world of
     Nothing -> Left $ ContractDoesNotExist addr
     Just contract -> Right contract
 
-contractExists :: Address -> World -> Bool
+contractExists :: Address AContract -> World -> Bool
 contractExists = exists contracts
 
 -- | Adds a new contract to world state. Fails if contract already exists
-addContract :: Address -> Contract -> World -> Either ContractError World
+addContract :: Address AContract -> Contract -> World -> Either ContractError World
 addContract addr contract world =
   case lookupContract addr world of
     Left err -> Right $ updateContract addr contract world
     Right _ -> Left $ ContractExists addr
 
 -- | Unsafe update of contract at address
-updateContract :: Address -> Contract -> World -> World
+updateContract :: Address AContract -> Contract -> World -> World
 updateContract addr contract world =
   let contracts' = Map.insert addr contract $ contracts world
   in world { contracts = contracts' }

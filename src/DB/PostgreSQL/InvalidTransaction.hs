@@ -25,32 +25,29 @@ module DB.PostgreSQL.InvalidTransaction (
 
 import Protolude
 
-import qualified Data.Text as Text
-import qualified Data.Serialize as S
-
+import qualified Encoding
+import qualified Hash
 import Address
 import Transaction ( Transaction(..)
                    , InvalidTransaction(..)
                    , TransactionHeader
                    , TxValidationError
-                   , base16HashInvalidTx
+                   , hashInvalidTx
                    )
 
 import DB.PostgreSQL.Error
 
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.ToRow
-import Database.PostgreSQL.Simple.ToField
 
 --------------------------------------------------------------------------------
 -- Types and Conversions
 --------------------------------------------------------------------------------
 
 data InvalidTxRow = InvalidTxRow
-  { itxHash       :: ByteString
+  { itxHash       :: Hash.Hash Encoding.Base16ByteString
   , itxHeader     :: TransactionHeader
-  , itxSignature  :: ByteString
-  , itxOrigin     :: Address
+  , itxSignature  :: Encoding.Base64PByteString
+  , itxOrigin     :: Address AAccount
   , itxReason     :: TxValidationError
   } deriving (Generic)
 
@@ -60,7 +57,7 @@ instance FromRow InvalidTxRow
 invalidTxToRowType :: InvalidTransaction -> InvalidTxRow
 invalidTxToRowType itx@(InvalidTransaction Transaction{..} reason) =
   InvalidTxRow
-    { itxHash       = base16HashInvalidTx itx
+    { itxHash       = hashInvalidTx itx
     , itxHeader     = header
     , itxSignature  = signature
     , itxOrigin     = origin
@@ -86,13 +83,13 @@ rowTypeToInvalidTx InvalidTxRow{..} = do
 
 queryInvalidTxByHash
   :: Connection
-  -> ByteString -- ^ must be base16 encoded sha3_256 hash
+  -> Hash.Hash Encoding.Base16ByteString -- ^ must be base16 encoded sha3_256 hash
   -> IO (Either PostgreSQLError InvalidTransaction)
-queryInvalidTxByHash conn b16itxHash = do
-  eRows <- querySafe conn "SELECT * FROM invalidtxs WHERE hash=?" (Only b16itxHash)
+queryInvalidTxByHash conn hash = do
+  eRows <- querySafe conn "SELECT * FROM invalidtxs WHERE hash=?" (Only (Hash.getRawHash hash))
   case fmap headMay eRows of
     Left err         -> pure $ Left err
-    Right Nothing    -> pure $ Left $ InvalidTxDoesNotExist b16itxHash
+    Right Nothing    -> pure $ Left $ InvalidTxDoesNotExist hash
     Right (Just itx) -> pure $ Right $ rowTypeToInvalidTx itx
 
 queryInvalidTxs :: Connection -> IO (Either PostgreSQLError [InvalidTransaction])

@@ -10,16 +10,11 @@ Asset and contract binding.
 
 module Bind (
   BindProof(..),
-  checkBind,
+  -- checkBind,
 ) where
 
 import Protolude
-
-import Key
-import Asset
 import Address
-import Account
-import Contract
 
 import Data.Serialize as S
 
@@ -34,19 +29,19 @@ import Data.Serialize as S
 -- Bind proofs are held in the state of contract and determine which asset
 -- operations emitted during execution are valid ledger transaction.
 data BindProof = BindProof
-  { assetAddr    :: Address            -- ^ Address of asset to bind
-  , contractAddr :: Address            -- ^ Contract address
-  , assetProof   :: (Integer, Integer) -- ^ Contract address signed with holder's private key
+  { assetAddr    :: Address AAsset            -- ^ Address of asset to bind
+  , contractAddr :: Address AContract         -- ^ Contract address
+  , assetProof   :: (Integer, Integer)        -- ^ Contract address signed with holder's private key
   } deriving (Generic, Serialize)
 
-checkBind :: Contract -> Account -> Asset -> BindProof -> Bool
-checkBind c act asset prf = test
-  where
-    (r,s) = assetProof prf
-
-    test :: Bool
-    test = and [
-        Key.verify (publicKey act) (mkSignatureRS (r,s)) (S.encode prf)
-      , Account.address act == assetAddr prf
-      , Contract.address c == contractAddr prf
-      ]
+-- checkBind :: Contract -> Account -> Asset -> BindProof -> Bool
+-- checkBind c act asset prf = test
+--   where
+--     (r,s) = assetProof prf
+--
+--     test :: Bool
+--     test = and [
+--         Key.verify (publicKey act) (mkSignatureRS (r,s)) (S.encode prf)
+--       , Account.address act == assetAddr prf
+--       , Contract.address c == contractAddr prf
+--       ]

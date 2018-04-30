@@ -26,13 +26,8 @@ import Protolude
 import Control.Arrow ((&&&))
 import Control.Monad.Base (liftBase)
 
-import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
-import Control.Distributed.Process (Process)
-
-import Data.List (genericLength)
 import qualified Data.Set as Set
-import qualified Data.Serialize as S
 
 import NodeState
 import Block (Block)
@@ -42,12 +37,12 @@ import qualified DB
 import qualified Key
 import qualified Account
 import qualified Block
+import qualified Hash
 import qualified Ledger
 import qualified MemPool
 import qualified Time
 import qualified Utils
 import qualified Validate as V
-import qualified NodeState
 import qualified Network.P2P.Logging as Log
 
 import Consensus.Authority.State (PoAState(..))
@@ -93,12 +88,12 @@ signBlock block = do
               first ConsensusBlockValidationErr $ do
                 validateBlockConsensus
                 validateBlockIndex poaState
-              bimap LedgerBlockValidationErr (const ()) $ validateBlockWorld
+              bimap LedgerBlockValidationErr (const ()) validateBlockWorld
         case validationRes of
           Left err -> pure $ Left err
           Right _  ->
             fmap Right $ liftBase $
-              Key.sign privKey (Block.hashBlock block)
+              Key.sign privKey (Hash.getRawHash $ Block.hashBlock block)
 
       case eBlockSig of
         Left err -> return $ Left err
@@ -363,27 +358,15 @@ acceptBlock block = do
       (err, blockIsValid) <- CA.validateBlock CA.BeforeAccept block
       if blockIsValid
         then do
-          eRes <- do
-            -- Verify & Validate block w/ respect to world state
-            Log.info "Verifying and Validating block before acceptance..."
-            NodeState.withApplyCtx $ \applyCtx -> do
-              NodeState.withLedgerState $ \ledgerState -> lift $ do
-                let applyState = V.initApplyState ledgerState
-                V.verifyValidateAndApplyBlock applyState applyCtx block
+          -- Apply block transactions to ledger state
+          let blockIdx = Block.index block
+          Log.info $ "Verifying, validating, and applying transactions of block " <> show blockIdx
+          eRes <- NodeState.verifyValidateAndApplyBlock block
           case eRes of
             Left err -> do
-              Log.warning $ show err
+              Log.critical $ "Error applying block " <> show blockIdx <> ":\n  " <> show err
               return False
-            Right _ -> do
-              -- Apply block transactions to ledger state
-              Log.info $ "Applying transactions of block "
-                <> show (Block.index block) <> " to world state..."
-              eRes <- NodeState.applyBlock block
-              case eRes of
-                Left err -> do
-                  Log.critical $ "Error applying block:\n  " <> show err
-                  return False
-                Right _   -> return True
+            Right _   -> return True
         else do
           let errPrefix = "[acceptBlock] Not accepting invalid Block with index "
           let errBlkIdx = show $ Block.index block

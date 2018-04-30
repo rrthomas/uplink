@@ -3,29 +3,21 @@ module REPL (
 ) where
 
 import Control.Distributed.Process (Process, ProcessId)
-import Control.Monad.Base (liftBase)
 import Control.Distributed.Process.Node (LocalNode, runProcess)
 
 import qualified Data.Aeson.Encode.Pretty as A
 import Control.Distributed.Process.Lifted.Class
-import qualified Data.Map as Map
 import Data.Maybe
 import Data.Monoid
-import qualified Data.Text as T
 import Protolude hiding (Type)
-import Console.Command
-import Console.Completion
-import Console.Config
 import Console.Parser
 
 import Script (Name(..), Type)
-import Script.Parser (lineContents)
 import Address
 import Network.P2P.Simulate
 import SafeString
 import qualified Script.Pretty as Pretty
 import System.Console.Repline
-import System.Console.Haskeline
 import Ledger (World(..))
 import qualified Utils
 import REPL.Config
@@ -106,7 +98,7 @@ createSimulation
   :: MonadProcessBase m
   => ProcessId
   -> SafeString
-  -> Address
+  -> (Address AAccount)
   -> Maybe World
   -> m (Either Text SimKey)
 createSimulation simProcId scriptSS issuer mWorld = do

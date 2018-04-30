@@ -6,10 +6,10 @@ import Protolude hiding ((<|>), try, optional)
 import Text.Parsec
 import Text.Parsec.Text
 import Console.Parser
-import Script (unDateTime, Expr(ECall), evalLit)
+import Script (unDateTime, evalLit)
 import Script.Parser
 
-import Console.Lexer (symbol, reserved, lexeme)
+import Console.Lexer (reserved, lexeme)
 import REPL.Lexer
 import REPL.Command
 

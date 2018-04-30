@@ -12,8 +12,11 @@ import Data.Char (isAlpha, isAlphaNum, isSpace)
 import Data.Text (singleton)
 import Data.Attoparsec.Text
 
+import qualified Data.List.NonEmpty as NE
+
 import qualified Address
 import qualified Asset
+import qualified Encoding
 import qualified Key
 import qualified Storage
 import qualified Script.Graph as Graph
@@ -151,23 +154,30 @@ parseCond
   -> Parser (Cond a)
 parseCond parseCol = do
     colName    <- whitespaces *> parseSQLIdentifier
-    condConstr <- whitespace  *> parseColOp
-    column     <- whitespace  *> parseCol colName
-    pure $ condConstr column
+    let parseColVal = whitespace *> parseCol colName
+    whitespace *> parseColOp parseColVal
   where
-    parseColOp = choice
-      [ parseColEq
-      , parseColGTE
-      , parseColGT
-      , parseColLTE
-      , parseColLT
+    parseColOp parseColVal = choice
+      [ parseColEq  <*> parseColVal
+      , parseColGTE <*> parseColVal
+      , parseColGT  <*> parseColVal
+      , parseColLTE <*> parseColVal
+      , parseColLT  <*> parseColVal
+      , parseColIn  <*> parseIn parseColVal
       ]
 
-    parseColEq  = char   '='  *> pure ColEquals
+    parseColEq  = char   '='  *> pure ColEq
     parseColGT  = char   '>'  *> pure ColGT
     parseColGTE = string ">=" *> pure ColGTE
     parseColLT  = char   '<'  *> pure ColLT
     parseColLTE = string "<=" *> pure ColLTE
+    parseColIn  = string "in" *> pure ColIn
+
+    parseIn parseColVal = do
+      whitespace *> char '('
+      vals <- parseColVal `sepBy1` (whitespace *> char ',')
+      whitespace *> char ')'
+      pure $ NE.fromList vals
 
 --------------------------------------------------------------------------------
 -- Column Parsers
@@ -215,7 +225,10 @@ parseAssetType = do
 
 parseHoldingsCol :: Text -> Parser HoldingsCol
 parseHoldingsCol "asset"   = HoldingsAsset   <$> parseAddress
-parseHoldingsCol "holder"  = HoldingsHolder  <$> parseAddress
+parseHoldingsCol "holder"  = do
+  a <- parseAddress
+  pure $ HoldingsHolder (Asset.Holder (a :: Address.Address Address.AAccount))
+
 parseHoldingsCol "balance" = HoldingsBalance <$> decimal
 parseHoldingsCol colName   = fail $
   "Could not parse HoldingsCol. Unrecognized col name: " <> show colName
@@ -300,21 +313,23 @@ parseSingleQuoted = do
 parseQuoted :: Parser Text
 parseQuoted = parseSingleQuoted <|> parseDoubleQuoted
 
-parseAddress :: Parser Address.Address
+parseAddress :: Parser (Address.Address a)
 parseAddress = do
   _ <- char '\''
   addr <- takeWhile1 isAlphaNum
   _ <- char '\''
-  case Address.parseAddr (encodeUtf8 addr) of
-    Nothing   -> fail "Could not parse Address"
-    Just addr -> pure addr
+  case Address.parseAddress (encodeUtf8 addr) of
+    Left err -> fail "Could not parse Address"
+    Right addr -> pure addr
 
 parsePubKey :: Parser Key.PubKey
 parsePubKey = do
-  pubKeyHex <- takeWhile1 isHexDigit
-  case Key.dehexPub (encodeUtf8 pubKeyHex) of
-    Left err -> fail $ "Could not parse PubKey" <> err
-    Right pubKey -> pure pubKey
+  pk <- takeWhile1 isHexDigit
+  case Encoding.parseEncodedBS (encodeUtf8 pk) of
+    Left (Encoding.BadEncoding err) -> fail $ "Could not parse PubKey: " <> (show err)
+    Right b -> case Key.decodeHexPub (Key.HexPub b) of
+      Left err -> fail $ "Could not parse PubKey" <> err
+      Right pubKey -> pure pubKey
   where
     isHexDigit c =
       (c >= '0' && c <= '9') ||

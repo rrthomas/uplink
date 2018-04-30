@@ -22,7 +22,6 @@ module Script.Prim (
 
 import Protolude
 import Control.Arrow ((&&&))
-import Fixed (PrecN)
 import Script (Name)
 import Data.List (lookup)
 

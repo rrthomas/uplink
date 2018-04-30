@@ -41,37 +41,38 @@ import qualified Data.Map as Map
 import qualified Data.ByteString as B
 
 import Crypto.Random
-import Crypto.Random.EntropyPool
+
+import qualified Encoding
 
 -------------------------------------------------------------------------------
 -- Secret Sharing
 -------------------------------------------------------------------------------
 
-type Secrets = Map.Map Word8 B.ByteString
+type Secrets = Map.Map Word8 Encoding.Base64ByteString
 
 -- | Splits a secret into N shares, of which K are required to re-combine.
 -- Returns a map of share IDs to share values.
 --
 -- > split(n,k,secret) = {0: s0, 1: s2, ...}
-split :: Word8 -> Word8 -> B.ByteString -> IO (Map.Map Word8 B.ByteString)
+split :: Word8 -> Word8 -> B.ByteString -> IO Secrets
 split n k secret = do
     polys <- sequence [gfGenerate b k | b <- B.unpack secret]
     return $ Map.fromList $ map (encode polys) [1..n]
   where
-    encode polys i = (i, B.pack $ map (gfEval i) polys)
+    encode polys i = (i, Encoding.encodeBase $ B.pack $ map (gfEval i) polys)
     valid = n >= k
 
 -- | Combines a map of share IDs to share values into the original secret.
 --
 -- > combine({0: s0, 1: s2, ...}) = secret
-combine :: Map.Map Word8 B.ByteString -> B.ByteString
-combine shares =
-    B.pack $
-    map
-        (gfYIntercept .
-         zip (cycle $ Map.keys shares) .
-         B.unpack)
-        (B.transpose $ Map.elems shares)
+-- combine :: Secrets -> Encoding.Base64ByteString
+combine :: Secrets -> ByteString
+combine shares = B.pack $
+    fmap ( gfYIntercept
+        . zip (cycle $ Map.keys shares)
+        . B.unpack
+        )
+        (B.transpose $ Encoding.decodeBase <$> Map.elems shares)
 
 -------------------------------------------------------------------------------
 -- Galois Fields
@@ -185,4 +186,4 @@ testShamir = do
       print (combine (Map.fromList [s0, s3]))     -- Any two or more secrets
       print (combine (Map.fromList [s1, s2, s3])) -- Any two or more secrets
       print (combine (Map.fromList [s1]))         -- Any two or more secrets
-    otherwise -> putText "Check your 'secrets' value"
+    _ -> putText "Check your 'secrets' value"

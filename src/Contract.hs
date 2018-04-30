@@ -30,20 +30,18 @@ module Contract (
 import Protolude hiding (state)
 
 import Time (Timestamp)
-import Address (Address, rawAddr)
-import Storage (Storage, GlobalStorage, LocalStorage)
+import Address (Address, AAccount, AContract)
+import Storage (GlobalStorage, LocalStorage)
 import Control.Monad
 import qualified Key
-import qualified Time
 import qualified Hash
 import qualified Storage
-import qualified Address
+import qualified Utils
 
 import Script (Script, Name, lookupMethod)
-import Script.Pretty (prettyPrint, (<+>), ppr)
+import Script.Pretty ((<+>), ppr)
 import Script.Graph (GraphState(..), initialLabel, terminalLabel)
 import qualified Script
-import qualified Storage
 import qualified Script.Graph as Graph
 import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
@@ -51,10 +49,10 @@ import qualified Script.Typecheck as Typecheck
 
 import Data.Serialize (Serialize, encode, decode)
 import qualified Data.Map as Map
-import qualified Data.Binary as Binary
+import qualified Data.Binary as B
 import qualified Data.Set as Set
 
-import Data.Aeson (ToJSON(..), object, (.=), (.:))
+import Data.Aeson (ToJSON(..), (.=), (.:))
 import Data.Aeson.Types (typeMismatch)
 import qualified Data.Aeson as A
 
@@ -65,7 +63,7 @@ import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), ret
 -- Contracts
 -------------------------------------------------------------------------------
 
-type LocalStorages = Map.Map Address.Address LocalStorage
+type LocalStorages = Map.Map (Address AAccount) LocalStorage
 
 newtype LocalStorageVars = LocalStorageVars
   { unLocalStorageVars :: Set.Set Name
@@ -85,22 +83,22 @@ instance A.FromJSON LocalStorageVars where
 -- | A contract is a 4-tuple of the address of publisher, timestamp of
 -- deployment time, script source, and it's initial storage hash.
 data Contract = Contract
-  { timestamp        :: Timestamp        -- ^ Timestamp of issuance
-  , script           :: Script           -- ^ Underlying contract logic
-  , globalStorage    :: GlobalStorage    -- ^ Initial state of the contract
-  , localStorage     :: LocalStorages    -- ^ Initial state of the contract
-  , localStorageVars :: LocalStorageVars -- ^ Names of all local variables
-  , methods          :: [Script.Name]    -- ^ Public methods
-  , state            :: Graph.GraphState -- ^ State of Contract
-  , owner            :: Address          -- ^ Creator of the contract
-  , address          :: Address          -- ^ Contract Address, derived during creation
+  { timestamp        :: Timestamp             -- ^ Timestamp of issuance
+  , script           :: Script                -- ^ Underlying contract logic
+  , globalStorage    :: GlobalStorage         -- ^ Initial state of the contract
+  , localStorage     :: LocalStorages         -- ^ Initial state of the contract
+  , localStorageVars :: LocalStorageVars      -- ^ Names of all local variables
+  , methods          :: [Script.Name]         -- ^ Public methods
+  , state            :: Graph.GraphState      -- ^ State of Contract
+  , owner            :: Address AAccount      -- ^ Creator of the contract
+  , address          :: Address AContract     -- ^ Contract Address, derived during creation
   } deriving (Eq, Show, Generic, NFData, Serialize, Hash.Hashable)
 
 
 -- XXX: Implement full validation
 validateContract :: Contract -> Bool
-validateContract Contract {..} = do
-  and [ (length methods) > 0
+validateContract Contract {..} =
+  and [ length methods > 0
       , isRight (Typecheck.signatures script)
       ]
 
@@ -108,7 +106,7 @@ validateContract Contract {..} = do
 signContract :: Key.PrivateKey -> Contract -> IO Key.Signature
 signContract = Key.signS
 
-lookupVarGlobalStorage :: ByteString -> Contract -> Maybe Script.Value
+lookupVarGlobalStorage :: Text -> Contract -> Maybe Script.Value
 lookupVarGlobalStorage k c = Map.lookup (Storage.Key k) gs
   where
     gs = Storage.unGlobalStorage $ globalStorage c
@@ -191,13 +189,9 @@ instance A.FromJSON Contract where
           Left err     -> fail $ show err
           Right script -> pure script
 
-instance Binary.Binary Contract where
-  put tx = Binary.put $ encode tx
-  get = do
-    bs <- Binary.get
-    case decode bs of
-      (Right tx) -> return tx
-      (Left err) -> fail err
+instance B.Binary Contract where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 instance ToField LocalStorageVars where
   toField = EscapeByteA . Data.Serialize.encode

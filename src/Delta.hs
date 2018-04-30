@@ -18,12 +18,9 @@ module Delta (
 ) where
 
 import Protolude hiding ((<>))
-import qualified Data.Map as Map
-import qualified Data.Set as Set
 
 import Script
-import Address
-import Storage
+import Address (Address, AAccount, AAsset, AContract, shortAddr)
 import Script.Pretty
 import Script.Error (EvalFail(..))
 import Script.Graph (GraphState(..))
@@ -53,28 +50,28 @@ data Delta
 
 data AssetOp
   = TransferTo {
-      asset    :: Address -- ^ Asset to transfer
-    , amount   :: Int64   -- ^ Amount
-    , holder   :: Address -- ^ Holder of the asset
-    , contract :: Address -- ^ Contract address
+      asset    :: Address AAsset    -- ^ Asset to transfer
+    , amount   :: Int64             -- ^ Amount
+    , holder   :: Address AAccount  -- ^ Holder of the asset
+    , contract :: Address AContract -- ^ Contract address
    } -- ^ Transfer holdings to contract
 
   | TransferFrom {
-      asset    :: Address -- ^ Asset to transfer
-    , amount   :: Int64   -- ^ Amount
-    , to       :: Address -- ^ Receipient
-    , contract :: Address -- ^ Contract address
+      asset    :: Address AAsset    -- ^ Asset to transfer
+    , amount   :: Int64             -- ^ Amount
+    , to       :: Address AAccount  -- ^ Receipient
+    , contract :: Address AContract -- ^ Contract address
   } -- ^ Transfer holdings from contract to account
 
   | TransferHoldings {
-      from   :: Address   -- ^ Sender
-    , asset  :: Address   -- ^ Asset to transfer
-    , amount :: Int64     -- ^ Amount
-    , to     :: Address   -- ^ Receipient
+      from   :: Address AAccount  -- ^ Sender
+    , asset  :: Address AAsset    -- ^ Asset to transfer
+    , amount :: Int64             -- ^ Amount
+    , to     :: Address AAccount  -- ^ Receipient
   } -- ^ Transfer holdings from account to account
 
   | Revert {
-      asset   :: Address  -- ^ Asset to transfer-
+      asset   :: Address AAsset  -- ^ Asset to transfer-
   } -- ^ Revert holdings to issuer
 
   deriving (Eq, Ord, Show, Generic, NFData)
@@ -97,13 +94,13 @@ instance Pretty Delta where
 
     ModifyAsset op -> case op of
       TransferTo asset amt holder contract       ->
-        "transferTo" <+> ppr (Address.shortAddr asset)
+        "transferTo" <+> ppr (shortAddr asset)
       TransferFrom asset amt holder contract     ->
-        "transferFrom" <+> ppr (Address.shortAddr asset)
+        "transferFrom" <+> ppr (shortAddr asset)
       TransferHoldings asset amt holder contract ->
-        "transferHoldings" <+> ppr (Address.shortAddr asset)
+        "transferHoldings" <+> ppr (shortAddr asset)
       Revert asset                               ->
-        "revert" <+> ppr (Address.shortAddr asset)
+        "revert" <+> ppr (shortAddr asset)
 
     Atomic a1 a2 -> "atomic" <+> "{" <+> ppr a1 <+> "," <+> ppr a2 <+> "}"
     Terminate msg -> "terminate" <> parens (dquotes (ppr msg))

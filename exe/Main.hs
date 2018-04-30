@@ -18,7 +18,6 @@ import Options.Applicative
 
 -- Application logic
 import Opts hiding (verbose)
-import qualified Utils
 import qualified Config
 import qualified Driver
 import qualified Account
@@ -350,12 +349,12 @@ replParser = replParser'
 fileParser :: Parser [Char]
 fileParser = strArgument (metavar "FILE")
 
-addrParser :: Parser Address.Address
+addrParser :: Parser (Address.Address a)
 addrParser = argument (eitherReader addrParser') (metavar "ADDR")
   where
-    addrParser' :: [Char] -> Either [Char] Address.Address
+    addrParser' :: [Char] -> Either [Char] (Address.Address a)
     addrParser' a =
-      maybe (Left "Address given is invalid") Right (Address.parseAddr (BS.pack a))
+      first toS (Address.parseAddress (BS.pack a))
 
 formatParser :: Parser DataFormat
 formatParser =

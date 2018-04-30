@@ -37,27 +37,39 @@ module Utils (
 
   -- Error handling
   panicImpossible,
+
+  getBinaryViaSerialize,
+  putBinaryViaSerialize
+
 ) where
 
 import Protolude
+
+import Control.Monad (fail)
+
 import Data.Time.Clock
-import Data.Time.Clock.POSIX
 import Data.List (partition)
 import qualified Data.List as List
-import qualified Time
-import qualified Numeric as N
+import qualified Data.Binary as B
+import qualified Data.Binary.Get as B
+import qualified Data.Binary.Put as B
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
-import qualified Text.Show.Pretty (ppShow)
+import qualified Data.Serialize as S
+import qualified Data.Text as T
 
 import System.Console.Haskeline
+
 import Text.Parsec.Text
 import Text.Parsec
 import Text.Printf (printf)
+import qualified Text.Show.Pretty (ppShow)
+
 import System.Console.ANSI
 import System.Directory
-import qualified Data.Text as T
+
+import qualified Time
 
 showHex :: Word8 -> [Char]
 showHex = printf "%02x"
@@ -238,6 +250,24 @@ parsePrompt msg p = do
 -- one occurrence of every item that has duplicates.)
 duplicates :: Eq a => [a] -> [a]
 duplicates xs = List.nub (xs List.\\ List.nub xs)
+
+-------------------------------------------------------------------------------
+-- Binary instance via Serialize
+-------------------------------------------------------------------------------
+
+getBinaryViaSerialize :: S.Serialize a => B.Get a
+getBinaryViaSerialize = do
+  len <- fromIntegral <$> B.getWord16be
+  bs <- B.getByteString len
+  case S.decode bs of
+    Left err -> fail $ show err
+    Right v -> pure v
+
+putBinaryViaSerialize :: S.Serialize a => a -> B.Put
+putBinaryViaSerialize v = do
+  let bs = S.encode v
+  B.putWord16be $ fromIntegral (BS.length bs)
+  B.putByteString bs
 
 -------------------------------------------------------------------------------
 -- Impossible Errors

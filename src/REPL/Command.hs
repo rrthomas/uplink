@@ -12,13 +12,10 @@ module REPL.Command (
 import Protolude
 
 import Control.Distributed.Process (Process, ProcessId)
-import Control.Distributed.Process.Node (LocalNode, runProcess)
 import qualified Data.Aeson.Encode.Pretty as A
 import Data.Text as T
-import Data.Monoid
 import System.Console.Repline (abort)
 
-import qualified Datetime as D
 import qualified Datetime.Types as D
 import qualified Contract
 import qualified Utils
@@ -27,15 +24,14 @@ import qualified Storage
 
 import qualified Network.P2P.Simulate as Sim
 import Network.P2P.Simulate (SimulationMsg(..), commSimulationRemoteProc, QuerySimulationSuccess(..), SimulationSuccess(..) )
-import Address
-import Script.Parser (contents, mkParseErrInfo, ParseErrInfo, textLit)
+import Address (Address, AAccount)
 import REPL.Lexer
 import REPL.Config
-import Script      (Script, Value, Name, Method(..), Arg, Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
+import Script      (Value, Name, Type, createEnumInfo, scriptEnums)
 import Script.Pretty (ppr, prettyPrint, (<+>), Doc, punctuate, hsep)
 
 data REPLCmd =
-    SetSender Address
+    SetSender (Address AAccount)
   | SetTimestamp D.Datetime
   | CallContract Name [Value]
   | Query Sim.QuerySimulation

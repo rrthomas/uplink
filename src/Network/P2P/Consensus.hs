@@ -13,35 +13,25 @@ module Network.P2P.Consensus (
 
 import Protolude hiding (link)
 
-import Control.Monad (fail)
-import Control.Monad.Base (liftBase)
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
 
-import qualified Data.Set as Set
 import qualified Data.Binary as B
-import qualified Data.Binary.Get as B
-import qualified Data.Binary.Put as B
-import qualified Data.Serialize as S
-import qualified Data.ByteString.Char8 as BSC
 
 import DB
 import NodeState
 import Node.Peer
-import qualified Key
 import qualified Block
-import qualified NodeState
-import qualified Time
 import qualified Validate as V
 import qualified Network.P2P.Logging as Log
 
 import Network.P2P.Service (Service(..))
+import Network.P2P.Send (MatchProcBase(..))
+import Network.P2P.SignedMsg (nsendPeerSigned, nsendPeersSigned, receiveWaitSigned)
 import qualified Network.P2P.Message as Msg
-import qualified Network.P2P.Controller as P2P
 import qualified Network.P2P.Service as Service
 
 import qualified Consensus as C
-import qualified Consensus.Authority.Params as CAP
 
 -------------------------------------------------------------------------------
 -- Consensus Types
@@ -49,11 +39,11 @@ import qualified Consensus.Authority.Params as CAP
 
 -- | A Message asking a node to sign a block
 data SignBlockMsg = SignBlockMsg Block.Block
-  deriving (Show, Eq, Generic, Typeable)
+  deriving (Show, Eq, Generic, Typeable, B.Binary)
 
 -- | A block signature from a signing node to a generating node
 newtype BlockSigMsg = BlockSigMsg Block.BlockSignature
-  deriving (Show, Eq, Generic, Typeable, S.Serialize)
+  deriving (Show, Eq, Generic, Typeable, B.Binary)
 
 -- | The consensus process is made up of two sub-processes,
 -- one for handling SignBlock messages, and another for generating
@@ -72,12 +62,11 @@ consensusProc msgService = do
     -- Process that handles Consensus messages
     consensusProc' :: NodeT m ()
     consensusProc' = do
-      controlP $ \runInBase ->
-        forever $ do
-          receiveWait
-            [ match $ runInBase . onSignBlockMsg
-            , match $ runInBase . onBlockSigMsg
-            ]
+      forever $ do
+        receiveWaitSigned
+          [ MatchProcBase onSignBlockMsg
+          , MatchProcBase onBlockSigMsg
+          ]
 
     -- SignBlockMsg handler
     onSignBlockMsg :: (SignBlockMsg, ProcessId) -> NodeT m ()
@@ -111,7 +100,7 @@ consensusProc msgService = do
               let blockSigMsg = BlockSigMsg blockSig
 
               -- Reply to Node who asked me to sign the block
-              P2P.nsendPeer Service.Consensus (processNodeId replyTo) blockSigMsg
+              nsendPeerSigned Service.Consensus (processNodeId replyTo) blockSigMsg
 
     -- BlockSigMsg handler
     onBlockSigMsg :: BlockSigMsg -> NodeT m ()
@@ -123,7 +112,7 @@ consensusProc msgService = do
         Just newBlock -> do
           -- If block has enough signatures, broadcast
           blockMsg <- Msg.mkBlockMsg newBlock
-          P2P.nsendPeers' msgService blockMsg
+          nsendPeersSigned msgService blockMsg
 
 -- | Process that generates new blocks according to the current
 -- consensus algorithm parameters in the latest block on the chain
@@ -146,26 +135,4 @@ blockGenProc = do
       forM_ validatorPeers $ \(Peer peerPid addr) -> do
         let peerNodeId = processNodeId peerPid
         Log.info $ "Sending block " <> show blockIdx <> " to " <> show addr <> " to sign..."
-        P2P.nsendPeer Service.Consensus peerNodeId signBlockMsg
-
--------------------------------------------------------------------------------
--- Serialization
--------------------------------------------------------------------------------
-
-instance B.Binary SignBlockMsg where
-  put (SignBlockMsg blk) = do
-    B.put $ S.encode blk
-  get = do
-    eBlk <- S.decode <$> B.get
-    case eBlk of
-      Left err -> fail err
-      Right blk -> pure $ SignBlockMsg blk
-
-instance B.Binary BlockSigMsg where
-  put blockSigMsg =
-    B.put $ S.encode blockSigMsg
-  get = do
-    bs <- B.get
-    case S.decode bs of
-      Left err -> fail err
-      Right bsm -> pure bsm
+        nsendPeerSigned Service.Consensus peerNodeId signBlockMsg

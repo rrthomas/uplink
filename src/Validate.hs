@@ -52,20 +52,18 @@ import qualified Data.Map as Map
 
 import qualified DB
 
-import Address (Address)
-import Asset (Asset, createAsset)
+import Address (Address, AAccount, AContract)
+import Asset (createAsset, Holder(..))
 import Block (Block(..))
 import Contract (Contract)
 import Delta (Delta(..))
 import Ledger (World)
 import Transaction (Transaction(..))
-import SafeString (toBytes, fromBytes)
+import SafeString (toBytes)
 
 import qualified Key
-import qualified Time
 import qualified Asset
 import qualified Block
-import qualified Delta
 import qualified Ledger
 import qualified Account
 import qualified Address
@@ -90,7 +88,7 @@ verifyValidateAndApplyBlock
   => ApplyState
   -> ApplyCtx
   -> Block
-  -> m (Either Block.InvalidBlock (World, Map Address [Delta]))
+  -> m (Either Block.InvalidBlock (World, Map (Address AContract) [Delta]))
 verifyValidateAndApplyBlock applyState applyCtx block =
   case verifyBlock (accumWorld applyState) block of
     Left err -> pure $ Left err
@@ -227,7 +225,7 @@ verifyTransaction world tx@Transaction{..} = do
 -- transaction and applying it to the world state
 data ApplyCtx = ApplyCtx
   { applyCurrBlock      :: Block
-  , applyNodeAddress    :: Address
+  , applyNodeAddress    :: (Address AAccount)
   , applyNodePrivKey    :: Key.PrivateKey
   } deriving (Generic)
 
@@ -235,7 +233,7 @@ data ApplyCtx = ApplyCtx
 data ApplyState = ApplyState
   { accumWorld  :: World                       -- ^ Accumulated ledger state
   , accumErrs   :: DList Tx.InvalidTransaction -- ^ Accumulated list of invalid transactions
-  , accumDeltas :: Map Address [Delta]         -- ^ Map of Contract Addrs -> Deltas
+  , accumDeltas :: Map (Address AContract) [Delta]         -- ^ Map of Contract Addrs -> Deltas
   }
 
 -- | The Monad used for functions accessing ApplyCtx env and ApplyState state
@@ -261,7 +259,7 @@ execApplyT
   => ApplyState -- ^ Initial state to modify
   -> ApplyCtx   -- ^ Initial environment values
   -> ApplyT m a -- ^ Computation
-  -> m (World, [Tx.InvalidTransaction], Map Address [Delta])
+  -> m (World, [Tx.InvalidTransaction], Map (Address AContract) [Delta])
 execApplyT s r =
     fmap reifyApplyState .
       flip execStateT s .
@@ -269,7 +267,7 @@ execApplyT s r =
           unApplyT
   where
     -- | Evaluates the DList accumulating errors
-    reifyApplyState :: ApplyState -> (World, [Tx.InvalidTransaction], Map Address [Delta])
+    reifyApplyState :: ApplyState -> (World, [Tx.InvalidTransaction], Map (Address AContract) [Delta])
     reifyApplyState (ApplyState w itxs' d) = let itxs = itxs' `DL.apply` [] in (w,itxs,d)
 
 -- | Set the world state
@@ -284,7 +282,7 @@ accumInvalidTx itx = modify $ \applyState ->
   applyState { accumErrs = accumErrs' `DL.append` DL.fromList [itx] }
 
 -- | Add a list of Deltas to ApplyState
-appendDeltas :: Monad m => Address -> [Delta] -> ApplyT m ()
+appendDeltas :: Monad m => Address AContract -> [Delta] -> ApplyT m ()
 appendDeltas addr ds = modify $ \applyState ->
   let accumDeltas' = accumDeltas applyState in
   applyState {
@@ -338,13 +336,13 @@ applyTxAsset tx txAsset = do
 
     Tx.CreateAsset name supply mRef atyp metadata -> do
       let assetAddr = Tx.transactionToAddress tx
-          asset = createAsset (toBytes name) origin supply mRef atyp blockTs assetAddr metadata
+          asset = createAsset (toS $ toBytes name) origin supply mRef atyp blockTs assetAddr metadata
        in case Ledger.addAsset assetAddr asset world of
                 Left err -> throwInvalidTxAsset $ Tx.AssetError err
                 Right newworld -> putWorld newworld
 
     Tx.Transfer assetAddr toAddr amnt -> do
-      let eLedger = Ledger.transferAsset assetAddr origin toAddr amnt world
+      let eLedger = Ledger.transferAsset assetAddr (Holder origin) toAddr amnt world
       case eLedger of
         Left err -> throwInvalidTxAsset $ Tx.AssetError err
         Right newWorld -> putWorld newWorld
@@ -514,7 +512,6 @@ applyTxContract tx txContract = do
     updateContract evalState contract =
       let gstore = Eval.globalStorage evalState
           lstore = Eval.localStorage evalState
-          ts     = Contract.timestamp contract
       in contract
         { Contract.globalStorage = Storage.GlobalStorage gstore
         , Contract.localStorage  = map Storage.LocalStorage lstore
@@ -546,7 +543,7 @@ initEvalCtxTxCall ApplyCtx{..} contract tx = do
   pure EvalCtx
     { currentBlock = fromIntegral $ Block.index applyCurrBlock
     , currentValidator = applyNodeAddress
-    , currentTransaction = Tx.base16HashTransaction tx
+    , currentTransaction = Tx.hashTransaction tx
     , currentTimestamp = Block.timestamp $ Block.header applyCurrBlock
     , currentCreated = Contract.timestamp contract
     , currentDeployer = Contract.owner contract
@@ -559,14 +556,14 @@ initEvalCtxTxCall ApplyCtx{..} contract tx = do
 initEvalCtxTxCreateContract
   :: ApplyCtx
   -> Transaction
-  -> Address
+  -> Address AContract
   -> IO Eval.EvalCtx
 initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr = do
   (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
   pure EvalCtx
     { currentBlock = fromIntegral $ Block.index applyCurrBlock
     , currentValidator = applyNodeAddress
-    , currentTransaction = Tx.base16HashTransaction tx
+    , currentTransaction = Tx.hashTransaction tx
     , currentTimestamp = Block.timestamp $ Block.header applyCurrBlock
     , currentCreated = Block.timestamp $ Block.header applyCurrBlock
     , currentDeployer = Tx.origin tx

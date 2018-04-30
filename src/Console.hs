@@ -9,17 +9,11 @@ module Console (
 
 import Protolude hiding (StateT, evalStateT, Prefix)
 
-import Control.Distributed.Process (Process, ProcessId)
+import Control.Distributed.Process (ProcessId)
 import Control.Distributed.Process.Node (LocalNode, runProcess)
-import Control.Monad.State.Strict
 
-import Data.Either
-import qualified Data.Map as Map
 import qualified Script.Pretty as Pretty
 import Script.Parser (lineContents)
-import Account
-import Utils
-import NodeState
 import qualified Data.Text as T
 
 import Console.Completion

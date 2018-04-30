@@ -27,15 +27,15 @@ module MemPool (
 
 import Protolude
 
-import Hash
-
 import Data.Aeson
 import Data.Aeson.Types
 import Data.DList (DList)
 import qualified Data.DList as DL
+import qualified Encoding as E
 import Data.List (length, (\\))
 
-import Transaction (Transaction, InvalidTransaction, hashInvalidTx)
+import qualified Hash as H
+import Transaction (Transaction, InvalidTransaction, hashTransaction, hashInvalidTx)
 
 -------------------------------------------------------------------------------
 -- MemPool
@@ -45,7 +45,7 @@ import Transaction (Transaction, InvalidTransaction, hashInvalidTx)
 -- chain, but for which we have input transactions
 data MemPool = MemPool
   { size         :: Int
-  , hashes       :: DList (Hash ByteString)
+  , hashes       :: DList (H.Hash E.Base16ByteString)
   , transactions :: DList Transaction
   } deriving Show
 
@@ -60,31 +60,32 @@ instance FromJSON MemPool where
   parseJSON (Object v) = do
     size <- v .: "size"
     txs <- v .: "transactions"
-    let hs = map Hash.toHash txs
+    let hs = map hashTransaction txs
     pure $ MemPool size hs txs
   parseJSON invalid = typeMismatch "MemPool" invalid
 
 emptyMemPool :: MemPool
 emptyMemPool = MemPool 0 DL.empty DL.empty
 
+-- | Returns True if transaction exists in the mempool
 elemMemPool :: MemPool -> Transaction -> Bool
-elemMemPool (MemPool _ hs _) tx =
-  let h = Hash.toHash tx in notElem h hs
+elemMemPool mp = elemMemPool' mp . hashTransaction
 
-elemMemPool' :: MemPool -> ByteString -> Bool
-elemMemPool' (MemPool _ hs _) txHash =
-  let h = Hash.toHash txHash in notElem h hs
+-- | Returns True if a transaction with the given base16 tx hash exists in the mempool
+-- Note: Must be a Base16 encoded bytestring, as this is how txs are identified.
+elemMemPool' :: MemPool -> H.Hash E.Base16ByteString -> Bool
+elemMemPool' (MemPool _ hs _) txHash = elem txHash hs
 
--- | Appends a transaction to the mempool if the transaction is unique. If the
--- transaction already exists in the mempool, the original mempool is returned.
-appendTx :: Transaction -> MemPool -> MemPool
+-- | Appends a transaction to the mempool if the transaction is unique.
+appendTx :: Transaction -> MemPool -> Maybe MemPool
 appendTx tx mp@(MemPool s hshs txs)
-  | elemMemPool mp tx = MemPool
-      { size         = s + 1
-      , hashes       = DL.snoc hshs $ Hash.toHash tx
-      , transactions = DL.snoc txs tx
-      }
-  | otherwise = mp
+  | elemMemPool mp tx = Nothing
+  | otherwise =
+      Just $ MemPool
+        { size         = s + 1
+        , hashes       = DL.snoc hshs $ hashTransaction tx
+        , transactions = DL.snoc txs tx
+        }
 
 removeTxs :: MemPool -> [Transaction] -> MemPool
 removeTxs memPool txs =
@@ -95,7 +96,7 @@ removeTxs memPool txs =
       }
   where
     newTxs = DL.toList (transactions memPool) \\ txs
-    newTxHashes = map Hash.toHash newTxs
+    newTxHashes = map hashTransaction newTxs
 
 -------------------------------------------------------------------------------
 -- Invalid Transaction Pool (Bounded)
@@ -107,7 +108,7 @@ data InvalidTxPool = InvalidTxPool
   { itxPoolSize   :: Int  -- ^ Current number of InvalidTxs in InvalidTxPool
   , itxPoolBound  :: Int  -- ^ The largest number of InvalidTxs the pool can contain
   , itxPoolTxs    :: [InvalidTransaction]
-  , itxPoolHashes :: [Hash ByteString]
+  , itxPoolHashes :: [H.Hash E.Base16ByteString]
   } deriving (Show)
 
 resetInvalidTxPool :: InvalidTxPool -> InvalidTxPool
@@ -140,6 +141,6 @@ addInvalidTxs newItxs itxp@(InvalidTxPool origSize bound origItxs origItxHshs) =
     finalNewItxHshs = take finalNewSize itxHshs
 
 -- Check membership of transaction in InvalidTxPool
-elemInvalidTxPool :: ByteString -> InvalidTxPool -> Bool
+elemInvalidTxPool :: H.Hash E.Base16ByteString -> InvalidTxPool -> Bool
 elemInvalidTxPool itxHash itxPool =
-  toHash itxHash `elem` itxPoolHashes itxPool
+  itxHash `elem` itxPoolHashes itxPool

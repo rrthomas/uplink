@@ -24,9 +24,9 @@ module Opts (
 ) where
 
 import Protolude
+import Address (Address, AAccount, AContract, AAsset)
 import qualified Config
 import qualified Account
-import qualified Address
 
 -------------------------------------------------------------------------------
 -- Command Line Interface
@@ -62,18 +62,18 @@ data ExportData
   deriving (Eq, Ord, Read, Show)
 
 data DataCommand
-  = Get Address.Address
+  = Get (Address AAccount)
   | List
   | Commit
     { fpath        :: FilePath
-    , contractAddr :: Address.Address
-    , accountAddr  :: Address.Address
+    , contractAddr :: Address AContract
+    , accountAddr  :: Address AAccount
     }
   | Export
     { exportType :: ExportData
     , fPath      :: FilePath
     }
-  | LoadAsset FilePath Address.Address
+  | LoadAsset FilePath (Address AAsset)
   | LoadAccount FilePath
   deriving (Eq, Ord, Show)
 

@@ -23,10 +23,6 @@ wireTests = testGroup "Wire Protocol Tests"
         tx <- Ref.txMsg
         pure (dumpBytes (Message.encodeMsg tx))
 
-    , goldenVsStringDiff "Sync" differ syncOut $ do
-        tx <- Ref.syncMsg
-        pure (dumpBytes (Message.encodeMsg tx))
-
     , goldenVsStringDiff "Ping" differ pingOut $ do
         tx <- Ref.pingMsg
         pure (dumpBytes (Message.encodeMsg tx))
@@ -43,10 +39,6 @@ wireTests = testGroup "Wire Protocol Tests"
         tx <- Ref.versionMsg
         pure (dumpBytes (Message.encodeMsg tx))
 
-    , goldenVsStringDiff "Not Found" differ notFoundOut $ do
-        tx <- Ref.notFoundMsg
-        pure (dumpBytes (Message.encodeMsg tx))
-
     , goldenVsStringDiff "Test ServiceRestart" differ testSvrOut $ do
         let svr = Message.Test Ref.serviceRestartMsg
         pure (dumpBytes (encode svr))
@@ -57,11 +49,9 @@ wireTests = testGroup "Wire Protocol Tests"
     ]
   where
     txOut        = "tests/golden/wire/tx_wire.out"
-    syncOut      = "tests/golden/wire/sync_wire.out"
     getBlockAtIdxOut = "tests/golden/wire/getBlockAtIdx_wire.out"
     blockOut     = "tests/golden/wire/block_wire.out"
     pingOut      = "tests/golden/wire/ping_wire.out"
-    notFoundOut  = "tests/golden/wire/notfound_wire.out"
     versionOut   = "tests/golden/wire/version_wire.out"
     testSvrOut   = "tests/golden/wire/test_service_restart.out"
     testRtxOut   = "tests/golden/wire/test_reset_mempool.out"

@@ -26,31 +26,29 @@ import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BS
 
 import System.FilePath
-import System.Directory
-import System.Posix.Files
 
 -------------------------------------------------------------------------------
 -- Log Generation
 -------------------------------------------------------------------------------
 
-type TxLogElem = (Int64, Address, Delta)
+type TxLogElem = (Int64, Address AContract, Delta)
 type TxLog = [TxLogElem]
 
 txLogFile :: FilePath -> FilePath
 txLogFile root = root </> "txlog"
 
 -- | Write delta
-writeDelta :: FilePath -> Int64 -> Address -> Delta -> IO ()
+writeDelta :: FilePath -> Int64 -> Address AContract -> Delta -> IO ()
 writeDelta fp blkIx addr dt = appendFile fp (line <> "\n")
   where
     line :: Text
     line = prettyPrint ("Block " <+> ppr blkIx <+> ":" <+> ppr (Address.shortAddr addr) <+> ppr dt)
 
 -- | Write delta list associated with a block
-writeDeltas :: FilePath -> Int64 -> Address -> [Delta] -> IO ()
+writeDeltas :: FilePath -> Int64 -> Address AContract -> [Delta] -> IO ()
 writeDeltas fp blkIx addr = mapM_ (\dt -> writeDelta fp blkIx addr dt)
 
 -- | Write delta list associated with a block in JSON
-writeDeltasJSON :: Int64 -> FilePath -> Address -> [Delta] -> IO ()
+writeDeltasJSON :: Int64 -> FilePath -> Address AContract -> [Delta] -> IO ()
 writeDeltasJSON blkIx file addr dts =
   BS.appendFile file $ A.encode [(blkIx, addr, Script.Pretty.print dt) | dt <- dts]

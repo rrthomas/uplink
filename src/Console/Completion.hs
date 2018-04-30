@@ -11,11 +11,9 @@ import Protolude hiding (Prefix)
 
 import System.Console.Repline
 import qualified Data.String as String
-import qualified Data.Set as Set
 import qualified Data.Text as T
 import Console.Lexer
 import Console.Config
-import qualified NodeState
 
 defaultMatcher
   :: (MonadState ConsoleState m, MonadIO m) => [(String.String, CompletionFunc m)]

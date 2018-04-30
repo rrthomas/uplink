@@ -9,17 +9,14 @@ module Script.Init (
 
 import Protolude
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 
 import Script
-import Address (Address, fromRaw, emptyAddr)
+import Address (Address, AAccount, AContract)
 import Contract (Contract)
-import Encoding (b58)
 
 import Key (PrivateKey)
 import Time (Timestamp)
-import qualified Script
-import qualified Storage
+import qualified Encoding
 import qualified Contract
 import qualified SafeString
 import qualified Hash
@@ -27,24 +24,23 @@ import qualified Transaction as TX
 import qualified Script.Graph as Graph
 import qualified Script.Storage as Storage
 import qualified Script.Compile as Compile
-import qualified Script.Pretty as Pretty
 import Ledger (World)
 import Script.Eval (EvalCtx(..))
 import qualified Homomorphic as Homo
 
 -- | Create a contract
 createContract
-  :: Address    -- ^ Contract Address
-  -> Int64      -- ^ Current Block Index
-  -> Timestamp  -- ^ Current Block Timestamp
-  -> Address    -- ^ Address of Evaluating node
-  -> ByteString -- ^ Current Transaction hash
-  -> Address    -- ^ Issuer of transaction (tx origin field)
-  -> PrivateKey -- ^ Node private key for signing
-  -> Timestamp  -- ^ Contract timestamp
-  -> Address    -- ^ Contract owner
-  -> World      -- ^ Initial world
-  -> Text       -- ^ Raw FCL code
+  :: Address AContract                    -- ^ Contract Address
+  -> Int64                                -- ^ Current Block Index
+  -> Timestamp                            -- ^ Current Block Timestamp
+  -> Address AAccount                     -- ^ Address of Evaluating node
+  -> Hash.Hash Encoding.Base16ByteString  -- ^ Current Transaction hash
+  -> Address AAccount                     -- ^ Issuer of transaction (tx origin field)
+  -> PrivateKey                           -- ^ Node private key for signing
+  -> Timestamp                            -- ^ Contract timestamp
+  -> Address AAccount                     -- ^ Contract owner
+  -> World                                -- ^ Initial world
+  -> Text                                 -- ^ Raw FCL code
   -> IO (Either Text Contract)
 createContract contractAddr blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
   (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
@@ -94,16 +90,16 @@ createContractWithEvalCtx evalCtx world body
 -- uniqueness verification. This is to be used in places like the REPL and the
 -- Simulation process.
 createFauxContract
-  :: Int64      -- ^ Current Block Index
-  -> Timestamp  -- ^ Current Block Timestamp
-  -> Address    -- ^ Address of Evaluating node
-  -> ByteString -- ^ Current Transaction hash
-  -> Address    -- ^ Issuer of transaction (tx origin field)
-  -> PrivateKey -- ^ Node private key for signing
-  -> Timestamp  -- ^ Contract timestamp
-  -> Address    -- ^ Contract owner
-  -> World      -- ^ Initial world
-  -> Text       -- ^ Raw FCL code
+  :: Int64                                -- ^ Current Block Index
+  -> Timestamp                            -- ^ Current Block Timestamp
+  -> Address AAccount                     -- ^ Address of Evaluating node
+  -> Hash.Hash Encoding.Base16ByteString  -- ^ Current Transaction hash
+  -> Address AAccount                     -- ^ Issuer of transaction (tx origin field)
+  -> PrivateKey                           -- ^ Node private key for signing
+  -> Timestamp                            -- ^ Contract timestamp
+  -> Address AAccount                     -- ^ Contract owner
+  -> World                                -- ^ Initial world
+  -> Text                                 -- ^ Raw FCL code
   -> IO (Either Text Contract)
 createFauxContract blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
   let contractHdr = TX.TxContract $ TX.CreateContract (SafeString.fromBytes' $ toS body)

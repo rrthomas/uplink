@@ -26,7 +26,6 @@ module Transaction (
 
   -- ** Hashing
   hashTransaction,
-  base16HashTransaction,
 
   -- ** Address Derivation
   transactionToAddress,
@@ -38,7 +37,6 @@ module Transaction (
   -- ** Invalid Transactions
   InvalidTransaction(..),
   hashInvalidTx,
-  base16HashInvalidTx,
 
   InvalidTxHeader(..),
   InvalidTxAccount(..),
@@ -53,26 +51,21 @@ module Transaction (
 
 ) where
 
-import Protolude hiding (from, to, put, get, putByteString)
-import Unsafe (unsafeFromJust)
+import Protolude hiding (to, put, get)
 
 import Hash (sha256)
 import Data.Aeson hiding (decode, encode)
 import Data.Aeson.Types (Parser, typeMismatch)
 import Data.Serialize as S
-import Data.Serialize.Put
 import qualified Data.Binary as Binary
-import Data.Maybe (fromJust)
 import Control.Monad (fail)
-import Utils (toInt, toWord16)
 
 import SafeString (SafeString)
-import SafeInteger (SafeInteger, fromSafeInteger)
+import SafeInteger (SafeInteger)
 
-import Asset (Asset, Balance, putAssetType, getAssetType, putRef, getRef)
-import Address (Address, putAddress, getAddress)
+import Asset (Balance, putAssetType, getAssetType, putRef, getRef, Holder(..))
+import Address (Address, putAddress, getAddress, AAccount, AAsset, AContract)
 import Metadata (Metadata(..))
-import Datetime.Types
 import qualified Key
 import qualified Time
 import qualified Hash
@@ -83,22 +76,11 @@ import qualified Encoding
 import qualified Ledger
 import qualified Storage
 import qualified SafeString
-import qualified SafeInteger
-import qualified Script
+import qualified Utils
 
-import Script (Value(..))
 import qualified Script.Eval
-import qualified Script.Graph as Graph
 import qualified Script.Typecheck
 import qualified Script.Compile as Compile
-
-import qualified Data.Text as T
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.Map.Strict as Map
-
-import Text.XML.Expat.Pickle
-import Text.XML.Expat.Tree
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
@@ -110,8 +92,8 @@ import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), ret
 -- | Transaction
 data Transaction = Transaction
   { header    :: TransactionHeader
-  , signature :: ByteString
-  , origin    :: Address
+  , signature :: Encoding.Base64PByteString
+  , origin    :: Address AAccount
   } deriving (Show, Eq, Generic, NFData, Serialize, Hash.Hashable)
 
 -- | Transaction header
@@ -122,9 +104,10 @@ data TransactionHeader
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
 data Status
-  = Pending
-  | Rejected
-  | Accepted
+  = Pending     -- ^ Transaction is waiting to be included in a block or rejected
+  | Rejected    -- ^ Transaction has been rejected due to invalidity
+  | Accepted    -- ^ Transaction has been included in a block
+  | NonExistent -- ^ Transaction has never been seen by the network
   deriving (Show, Eq, Generic, NFData, Hash.Hashable, ToJSON, FromJSON)
 
 -------------------------------------------------------------------------------
@@ -136,11 +119,11 @@ data TxContract
       contract :: SafeString.SafeString
   }
   | SyncLocal {
-      address :: Address
-    , op :: SyncLocalOp
+      address :: Address AContract
+  , op :: SyncLocalOp
   }                                           -- ^ Sync local storage with contract
   | Call {
-      address :: Address
+      address :: Address AContract
     , method  :: ByteString
     , args    :: [Storage.Value]
   }
@@ -150,37 +133,37 @@ data TxContract
 data SyncLocalOp
   = InitialCommit (SafeInteger.SafeInteger, SafeInteger.SafeInteger)
   | Sync
-  | Finalize Address SafeInteger.SafeInteger
+  | Finalize (Address AContract) SafeInteger.SafeInteger
   deriving (Show, Eq, Generic, NFData, Hash.Hashable, Serialize)
 
 data TxAsset
   = CreateAsset {
-      assetName :: SafeString.SafeString      -- ^ Asset name
-    , supply    :: Int64                      -- ^ Asset supply
-    , reference :: Maybe Asset.Ref            -- ^ Asset reference
-    , assetType :: Asset.AssetType            -- ^ Asset type
-    , metadata  :: Metadata                   -- ^ Arbitrary additional metadata
+      assetName :: SafeString.SafeString          -- ^ Asset name
+    , supply    :: Int64                          -- ^ Asset supply
+    , reference :: Maybe Asset.Ref                -- ^ Asset reference
+    , assetType :: Asset.AssetType                -- ^ Asset type
+    , metadata  :: Metadata                       -- ^ Arbitrary additional metadata
   }
 
   | Transfer {
-      assetAddr :: Address                    -- ^ Address of asset
-    , toAddr    :: Address                    -- ^ Asset of Receiver
-    , balance   :: Balance                    -- ^ Amount to transfer
+      assetAddr :: Address AAsset                 -- ^ Address of asset
+    , toAddr    :: Holder                         -- ^ Asset of Receiver
+    , balance   :: Balance                        -- ^ Amount to transfer
   }
 
   | Circulate {
-      assetAddr :: Address                    -- ^ Address of asset
-    , amount    :: Balance                    -- ^ Amount to transfer
+      assetAddr :: Address AAsset                 -- ^ Address of asset
+    , amount    :: Balance                        -- ^ Amount to transfer
   }
 
   | Bind {
-      assetAddr    :: Address                    -- ^ Asset address
-    , contractAddr :: Address                    -- ^ Account address
-    , bindProof    :: (SafeInteger, SafeInteger) -- ^ Bind proof
+      assetAddr    :: Address AAsset              -- ^ Asset address
+    , contractAddr :: Address AContract           -- ^ Account address
+    , bindProof    :: (SafeInteger, SafeInteger)  -- ^ Bind proof
   }
 
   | RevokeAsset {
-      address :: Address                      -- ^ Address of asset to revoke
+      address :: Address AAsset                   -- ^ Address of asset to revoke
   }
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
@@ -191,7 +174,7 @@ data TxAccount
     , metadata :: Metadata              -- ^ Arbitrary additional metadata
   }
   | RevokeAccount {
-      address   :: Address                    -- ^ Issue a revocation of an account
+      address   :: Address AAccount     -- ^ Issue a revocation of an account
   }
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
@@ -223,12 +206,8 @@ XXX
 -}
 
 instance Binary.Binary Transaction where
-  put tx = Binary.put $ encode tx
-  get = do
-    bs <- Binary.get
-    case decode bs of
-      (Right tx) -> return tx
-      (Left err) -> fail err
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 instance Serialize TransactionHeader where
   put txHdr = case txHdr of
@@ -253,7 +232,6 @@ instance Serialize TransactionHeader where
        | otherwise -> fail $
            "Invalid TxHeaderType flag: " <> show code
 
-
 getTxContract :: Int -> Get TransactionHeader
 getTxContract 1000 =
   TxContract . CreateContract <$> get
@@ -275,7 +253,7 @@ getTxAsset 1003 = do
   name   <- get
   supply <- getInt64be
   ref    <- getWord16be
-  mRef <- do
+  mRef <-
     if | ref == 0 -> return Nothing
        | ref == 1 -> Just <$> getRef
        | True     -> fail $ show ref <>
@@ -289,7 +267,7 @@ getTxAsset 1004 = do
   to    <- getAddress
   bal   <- getInt64be
   pure $ TxAsset $
-    Transfer asset to bal
+    Transfer asset (Holder (to :: Address AAccount)) bal
 getTxAsset 1005 = do
   assetAddr <- getAddress
   amount    <- getInt64be
@@ -352,7 +330,7 @@ instance Serialize TxAsset where
       putAssetType assetType
       put md
 
-    Transfer asset to bal -> do
+    Transfer asset (Holder to) bal -> do
       putWord16be 1004
       putAddress asset
       putAddress to
@@ -385,7 +363,7 @@ instance Serialize TxAccount where
       putWord16be 1009
       putAddress addr
 
-txCall :: Address -> ByteString -> [Storage.Value] -> TxContract
+txCall :: Address AContract -> ByteString -> [Storage.Value] -> TxContract
 txCall = Call
 
 -------------------------------------------------------------------------------
@@ -394,9 +372,9 @@ txCall = Call
 
 instance ToJSON Transaction where
   toJSON t =
-    object $
+    object
         [ "header"    .= header t
-        , "signature" .= decodeUtf8 (signature t)
+        , "signature" .= signature t
         , "origin"    .= origin t
         ]
 
@@ -405,12 +383,11 @@ instance FromJSON Transaction where
     hd     <- v .: "header"
     sig    <- v .: "signature"
     origin <- v .: "origin"
-    pure $ Transaction
+    pure Transaction
       { header    = hd
-      , signature = encodeUtf8 sig
+      , signature = sig
       , origin    = origin
       }
-
   parseJSON invalid = typeMismatch "Transaction" invalid
 
 -------------------------------------------------------------------------------
@@ -441,7 +418,6 @@ instance FromJSON TransactionHeader where
        | tagV == "TxAsset"     -> do
           txa <- v .: "contents"
           return $ TxAsset txa
-
   parseJSON invalid = typeMismatch "TransactionHeader" invalid
 
 -------------------------------------------------------------------------------
@@ -658,17 +634,15 @@ decodeTransaction :: ByteString -> Either [Char] Transaction
 decodeTransaction = decode
 
 -- | Hash transaction
-hashTransaction :: Transaction -> Hash.Hash ByteString
+-- Transactions currently use base 16 encoding.
+hashTransaction :: Transaction -> Hash.Hash Encoding.Base16ByteString
 hashTransaction = Hash.toHash
-
-base16HashTransaction :: Transaction -> ByteString
-base16HashTransaction = Encoding.base16 . Hash.getHash . hashTransaction
 
 -- | Computes a Ledger value address using a transaction hash:
 -- base58Encode ( sha3_256 ( base16Encode ( sha3_256 ( binary ( TX ) ) ) ) )
-transactionToAddress :: Transaction -> Address
+transactionToAddress :: Transaction -> Address a
 transactionToAddress =
-  Address.fromRaw . Encoding.b58 . Hash.sha256Raw . base16HashTransaction
+  Address.Address . Hash.sha256 . Hash.getRawHash . hashTransaction
 
 -------------------------------------------------------------------------------
 -- Creation
@@ -676,13 +650,13 @@ transactionToAddress =
 
 -- | Create a new transaction.
 newTransaction
-  :: Address            -- ^ Origin Account Address
+  :: Address AAccount   -- ^ Origin Account Address
   -> Key.PrivateKey     -- ^ Private Key
   -> TransactionHeader  -- ^ Transaction payload
   -> IO Transaction
 newTransaction origin privKey header = do
   sig    <- Key.sign privKey $ S.encode header
-  pure $ Transaction {
+  pure Transaction {
     header    = header
   , origin    = origin
   , signature = Key.encodeSig sig
@@ -719,11 +693,8 @@ instance ToJSON InvalidTransaction where
     , "reason"      .= (show inv :: Text)
     ]
 
-hashInvalidTx :: InvalidTransaction -> Hash.Hash ByteString
+hashInvalidTx :: InvalidTransaction -> Hash.Hash Encoding.Base16ByteString
 hashInvalidTx (InvalidTransaction tx err) = hashTransaction tx
-
-base16HashInvalidTx :: InvalidTransaction -> ByteString
-base16HashInvalidTx = Encoding.base16 . Hash.getHash . hashInvalidTx
 
 data InvalidTxField
   = InvalidTxTimestamp Time.Timestamp
@@ -732,7 +703,7 @@ data InvalidTxField
 
 data InvalidTxAccount
   = InvalidPubKeyByteString ByteString
-  | RevokeValidatorError Address
+  | RevokeValidatorError (Address AAccount)
   | AccountError Ledger.AccountError
   deriving (Show, Eq, Generic, S.Serialize)
 
@@ -755,11 +726,11 @@ data InvalidTxHeader
   deriving (Show, Eq, Generic, S.Serialize)
 
 data TxValidationError
-  = NoSuchOriginAccount Address      -- ^ Origin account does not exist on the ledger
-  | DuplicateTransaction             -- ^ Transaction is not unique
-  | InvalidTxField InvalidTxField    -- ^ One of the transaction fields is invalid
-  | InvalidTxHeader InvalidTxHeader  -- ^ The transaction header is invalid
-  | InvalidPubKey                    -- ^ The public key cannot be decoded
+  = NoSuchOriginAccount (Address AAccount)  -- ^ Origin account does not exist on the ledger
+  | DuplicateTransaction                  -- ^ Transaction is not unique
+  | InvalidTxField InvalidTxField         -- ^ One of the transaction fields is invalid
+  | InvalidTxHeader InvalidTxHeader       -- ^ The transaction header is invalid
+  | InvalidPubKey                         -- ^ The public key cannot be decoded
   deriving (Show, Eq, Generic, S.Serialize)
 
 -- | Verify a transaction with a public key

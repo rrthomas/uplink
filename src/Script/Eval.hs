@@ -49,7 +49,7 @@ import Account (Account,  address, publicKey)
 import Script.Prim (PrimOp(..))
 import Script.Error as Error
 import Script.Graph (GraphState(..), terminalLabel, initialLabel)
-import Address (Address, rawAddr)
+import Address (Address, AContract, AAccount, AAsset, rawAddr)
 import Utils (panicImpossible)
 import qualified Asset
 import qualified Delta
@@ -75,25 +75,27 @@ import Control.Monad.State
 import qualified Crypto.Random as Crypto (SystemDRG, getSystemDRG)
 import qualified Crypto.Random.Types as Crypto (MonadRandom(..), MonadPseudoRandom, withDRG)
 
+import qualified Encoding
+
 -------------------------------------------------------------------------------
 -- Execution State
 -------------------------------------------------------------------------------
 
 -- | Evaluation context used during remote evaluation in a validating engine.
 data EvalCtx = EvalCtx
-  { currentBlock       :: Int64           -- ^ The latest block in the chain
-  , currentValidator   :: Address         -- ^ Referencing an account
-  , currentTransaction :: ByteString      -- ^ Current transaction hash
-  , currentTimestamp   :: Time.Timestamp  -- ^ When the current method is being executed
-  , currentCreated     :: Time.Timestamp  -- ^ When the contract was deployed
-  , currentDeployer    :: Address         -- ^ Referencing an account
-  , currentTxIssuer    :: Address         -- ^ Transaction sender
-  , currentAddress     :: Address         -- ^ Address of current Contract
-  , currentPrivKey     :: Key.PrivateKey  -- ^ Private key of Validating node
-  , currentStorageKey  :: Homo.PubKey     -- ^ Public key for storage homomorphic encryption (RSA public key)
+  { currentBlock       :: Int64             -- ^ The latest block in the chain
+  , currentValidator   :: Address AAccount   -- ^ Referencing an account
+  , currentTransaction :: Hash.Hash Encoding.Base16ByteString   -- ^ Current transaction hash
+  , currentTimestamp   :: Time.Timestamp    -- ^ When the current method is being executed
+  , currentCreated     :: Time.Timestamp    -- ^ When the contract was deployed
+  , currentDeployer    :: Address AAccount  -- ^ Referencing an account
+  , currentTxIssuer    :: Address AAccount   -- ^ Transaction sender
+  , currentAddress     :: Address AContract -- ^ Address of current Contract
+  , currentPrivKey     :: Key.PrivateKey    -- ^ Private key of Validating node
+  , currentStorageKey  :: Homo.PubKey       -- ^ Public key for storage homomorphic encryption (RSA public key)
   } deriving (Generic, NFData)
 
-type LocalStorages = Map Address Storage
+type LocalStorages = Map (Address AAccount) Storage
 
 data EvalState = EvalState
   { tempStorage      :: Storage          -- ^ Tmp variable env
@@ -150,7 +152,7 @@ initEvalState c w = EvalState
 lookupGlobalVar :: Name -> EvalM (Maybe Value)
 lookupGlobalVar (Name var) = do
   globalStore <- gets globalStorage
-  return $ Map.lookup (Key $ encodeUtf8 var) globalStore
+  return $ Map.lookup (Key var) globalStore
 
 
 isLocalVar :: Name -> (EvalM Bool)
@@ -161,20 +163,20 @@ isLocalVar name = do
 lookupTempVar :: Name -> EvalM (Maybe Value)
 lookupTempVar (Name var) = do
   tmpStore <- gets tempStorage
-  return $ Map.lookup (Key $ encodeUtf8 var) tmpStore
+  return $ Map.lookup (Key var) tmpStore
 
 insertTempVar :: Name -> Value -> EvalM ()
 insertTempVar (Name var) val = modify' $ \evalState ->
     evalState { tempStorage = insertVar (tempStorage evalState) }
   where
-    insertVar = Map.insert (Key $ encodeUtf8 var) val
+    insertVar = Map.insert (Key var) val
 
 -- | Emit a delta updating  the state of a global reference.
 updateGlobalVar :: Name -> Value -> EvalM ()
 updateGlobalVar (Name var) val = modify' $ \evalState ->
     evalState { globalStorage = updateVar (globalStorage evalState) }
   where
-    updateVar = Map.update (\_ -> Just val) (Key $ encodeUtf8 var)
+    updateVar = Map.update (\_ -> Just val) (Key var)
 
 -- | Updating a local variable only happens if the evaluating node is storing
 -- a local storage for an account involved in the contract and method being evaluated
@@ -503,7 +505,7 @@ evalLExpr (Located _ e) = case e of
           else panicImpossible $ Just "evalLExpr: EVar"
       Just val -> return val
 
-  ECall f args   -> do
+  ECall f args   ->
     case Prim.lookupPrim f of
       Nothing -> throwError $ NoSuchPrimOp f
       Just prim -> evalPrim prim args
@@ -569,15 +571,17 @@ evalBinOpF bop c a b = panicInvalidBinOp bop (c a) (c b)
 
 evalPrim :: PrimOp -> [LExpr] -> EvalM Value
 evalPrim ex args = case ex of
-  Now            -> do
+  Now               -> do
     currDatetime <- posixMicroSecsToDatetime . currentTimestamp <$> ask
     pure $ VDateTime $ DateTime currDatetime
-  Block          -> VInt . currentBlock <$> ask
-  Deployer       -> VAccount . currentDeployer <$> ask
-  Sender         -> VAccount . currentTxIssuer <$> ask
-  Created        -> VInt . currentCreated <$> ask
-  Address        -> VContract . currentAddress <$> ask
-  Validator      -> VAccount . currentValidator <$> ask
+  Block             -> VInt . currentBlock <$> ask
+  Deployer          -> VAccount . currentDeployer <$> ask
+  Sender            -> VAccount . currentTxIssuer <$> ask
+  Created           -> do
+    createdDatetime <- posixMicroSecsToDatetime . currentCreated <$> ask
+    pure $ VDateTime $ DateTime createdDatetime
+  Address           -> VContract . currentAddress <$> ask
+  Validator         -> VAccount . currentValidator <$> ask
 
   Fixed1ToFloat  -> do
     let [eFixed] = args
@@ -650,25 +654,25 @@ evalPrim ex args = case ex of
     let [anyExpr] = args
     x <- evalLExpr anyExpr
     v <- hashValue x
-    case SS.fromBytes (Hash.sha256 v) of
+    case SS.fromBytes (Hash.sha256Raw v) of
       Left err -> throwError $ HugeString $ show err
       Right msg -> return $ VMsg msg
 
   AccountExists  -> do
     let [varExpr] = args
-    accAddr <- extractAddr <$> evalLExpr varExpr
+    accAddr <- extractAddrAccount <$> evalLExpr varExpr
     world <- gets worldState
     return $ VBool $ Ledger.accountExists accAddr world
 
   AssetExists    -> do
     let [varExpr] = args
-    assetAddr <- extractAddr <$> evalLExpr varExpr
+    assetAddr <- extractAddrAsset <$> evalLExpr varExpr
     world <- gets worldState
     return $ VBool $ Ledger.assetExists assetAddr world
 
   ContractExists -> do
     let [varExpr] = args
-    contractAddr <- extractAddr <$> evalLExpr varExpr
+    contractAddr <- extractAddrContract <$> evalLExpr varExpr
     world <- gets worldState
     return $ VBool $ Ledger.contractExists contractAddr world
 
@@ -685,22 +689,22 @@ evalPrim ex args = case ex of
 
   TxHash -> do
     hash <- currentTransaction <$> ask
-    case SS.fromBytes hash of
+    case SS.fromBytes (Hash.getRawHash hash) of
       Left err -> throwError $ HugeString $ show err
       Right msg -> pure $ VMsg msg
 
   ContractValue -> do
     let [contractExpr, msgExpr] = args
-    contractAddr <- extractAddr <$> evalLExpr contractExpr
+    contractAddr <- extractAddrContract <$> evalLExpr contractExpr
     world <- gets worldState
     case Ledger.lookupContract contractAddr world of
       Left err -> throwError $ ContractIntegrity $ show err
       Right contract -> do
-        (VMsg msgSS) <- evalLExpr msgExpr
-        let msgBS = SS.toBytes msgSS
-        case Contract.lookupVarGlobalStorage msgBS contract of
+        (VMsg varSS) <- evalLExpr msgExpr
+        let var = toS $ SS.toBytes varSS
+        case Contract.lookupVarGlobalStorage var contract of
           Nothing -> throwError $ ContractIntegrity $
-            "Contract does not define a variable named " <> msgBS
+            "Contract does not define a variable named '" <> var <> "'"
           Just val -> pure val
 
   ContractValueExists -> do
@@ -711,7 +715,7 @@ evalPrim ex args = case ex of
 
   ContractState -> do
     let [contractExpr] = args
-    contractAddr <- extractAddr <$> evalLExpr contractExpr
+    contractAddr <- extractAddrContract <$> evalLExpr contractExpr
     world <- gets worldState
     case Ledger.lookupContract contractAddr world of
       Left err -> throwError $ ContractIntegrity $ show err
@@ -775,17 +779,17 @@ evalAssetPrim assetPrimOp args =
       accAddr <- getAccountAddr accExpr
       case Asset.assetType asset of
         Asset.Discrete  ->
-          case Asset.balance asset accAddr of
+          case Asset.balance asset (Asset.Holder accAddr) of
             Nothing  -> return $ VInt 0
             Just bal -> return $ VInt bal
         Asset.Fractional n ->
-          case Asset.balance asset accAddr of
+          case Asset.balance asset (Asset.Holder accAddr) of
             Nothing  -> return $ VFloat 0.0
             Just bal -> return $ VFloat $
               -- normalize the holdings amount by `bal * 10^(-n)`
               fromIntegral bal * 10**(fromIntegral $ negate $ fromEnum n + 1)
         Asset.Binary ->
-          case Asset.balance asset accAddr of
+          case Asset.balance asset (Asset.Holder accAddr) of
             Nothing  -> return $ VBool False
             Just bal -> return $ VBool True
 
@@ -803,7 +807,7 @@ evalAssetPrim assetPrimOp args =
 
       -- Modify the world (perform the transfer)
       world <- gets worldState
-      case Ledger.transferAsset assetAddr senderAddr contractAddr holdings world of
+      case Ledger.transferAsset assetAddr (Asset.Holder senderAddr) (Asset.Holder contractAddr) holdings world of
         Left err -> throwError $ AssetIntegrity $ show err
         Right newWorld -> setWorld newWorld
 
@@ -827,7 +831,7 @@ evalAssetPrim assetPrimOp args =
 
       -- Modify the world (perform the transfer)
       world <- gets worldState
-      case Ledger.transferAsset assetAddr contractAddr accAddr holdings world of
+      case Ledger.transferAsset assetAddr (Asset.Holder contractAddr) (Asset.Holder accAddr) holdings world of
         Left err -> throwError $ AssetIntegrity $ show err
         Right newWorld -> setWorld newWorld
 
@@ -870,7 +874,7 @@ evalAssetPrim assetPrimOp args =
 
       -- Modify the world (perform the transfer)
       world <- gets worldState
-      case Ledger.transferAsset assetAddr fromAddr toAddr holdings world of
+      case Ledger.transferAsset assetAddr (Asset.Holder fromAddr) (Asset.Holder toAddr) holdings world of
         Left err -> throwError $ AssetIntegrity $ show err
         Right newWorld -> setWorld newWorld
 
@@ -888,27 +892,27 @@ evalAssetPrim assetPrimOp args =
       VFixed f -> fromIntegral $ getFixedInteger f
       otherVal -> panicInvalidHoldingsVal otherVal
 
-getAccountAddr :: LExpr -> EvalM Address
-getAccountAddr accExpr = do
+getAccountAddr :: LExpr -> EvalM (Address AAccount)
+getAccountAddr accExpr =
   Account.address <$> getAccount accExpr
 
 getAccount :: LExpr -> EvalM Account.Account
 getAccount accExpr = do
   ledgerState <- gets worldState
-  accAddr <- extractAddr <$> evalLExpr accExpr
+  accAddr <- extractAddrAccount <$> evalLExpr accExpr
   case Ledger.lookupAccount accAddr ledgerState of
     Left err  -> throwError $
       AccountIntegrity ("No account with address: " <> show accAddr)
     Right acc -> pure acc
 
-getAssetAddr :: LExpr -> EvalM Address
+getAssetAddr :: LExpr -> EvalM (Address AAsset)
 getAssetAddr assetExpr =
   Asset.address <$> getAsset assetExpr
 
 getAsset :: LExpr -> EvalM Asset.Asset
 getAsset assetExpr = do
   ledgerState <- gets worldState
-  assetAddr   <- extractAddr <$> evalLExpr assetExpr
+  assetAddr   <- extractAddrAsset <$> evalLExpr assetExpr
   case Ledger.lookupAsset assetAddr ledgerState of
     Left err    -> throwError $
       AssetIntegrity ("No asset with address: " <> show assetAddr)
@@ -989,12 +993,19 @@ evalFloatToFixed prec args = do
 noop :: EvalM Value
 noop = pure VVoid
 
-extractAddr :: Value -> Address
-extractAddr (VAddress addr) = addr
-extractAddr (VAccount addr) = addr
-extractAddr (VAsset addr) = addr
-extractAddr (VContract addr) = addr
-extractAddr _ = panicImpossible $ Just "extractAddr"
+
+-- XXX find a better way to do this
+extractAddrAccount :: Value -> Address AAccount
+extractAddrAccount (VAccount addr) = addr
+extractAddrAccount _ = panicImpossible $ Just "extractAddrAccount"
+
+extractAddrAsset :: Value -> Address AAsset
+extractAddrAsset (VAsset addr) = addr
+extractAddrAsset _ = panicImpossible $ Just "extractAddrAsset"
+
+extractAddrContract :: Value -> Address AContract
+extractAddrContract (VContract addr) = addr
+extractAddrContract _ = panicImpossible $ Just "extractAddrContract"
 
 -------------------------------------------------------------------------------
 -- Value Hashing

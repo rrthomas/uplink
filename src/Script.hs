@@ -92,23 +92,18 @@ import qualified Script.Pretty as Pretty
 
 import SafeInteger
 import SafeString
-import Address (Address, rawAddr)
-import Asset (AssetType(..))
+import Address (Address, rawAddr, AAccount, AContract, AAsset, AUnknown)
 import qualified Hash
 import qualified Script.Token as Token
 
-import qualified Datetime as D
 import qualified Datetime.Types as DT
 
 import qualified Data.Binary as B
-import Data.Fixed
-import Data.Time.Clock
 import Data.Hashable (Hashable)
 import Data.String (IsString(..))
-import Data.Time.Calendar (Day(..))
 import Data.Serialize (Serialize(..), encode, decode, putInt8, getInt8)
+import Data.Serialize.Text()
 import Data.Aeson (ToJSON(..), FromJSON(..))
-import qualified Data.Text as T
 import qualified Data.Map as Map
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
@@ -165,7 +160,7 @@ instance FromJSON EnumConstr where
 
 -- | Variable names
 newtype Name = Name { unName :: Text }
-  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData, B.Binary)
+  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData, B.Binary, Serialize)
 
 -- | Datetime literals
 newtype DateTime = DateTime { unDateTime :: DT.Datetime }
@@ -231,10 +226,10 @@ data Lit
   | LFixed    FixedN
   | LBool     Bool
   | LState    Label
-  | LAddress  Address
-  | LAccount  Address
-  | LAsset    Address
-  | LContract Address
+  | LAddress  (Address AUnknown)
+  | LAccount  (Address AAccount)
+  | LAsset    (Address AAsset)
+  | LContract (Address AContract)
   | LMsg      SafeString
   | LSig      (SafeInteger,SafeInteger)
   | LDateTime  DateTime
@@ -251,10 +246,10 @@ data Value
   | VFloat Double          -- ^ Floating types
   | VFixed FixedN          -- ^ Fixed point types
   | VBool Bool             -- ^ Boolean value
-  | VAddress Address       -- ^ Address
-  | VAccount Address       -- ^ Account Address
-  | VAsset Address         -- ^ Asset Address
-  | VContract Address      -- ^ Contract Address
+  | VAddress (Address AUnknown)      -- ^ Address
+  | VAccount (Address AAccount)      -- ^ Account Address
+  | VAsset (Address AAsset)        -- ^ Asset Address
+  | VContract (Address AContract)     -- ^ Contract Address
   | VMsg SafeString        -- ^ Msgs (ASCII)
   | VSig (SafeInteger,SafeInteger) -- ^ ESDSA Sig
   | VVoid                  -- ^ Void
@@ -459,10 +454,6 @@ createEnumInfo enums = EnumInfo constrEnum enumConstrs
 
 instance IsString Name where
   fromString = Name . toS
-
-instance Serialize Name where
-  put (Name nm) = put (encodeUtf8 nm)
-  get = Name . decodeUtf8 <$> get
 
 instance IsString TVar where
   fromString = TV . toS

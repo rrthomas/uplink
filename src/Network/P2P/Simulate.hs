@@ -45,15 +45,10 @@ module Network.P2P.Simulate (
 import Protolude hiding (Type, TypeError, put, get, evalState, newChan)
 
 import Control.Arrow ((&&&))
-import Control.Monad (fail)
 import Control.Monad.Base (MonadBase, liftBase)
-import Control.Concurrent.MVar
 
 import Control.Distributed.Process.Lifted hiding ((.:))
 import Control.Distributed.Process.Lifted.Class
-import qualified Control.Distributed.Process.Node as DPN
-import qualified Control.Distributed.Process.Node.Lifted as DPNL
-import Control.Distributed.Process.Serializable (Serializable)
 
 import Data.Aeson ((.:), (.:?), parseJSON, object, (.=))
 import Data.Aeson.Types (typeMismatch)
@@ -63,38 +58,35 @@ import qualified Data.Map
 import qualified Data.Serialize as S
 import qualified Data.Map as M
 
-import qualified Datetime as D
 import qualified Datetime.Types as D
 
-import Address     (Address)
+import Address     (Address, AAsset, AAccount, AContract)
 import Asset       (Asset)
 import Ledger      (World(..), lookupAsset)
 import Block       (Block(..), BlockHeader(..))
 import SafeString  (SafeString, toBytes)
-import Script      (Script, Value, Name, Method(..), Arg, Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
-import Script.Typecheck (Sig, TypeErrInfo, tcMethod)
+import Script      (Value, Name, Method(..), Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
+import Script.Typecheck (TypeErrInfo, tcMethod)
 import Script.Init (createFauxContract)
 import Script.Eval (EvalCtx, EvalState, runEvalM, eval, initEvalState)
 import Script.Error (EvalFail)
 import Script.Pretty (prettyPrint)
 
 import Script.Parser (parseTimeDelta)
-import Time        (Timestamp)
 import NodeState   (NodeT, getLedger)
 import qualified Homomorphic as Homo
+import qualified Utils
 
 import Network.P2P.Service (Service(Simulation))
 import qualified Network.Utils as NUtils
-import qualified Network.P2P.Logging as Log
 
 import qualified Contract as C
 import qualified NodeState as N
 import qualified Storage as Store
 import qualified Time
-import qualified Script.Graph as Graph
 import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
-
+import qualified Hash
 {-
 
 The contract simulation process receives `SimulationMsg`s and responds with
@@ -126,7 +118,7 @@ class (B.Binary a, Typeable a) => Simulatable a where
 -- Top level message wrapper
 --------------------------------------------------------------------------------
 
-type SimKey = Address
+type SimKey = Address AContract
 
 data SimulationMsg
   = CreateSimulationMsg        CreateSimulation
@@ -154,7 +146,7 @@ type SimulationMsgResult = Either SimulationError SimulationSuccess
 -- Note: This action is not `Simulatable` because it is creating the simulation
 --------------------------------------------------------------------------------
 
-data CreateSimulation = CreateSimulation Address SafeString (Maybe World)
+data CreateSimulation = CreateSimulation (Address AAccount) SafeString (Maybe World)
   deriving (Show, Generic, Typeable, S.Serialize)
 
 newtype CreateSimulationSuccess = SimulationCreated SimKey
@@ -169,20 +161,12 @@ type CreateSimulationResult = Either CreateSimulationError CreateSimulationSucce
 --------------------------------------------------------------------------------
 
 instance B.Binary CreateSimulation where
-  put = B.put . S.encode
-  get = do
-    eCreateSim <- S.decode <$> B.get
-    case eCreateSim of
-      Left err -> fail err
-      Right createSim -> pure createSim
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 instance B.Binary CreateSimulationError where
-  put = B.put . S.encode
-  get = do
-    eCreateSimErr <- S.decode <$> B.get
-    case eCreateSimErr of
-      Left err -> fail err
-      Right createSimErr -> pure createSimErr
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 --------------------------------------------------------------------------------
 -- Messages to update the state of a simulated contract
@@ -230,18 +214,14 @@ instance Simulatable ModifyTimestamp' where
 --------------------------------------------------------------------------------
 
 data CallMethod' = CallMethod'
-  { caller     :: Address
+  { caller     :: Address AAccount
   , methodName :: Name
   , methodArgs :: [Value]
   } deriving (Show, Generic, Typeable, S.Serialize)
 
 instance B.Binary CallMethod' where
-  put = B.put . S.encode
-  get = do
-    eCallMethod <- S.decode <$> B.get
-    case eCallMethod of
-      Left err -> fail err
-      Right callMethod -> pure callMethod
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 instance Simulatable CallMethod' where
   type SimulationResult CallMethod' = Either CallMethodError SimulatedContract
@@ -289,12 +269,8 @@ data CallMethodError
   deriving (Show, Generic, Typeable, S.Serialize)
 
 instance B.Binary CallMethodError where
-  put = B.put . S.encode
-  get = do
-    eCallMethodErr <- S.decode <$> B.get
-    case eCallMethodErr of
-      Left err -> fail err
-      Right callMethodErr -> pure callMethodErr
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 --------------------------------------------------------------------------------
 -- Methods to Query information about a simulated contract's state
@@ -332,12 +308,8 @@ data QuerySimulationSuccess
   deriving (Show, Generic, Typeable, S.Serialize)
 
 instance B.Binary QuerySimulationSuccess where
-  put = B.put . S.encode
-  get = do
-    eQuerySimSucc <- S.decode <$> B.get
-    case eQuerySimSucc of
-      Left err -> fail err
-      Right querySimSucc -> pure querySimSucc
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 -- Query a contract
 --------------------------------------------------------------------------------
@@ -375,10 +347,10 @@ instance Simulatable QueryAssets' where
 -- Query a specific simulation asset by address
 --------------------------------------------------------------------------------
 
-data QueryAsset' = QueryAsset' Address
+data QueryAsset' = QueryAsset' (Address AAsset)
   deriving (Show, Generic, Typeable, B.Binary)
 
-data QueryAssetError = AssetDoesNotExist Address
+data QueryAssetError = AssetDoesNotExist (Address AAsset)
   deriving (Show, Generic, Typeable, B.Binary)
 
 instance Simulatable QueryAsset' where
@@ -466,7 +438,6 @@ handleSimulationMsg sims (sp, simMsg) =
         let blockIdx = fromIntegral $ Block.index lastBlock
             blockTs  = Block.timestamp $ Block.header lastBlock
         nodeAddr <- N.askSelfAddress
-        let txHash   = "SIMULATION-TRANSACTION"
         nodePrivKey <- N.askPrivateKey
         nodeAddr <- N.askSelfAddress
         contractTs <- liftBase Time.now
@@ -478,7 +449,7 @@ handleSimulationMsg sims (sp, simMsg) =
                  blockIdx
                  blockTs
                  nodeAddr
-                 txHash
+                 (Hash.toHash ("SIMULATION-TRANSACTION" :: ByteString))
                  issuer
                  nodePrivKey
                  contractTs
@@ -502,13 +473,12 @@ handleSimulationMsg sims (sp, simMsg) =
           let blockIdx = fromIntegral $ Block.index lastBlock
               blockTs  = Block.timestamp $ Block.header lastBlock
           nodeAddr <- N.askSelfAddress
-          let txHash   = "SIMULATION-TRANSACTION"
           nodePrivKey <- N.askPrivateKey
           (pub,_) <- liftBase $ Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
           pure EvalCtx
             { currentBlock = blockIdx
             , currentValidator = nodeAddr
-            , currentTransaction = txHash
+            , currentTransaction = Hash.toHash ("SIMULATION-TRANSACTION" :: ByteString)
             , currentTimestamp = blockTs
             , currentCreated = C.timestamp contract
             , currentDeployer = C.owner contract

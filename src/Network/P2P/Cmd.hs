@@ -1,7 +1,8 @@
 {-|
 
 Intraprocess protocol used to mediate communication between P2P and RPC
-interfaces.
+interfaces. This process is _not_ designed to interact with external nodes,
+and sends/receives messages to/from local processes only.
 
 --}
 
@@ -28,42 +29,33 @@ module Network.P2P.Cmd (
 
 import Protolude hiding (put, get, newChan)
 
-import Control.Monad (fail)
-import Control.Monad.Base
-
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
 
-import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 
 import Data.Binary
 import qualified Data.Text as Text
-import qualified Data.Serialize as S
 
 import Node.Peer
 import NodeState
 import SafeString as SS
 import qualified Account
-import qualified Address
+import Address (Address, AAccount, rawAddr)
 import qualified Asset
-import qualified Config
 import qualified DB
+import qualified Encoding
 import qualified Ledger
 import qualified Contract
 import qualified Key
-import qualified Storage
 import qualified Utils
-import qualified Time
 import qualified Transaction
 import Network.Utils
-import Network.P2P.Controller
 import Network.P2P.Service (Service(..))
+import Network.P2P.SignedMsg (nsendPeerSigned, nsendPeersSigned, nsendPeersManySigned)
+import Network.P2P.Controller (doDiscover)
 import qualified Network.P2P.Logging as Log
 import qualified Network.P2P.Message as Message
-
-import Script.Eval as Eval
-import Script.Compile as Compile
 
 import System.Random
 
@@ -106,8 +98,8 @@ data TestCmd
 
   -- ^ Cmd to reset node DB
   | ResetDB
-    { address   :: Address.Address -- ^ Address of pubkey used to sign this tx
-    , signature :: ByteString      -- ^ Signature of address to prove possesion of priv key
+    { address   :: Address AAccount             -- ^ Address of pubkey used to sign this tx
+    , signature :: Encoding.Base64PByteString   -- ^ Signature of address to prove possesion of priv key
     }
   deriving (Eq, Show, Generic, Binary)
 
@@ -134,10 +126,9 @@ tasksProc
   :: forall m. (MonadProcessBase m, DB.MonadReadWriteDB m)
   => Service
   -> NodeT m ()
-tasksProc service = do
-    controlP $ \runInBase ->
-      forever $ runInBase $
-        onConsoleMsg =<< expect
+tasksProc service =
+    forever $
+      onConsoleMsg =<< expect
   where
     onConsoleMsg :: (Cmd, SendPort CmdResult) -> NodeT m ()
     onConsoleMsg (cmd, sp) = do
@@ -196,18 +187,18 @@ handleCmd service cmd =
       return cmdSuccess
     Discover -> do
       peers <-  getPeerNodeIds
-      liftP $ mapM_ doDiscover peers
+      mapM_ doDiscover peers
       return cmdSuccess
     Reconnect -> do
       pid <- getSelfPid
       reconnect pid
       return cmdSuccess
     Ping -> do
-      peers <- queryAllPeers
+      peers <- getPeerNodeIds
       nodeId <- liftP extractNodeId
       forM_ peers $ \peer -> do
         let msg = SS.fromBytes' (toS nodeId)
-        nsendPeer' service peer $ Message.Ping msg
+        nsendPeerSigned service peer $ Message.Ping msg
       return cmdSuccess
     (PingPeer host) -> do
       nodeId <- extractNodeId
@@ -215,7 +206,7 @@ handleCmd service cmd =
       eNodeId <- liftIO $ mkNodeId (toS host)
       case eNodeId of
         Left err     -> Log.warning err
-        Right nodeId -> nsendPeer' service nodeId $ Message.Ping msg
+        Right nodeId -> nsendPeerSigned service nodeId $ Message.Ping msg
 
       return cmdSuccess
     ListPeers -> do
@@ -228,7 +219,7 @@ handleCmd service cmd =
           Log.warning err
           return $ CmdFail err
         Right nodeId -> do
-          liftP $ doDiscover nodeId
+          doDiscover nodeId
           return cmdSuccess
 
 
@@ -247,7 +238,7 @@ handleTestCmd testCmd =
           (newAcc, acctKeys) <- liftIO $ Account.newAccount "GMT" mempty
           let tz = Account.timezone newAcc
               md = Account.metadata newAcc
-              pubSS = SS.fromBytes' $ Key.unHexPub $ Key.hexPub $ Account.publicKey newAcc
+              pubSS = SS.fromBytes' $ Key.unHexPub $ Key.encodeHexPub $ Account.publicKey newAcc
           let txHdr = Transaction.TxAccount $ Transaction.CreateAccount pubSS tz md
 
           liftIO $ Transaction.newTransaction (Account.address newAcc) (snd acctKeys) txHdr
@@ -268,19 +259,18 @@ handleTestCmd testCmd =
         Just nodeId -> do
           let serviceNmSafe = SS.fromBytes $ show service
           let msg = Message.ServiceRestart $ Message.ServiceRestartMsg service delay
-          nsendPeer' service nodeId (Message.Test msg)
+          nsendPeerSigned service nodeId (Message.Test msg)
 
     ResetMemPools -> do
       let resetMsg = Message.ResetMemPool Message.ResetMemPoolMsg
-      nsendPeers' TestMessaging (Message.Test resetMsg)
+      nsendPeersSigned TestMessaging (Message.Test resetMsg)
 
     ResetDB addr sig' -> do
       case Key.decodeSig sig' of
         Left err -> Log.warning $ show err
         Right sig -> do
 
-          let addrBS = Address.rawAddr addr
-          backend  <- Config.storageBackend <$> NodeState.askConfig
+          let addrBS = rawAddr addr
           nodeAcc  <- NodeState.askAccount
           nodeKeys <- NodeState.askKeyPair
 
@@ -316,7 +306,7 @@ nsendTransaction service tx = do
   let message = Message.SendTx (Message.SendTransactionMsg tx)
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
-  nsendPeers' service message
+  nsendPeersSigned service message
 
 nsendTransactionMany
   :: MonadProcessBase m
@@ -327,7 +317,7 @@ nsendTransactionMany service txs = do
   let messages = [Message.SendTx (Message.SendTransactionMsg tx) | tx <- txs]
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
-  nsendPeersMany' service messages
+  nsendPeersManySigned service messages
 
 -- | Creates new transaction using current node account and private key
 newTransaction

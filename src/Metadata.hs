@@ -11,7 +11,6 @@ Metadata data structures and serialization.
 
 module Metadata (
   Metadata(..),
-  parseMetadata
 ) where
 
 import Protolude
@@ -20,7 +19,10 @@ import qualified Utils
 
 import qualified Data.Map as Map
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Types as A
+import qualified Data.Binary as B
 import qualified Data.Serialize as S
+import qualified Data.Serialize.Text()
 import qualified Data.ByteString as BS
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
@@ -32,7 +34,7 @@ import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), ret
 -------------------------------------------------------------------------------
 
 newtype Metadata = Metadata
-  { unMetadata :: Map ByteString ByteString }
+  { unMetadata :: Map Text Text }
   deriving (Show, Eq, Generic, NFData, Hash.Hashable)
 
 instance Monoid Metadata where
@@ -44,11 +46,23 @@ instance Monoid Metadata where
 -- Serialization
 -------------------------------------------------------------------------------
 
+instance A.ToJSON Metadata where
+  toJSON (Metadata md) = A.toJSON md
+
+instance A.FromJSON Metadata where
+  parseJSON v =
+    case v of
+      A.Object _ ->
+        Metadata <$> A.parseJSON v
+      invalid    ->
+        A.typeMismatch "Metadata" invalid
+
 instance S.Serialize Metadata where
   put (Metadata m) = do
     let len = Map.size m
     S.putWord16be $ Utils.toWord16 len
-    go $ sortBy (\a b -> compare (fst a) (fst b)) $ Map.toList m
+    go $ sortBy (\a b -> compare (fst a) (fst b)) $
+      map (bimap toS toS) $ Map.toList m
 
     where
       go [] = return ()
@@ -69,17 +83,11 @@ instance S.Serialize Metadata where
           key    <- S.getBytes $ Utils.toInt keyLen
           valLen <- S.getWord16be
           val    <- S.getBytes $ Utils.toInt valLen
-          go ((key, val) : acc) (i+1) len
+          go ((toS key, toS val) : acc) (i+1) len
 
-instance A.ToJSON Metadata where
-  toJSON (Metadata metadata) = A.toJSON $
-    map decodeUtf8 $ Map.mapKeys decodeUtf8 metadata
-
-instance A.FromJSON Metadata where
-  parseJSON = fmap parseMetadata . A.parseJSON
-
-parseMetadata :: Map Text Text -> Metadata
-parseMetadata keys = Metadata $ map encodeUtf8 (Map.mapKeys encodeUtf8 $ keys)
+instance B.Binary Metadata where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 -------------------------------------------------------------------------------
 -- Postgres DB

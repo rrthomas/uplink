@@ -6,6 +6,7 @@ Script evaluation errors.
 
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 module Script.Error (
   EvalFail(..),
@@ -22,23 +23,23 @@ import Script.Graph (GraphState(..), Label)
 
 -- | Scripts either run to completion or fail with a named error.
 data EvalFail
-  = AssetIntegrity ByteString           -- ^ Asset does not support operation over it
-  | AddressIntegrity ByteString         -- ^ Address does not exist
-  | ContractIntegrity ByteString        -- ^ Contract does not exist
-  | AccountIntegrity ByteString         -- ^ Account does not exist
+  = AssetIntegrity Text                 -- ^ Asset does not support operation over it
+  | AddressIntegrity Text               -- ^ Address does not exist
+  | ContractIntegrity Text              -- ^ Contract does not exist
+  | AccountIntegrity Text               -- ^ Account does not exist
   | InvalidMethodName InvalidMethodName -- ^ Name lookup failure
   | TerminalState                       -- ^ Execution is in terminal state.
   | MethodArityError Name Int Int       -- ^ Call a function with the wrong # of args
   | Overflow                            -- ^ Overflow
   | Underflow                           -- ^ Underflow
   | DivideByZero                        -- ^ Division by zero
-  | HomomorphicFail ByteString          -- ^ Error when performing homomorphic ops on SafeInteger
+  | HomomorphicFail Text                -- ^ Error when performing homomorphic ops on SafeInteger
   | InvalidState Label GraphState       -- ^ Invalid graph state entry
   | SubgraphLock                        -- ^ Subraph lock is held
   | LocalVarNotFound Name               -- ^ Variable lookup failed
-  | Impossible ByteString               -- ^ Internal error
-  | HugeInteger ByteString              -- ^ SafeInteger bounds exceeded
-  | HugeString ByteString               -- ^ SafeString bounds exceeded
+  | Impossible Text                     -- ^ Internal error
+  | HugeInteger Text                    -- ^ SafeInteger bounds exceeded
+  | HugeString Text                     -- ^ SafeString bounds exceeded
   | NoSuchPrimOp Name                   -- ^ Prim op name lookup fail
   deriving (Eq, Show, Generic, Serialize, NFData)
 

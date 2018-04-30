@@ -25,6 +25,7 @@ import qualified Script.Init as Init
 import qualified Script.Pretty as Pretty
 
 import qualified Reference as Ref
+import qualified Hash
 
 storageTests :: TestTree
 storageTests = testGroup "Storage tests"
@@ -37,7 +38,7 @@ storageTests = testGroup "Storage tests"
           0
           ts
           Ref.testAddr
-          (Transaction.signature $ Ref.testTx Ref.testCall)
+          (Hash.toHash $ Ref.testTx Ref.testCall)
           Ref.testAddr
           Ref.testPriv
           ts

@@ -55,16 +55,16 @@ module Key (
   encodeKey,
   decodeKey,
 
-  HexPub,
-  HexPriv,
+  HexPub(..),
+  HexPriv(..),
 
   -- ** Hex Encoding
-  hexPriv,
-  hexPub,
+  encodeHexPriv,
+  encodeHexPub,
   unHexPub,
   unHexPriv,
-  dehexPriv,
-  dehexPub,
+  decodeHexPriv,
+  decodeHexPub,
   tryDecodePub,
   tryDecodePriv,
 
@@ -77,6 +77,14 @@ module Key (
 
   encodePriv,
   decodePriv,
+
+  -- ** Export/Import
+
+  readKeys,
+  safeWritePubKey,
+  safeWritePubKey',
+  safeWritePrivKey,
+  safeWritePrivKey',
 
   exportPriv,
   exportPub,
@@ -109,9 +117,7 @@ module Key (
 
 ) where
 
-import Protolude hiding (from, to, get, put)
-import Safe (toEnumMay)
-import Data.Maybe (fromJust)
+import Protolude hiding (get, put)
 
 import Control.Monad.Fail
 
@@ -122,42 +128,32 @@ import qualified Utils
 
 import Data.Aeson (ToJSON(..), FromJSON(..), Value(String))
 import Data.Aeson.Types (typeMismatch)
-import Data.Proxy
-import Data.Serialize as S
 import Data.ByteArray as B
 import qualified Data.PEM as PEM -- pem package
-import qualified Data.Text.IO as TIO
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Base64 as BS64
-import qualified Data.ByteArray.Encoding as B
+import qualified Data.Binary as BI
+import qualified Data.Serialize as S
 
 import Data.ASN1.Types
 import Data.ASN1.Encoding
 import Data.ASN1.BitArray
 import Data.ASN1.BinaryEncoding
 import qualified Data.X509 as X509
-import qualified Data.ASN1.Types as ASN1
 
 import Crypto.Hash
 import Crypto.Random.Types (MonadRandom(..))
 import Crypto.Number.Serialize
 
 import Crypto.Error
-import Crypto.Random.Entropy
 import Crypto.Data.Padding (Format(..), pad, unpad)
 
 import qualified Crypto.MAC.HMAC as HM
-import qualified Crypto.KDF.HKDF as KDF
-import qualified Crypto.KDF.PBKDF2 as KDF
 import qualified Crypto.PubKey.ECC.DH as DH
-import qualified Crypto.PubKey.Ed25519 as ED
-import qualified Crypto.PubKey.ECIES as IES
 
 import Crypto.PubKey.ECC.Types
 import Crypto.PubKey.ECC.Generate
 import Crypto.Number.Generate (generateBetween)
-import qualified Crypto.ECC as ECC (encodePoint)
 import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
@@ -167,13 +163,16 @@ import Math.NumberTheory.Moduli (sqrtModP)
 
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.TripleDES (DES_EDE3)
-import Crypto.Cipher.Types (Cipher(..), BlockCipher(..), IV, makeIV, blockSize,
-  ecbEncrypt, ecbDecrypt)
+import Crypto.Cipher.Types (Cipher(..), BlockCipher(..), IV, makeIV, blockSize)
+
 
 import Database.PostgreSQL.Simple.FromRow   (FromRow(..), field)
 import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
+import System.Directory (doesFileExist)
+import System.Posix.Files (setFileMode, ownerReadMode)
 
 -------------------------------------------------------------------------------
 -- Generation
@@ -194,12 +193,15 @@ newtype PubKey = PubKey ECDSA.PublicKey
   deriving (Show, Eq, Generic, NFData)
 
 instance ToJSON PubKey where
-   toJSON = String . decodeUtf8 . unHexPub . hexPub
+   toJSON = String . decodeUtf8 . unHexPub . encodeHexPub
+
 instance FromJSON PubKey where
   parseJSON (String pk) =
-    case dehexPub (encodeUtf8 pk) of
-      Left err     -> fail $ "PubKey" <> err
-      Right pubKey -> pure pubKey
+    case Encoding.parseEncodedBS (encodeUtf8 pk) of
+      Left (Encoding.BadEncoding err) -> fail (show err)
+      Right b -> case decodeHexPub (HexPub b) of
+        Left err     -> fail $ "PubKey" <> err
+        Right pubKey -> pure pubKey
   parseJSON invalid = typeMismatch "PubKey" invalid
 
 type ECDSAKeyPair = (PubKey, ECDSA.PrivateKey)
@@ -316,23 +318,23 @@ verify (PubKey key) sig msg =
 -- Not deterministic, uses random nonce generation.
 -- WARNING: Vulnerable to timing attacks.
 signS
-  :: Serialize a
+  :: S.Serialize a
   => ECDSA.PrivateKey
   -> a
   -> IO ECDSA.Signature
-signS priv msg = sign priv (encode msg)
+signS priv msg = sign priv (S.encode msg)
 
 -- | Sign a serializable instance encoding in binary with ECDSA.
 --
 -- Deterministic, uses explicit nonce.
 -- WARNING: Vulnerable to timing attacks.
 signSWith
-  :: Serialize a
+  :: S.Serialize a
   => ECDSA.PrivateKey
   -> Integer
   -> a
   -> Maybe ECDSA.Signature
-signSWith priv k msg = signWith priv k (encode msg)
+signSWith priv k msg = signWith priv k (S.encode msg)
 
 -------------------------------------------------------------------------------
 -- HMAC
@@ -368,15 +370,15 @@ pointSize = toBytes . ECC.curveSizeBits
   where
     toBytes bits = (bits + 7) `div` 8
 
-instance Serialize PubKey where
-  put (PubKey key) = put (exportKey key)
-  get = get >>= loadKey
+instance S.Serialize PubKey where
+  put (PubKey key) = S.put (exportKey key)
+  get = S.get >>= loadKey
 
 encodePriv :: ECDSA.PrivateKey -> ByteString
-encodePriv key = encode (ECDSA.private_d key)
+encodePriv key = S.encode (ECDSA.private_d key)
 
 decodePriv :: ByteString -> Either [Char] ECDSA.PrivateKey
-decodePriv bs = decode bs >>= pure . fromSecret
+decodePriv bs = S.decode bs >>= pure . fromSecret
 
 -- | Export the elliptic curve public key
 exportKey :: ECDSA.PublicKey -> (Int, Integer, Integer)
@@ -431,7 +433,7 @@ fromSecret d =
 -- | Deserialize a public key encoded with the curve
 loadKey
   :: (Int, Integer, Integer)
-  -> Get PubKey
+  -> S.Get PubKey
 loadKey (curve,x,y) = do
   key <- ECDSA.PublicKey <$> curve' <*> pure point
   if ECC.isPointValid sec_p256k1 point
@@ -453,7 +455,54 @@ instance Hash.Hashable PubKey where
   toHash  = Hash.toHash . extractPoint
 
 -------------------------------------------------------------------------------
--- Export
+-- Export / Import
+-------------------------------------------------------------------------------
+
+-- | Reads a private key found at the given path
+readKeys :: FilePath -> IO (Either Text ECDSAKeyPair)
+readKeys privKeyPath =
+  join . fmap Key.importPriv <$> Utils.safeRead privKeyPath
+
+-- | Writes a private key to a given file in PEM format
+-- Note: Does not overwrite existing files
+safeWritePrivKey :: FilePath -> ECDSA.PrivateKey -> IO (Either Text ())
+safeWritePrivKey file privKey = do
+  privExists <- doesFileExist file
+  if privExists
+    then pure $ Left $
+      "Not overwriting existing Private Key at: " <> toS file
+    else safeWritePrivKey' file privKey
+
+-- | Writes a private key to a given file in PEM format
+-- Note: Overwrites existing file
+safeWritePrivKey' :: FilePath -> ECDSA.PrivateKey -> IO (Either Text ())
+safeWritePrivKey' file privKey = do
+  eRes <- Utils.safeWrite file $ exportPriv privKey
+  case eRes of
+    Left err -> pure $ Left err -- V Set chmod 0400
+    Right _  -> Right <$> setFileMode file ownerReadMode
+
+--------------------------------------------------------------------------------
+
+-- | Write a PEM serialized Public Key to disk
+-- Note: Does not overwrite existing file at the given filepath
+safeWritePubKey :: FilePath -> PubKey -> IO (Either Text ())
+safeWritePubKey file pubKey = do
+  privExists <- doesFileExist file
+  if privExists
+    then pure $ Left $
+      "Not overwriting existing Public Key at: " <> toS file
+    else safeWritePubKey' file pubKey
+
+-- | Write a PEM serialized Public Key to disk
+-- Warning: Overwrites existing file at the given filepath
+safeWritePubKey' :: FilePath -> PubKey -> IO (Either Text ())
+safeWritePubKey' file pubKey = do
+  eRes <- Utils.safeWrite file $ Key.exportPub pubKey
+  case eRes of
+    Left err -> pure $ Left err -- V Set chmod 0400
+    Right _  -> Right <$> setFileMode file ownerReadMode
+
 -------------------------------------------------------------------------------
 
 ecOid :: ASN1
@@ -586,11 +635,11 @@ exportPub pub = do
 
 -- | Binary serialize public key ( UNSAFE )
 encodeKey :: PubKey -> ByteString
-encodeKey = encode
+encodeKey = S.encode
 
 -- | Binary deserialize public key ( UNSAFE )
 decodeKey :: ByteString -> Either [Char] PubKey
-decodeKey = decode
+decodeKey = S.decode
 
 {- Serialization Note:
 
@@ -613,7 +662,7 @@ putSignature (ECDSA.Signature r s) = do
 getSignature :: S.Get ECDSA.Signature
 getSignature = do
   rSS <- S.get
-  get :: Get Char
+  _ <- S.get :: S.Get Char
   sSS <- S.get
   let rBS = SS.toBytes rSS
   let sBS = SS.toBytes sSS
@@ -633,24 +682,28 @@ data InvalidSignature
   deriving (Show, Eq, Generic, S.Serialize, NFData)
 
 -- XXX Wrap ECDSA.Signature in newtype to prevent orphan instances
-instance Serialize ECDSA.Signature where
-  put = put . encodeSig
+instance S.Serialize ECDSA.Signature where
+  put = S.put . encodeSig
   get = do
-    sigBS <- get
+    sigBS <- decodeSig <$> S.get
     case sigBS of
-      Left err -> fail err
+      Left err -> fail $ show err
       Right sig -> pure sig
 
+instance BI.Binary ECDSA.Signature where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
+
 -- | Binary encoding of a signature
-encodeSig :: ECDSA.Signature -> ByteString
-encodeSig = Encoding.base64P . runPut . putSignature
+encodeSig :: ECDSA.Signature -> Encoding.Base64PByteString
+encodeSig = Encoding.encodeBase . S.runPut . putSignature
 
 -- Binary decoding of a signature
-decodeSig :: ByteString -> Either InvalidSignature ECDSA.Signature
-decodeSig bs = first (DecodeSignatureFail . toS) $
-  runGet getSignature =<< Encoding.unbase64P bs
+decodeSig :: Encoding.Base64PByteString -> Either InvalidSignature ECDSA.Signature
+decodeSig bs =
+  first (DecodeSignatureFail . toS) $ S.runGet getSignature (Encoding.decodeBase bs)
 
-decodeSig' :: ByteString -> ECDSA.Signature
+decodeSig' :: Encoding.Base64PByteString -> ECDSA.Signature
 decodeSig' bs =
   case decodeSig bs of
     Left err -> panic $ show err
@@ -661,64 +714,68 @@ decodeSig' bs =
 -------------------------------------------------------------------------------
 
 -- | Hexadecimal encoded public key
-newtype HexPub = HexPub ByteString
-  deriving (Eq, Ord, Show, Generic, Serialize, Hash.Hashable)
+newtype HexPub = HexPub Encoding.Base16ByteString
+  deriving (Eq, Ord, Show, Generic, S.Serialize, Hash.Hashable)
 
 -- | Hexadecimal encoded private key
-newtype HexPriv = HexPriv ByteString
-  deriving (Eq, Ord, Show, Generic, Serialize, Hash.Hashable)
+newtype HexPriv = HexPriv Encoding.Base16ByteString
+  deriving (Eq, Ord, Show, Generic, S.Serialize, Hash.Hashable)
 
--- | Convert HexPub to raw Bytesstring
+-- | Convert HexPub to raw ByteString
 unHexPub :: HexPub -> ByteString
-unHexPub (HexPub x) = x
+unHexPub (HexPub b) = Encoding.unbase b
 
--- | Convert HexPriv to raw BytesString
+-- | Convert HexPriv to raw ByteString
 unHexPriv :: HexPriv -> ByteString
-unHexPriv (HexPriv x) = x
+unHexPriv (HexPriv b) = Encoding.unbase b
 
 -- | Hex encoding of prviate key
-hexPriv :: ECDSA.PrivateKey -> HexPriv
-hexPriv = HexPriv . Encoding.base16 . i2osp . ECDSA.private_d
+encodeHexPriv :: ECDSA.PrivateKey -> HexPriv
+encodeHexPriv = HexPriv . Encoding.encodeBase . i2osp . ECDSA.private_d
 
 -- | Hex encoding of public key
-hexPub :: PubKey -> HexPub
-hexPub pub = HexPub (Encoding.base16 ((i2ospOf_ 32 x) <> (i2ospOf_ 32 y)))
+encodeHexPub :: PubKey -> HexPub
+encodeHexPub pub = HexPub (Encoding.encodeBase (i2ospOf_ 32 x <> i2ospOf_ 32 y))
   where
     (x, y) = extractPoint pub
 
 -- | Dehex private key
-dehexPriv :: ByteString -> Either [Char] ECDSA.PrivateKey
-dehexPriv bs = ECDSA.PrivateKey <$> pure sec_p256k1 <*> private_num
-  where
-     private_num = os2ip <$> ((B.convertFromBase B.Base16 bs') :: Either [Char] ByteString)
-     bs' = if odd (BS.length bs)
-            then "0" <> bs
-            else bs
-    -- B.convertFromBase B.Base16 only likes even lengthed bytestrings...
+decodeHexPriv :: HexPriv -> Either [Char] ECDSA.PrivateKey
+decodeHexPriv (HexPriv b) = do
+  bs <- Encoding.decodeBase16E b
+  let bs' = if odd (BS.length bs)
+         then "0" <> bs
+         else bs
+  pure $ ECDSA.PrivateKey sec_p256k1 (os2ip bs')
+  -- B.convertFromBase B.Base16 only likes even lengthed bytestrings...
 
 -- | Dehex public key
-dehexPub :: ByteString -> Either [Char] PubKey
-dehexPub bs = do
-  bs' <- B.convertFromBase B.Base16 bs
-  let (xs, ys) = BS.splitAt 32 bs'
+decodeHexPub :: HexPub -> Either [Char] PubKey
+decodeHexPub (HexPub b) = do
+  bs <- Encoding.decodeBase16E b
+  let (xs, ys) = BS.splitAt 32 bs
   let point = ECC.Point (os2ip xs) (os2ip ys)
-  case ECC.isPointValid sec_p256k1 point of
-    False -> Left "dehexPub: Invalid public key point"
-    True  -> Right (PubKey (ECDSA.PublicKey sec_p256k1 point))
+  if ECC.isPointValid sec_p256k1 point
+    then Right (PubKey (ECDSA.PublicKey sec_p256k1 point))
+    else Left "dehexPub: Invalid public key point"
 
 tryDecodePub :: ByteString -> Either Text PubKey
-tryDecodePub pubBS = case dehexPub pubBS of
-  Left _ -> case importPub pubBS of
-    Right pub -> Right pub
-    Left _ -> Left "Failed to decode ECDSA public key from hex or pem format."
+tryDecodePub pubBS = case importPub pubBS of
+  Left _ -> case Encoding.parseEncodedBS pubBS of
+    Left _ -> Left errMsg
+    Right b -> first (const errMsg) (decodeHexPub (HexPub b))
   Right pub -> Right pub
+  where
+    errMsg = "Failed to decode ECDSA public key from hex or pem format."
 
 tryDecodePriv :: ByteString -> Either Text ECDSA.PrivateKey
-tryDecodePriv privBS = case dehexPriv privBS of
-   Left _ -> case importPriv privBS of
-     Right (_,priv) -> Right priv
-     Left _ -> Left "Failed to decode ECDSA private key from hex or pem format."
-   Right priv -> Right priv
+tryDecodePriv privBS = case importPriv privBS of
+    Left _ -> case Encoding.parseEncodedBS privBS of
+      Left _ -> Left errMsg
+      Right b -> first (const errMsg) (decodeHexPriv (HexPriv b))
+    Right (_,priv) -> Right priv
+    where
+      errMsg = "Failed to decode ECDSA private key from hex or pem format."
 
 
 -------------------------------------------------------------------------------
@@ -899,8 +956,8 @@ dhSecret priv = DH.getShared sec_p256k1 (ECDSA.private_d priv) point
   where
     point = DH.calculatePublic sec_p256k1 (ECDSA.private_d priv)
 
-dhEncode :: ECDSA.PrivateKey -> ByteString
-dhEncode priv = Encoding.base16 $ B.convert $ dhSecret priv
+dhEncode :: ECDSA.PrivateKey -> Encoding.Base16ByteString
+dhEncode = Encoding.encodeBase . B.convert . dhSecret
 
 -------------------------------------------------------------------------------
 -- Block Ciphers
@@ -911,11 +968,11 @@ blockLength = blockSize aes256
 
 -- | AES Cipher proxy
 aes256 :: AES256
-aes256 = undefined
+aes256 = witness
 
 -- | 3DES Cipher proxy
 desEde3 :: DES_EDE3
-desEde3 = undefined
+desEde3 = witness
 
 cipherInitNoErr :: BlockCipher c => ScrubbedBytes -> c
 cipherInitNoErr k = case cipherInit k of

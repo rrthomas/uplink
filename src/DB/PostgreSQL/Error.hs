@@ -19,6 +19,8 @@ import Protolude
 import Address
 import Control.Exception
 import Database.PostgreSQL.Simple
+import qualified Hash
+import qualified Encoding
 
 data PostgreSQLError
   -- Exceptions raised by Postgres
@@ -27,13 +29,13 @@ data PostgreSQLError
   | QueryErr QueryError
   | UnexpectedErr SomeException
   -- Specific Error types related to Uplink Schema
-  | AssetDoesNotExist Address
-  | AccountDoesNotExist Address
-  | ContractDoesNotExist Address
+  | AssetDoesNotExist (Address AAsset)
+  | AccountDoesNotExist (Address AAccount)
+  | ContractDoesNotExist (Address AContract)
   | BlockDoesNotExist Int
   | NoBlocksInDatabase
-  | TransactionDoesNotExist ByteString
-  | InvalidTxDoesNotExist ByteString
+  | TransactionDoesNotExist (Hash.Hash Encoding.Base16ByteString)
+  | InvalidTxDoesNotExist (Hash.Hash Encoding.Base16ByteString)
   -- ConversionErrors
   | AssetConversionFail Text
   | AccountConversionFail Text

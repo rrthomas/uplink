@@ -27,23 +27,16 @@ module DB.PostgreSQL.Asset (
 
 import Protolude
 
-import Control.Monad (fail)
-
-import Data.Int
 import qualified Data.Map as Map
-import qualified Data.Text as Text
 
-import Asset (Asset(..))
-import Address
+import Asset (Holder, Asset(..))
+import Address (Address, AAccount, AAsset)
 import qualified Asset
 import qualified Metadata
-import qualified Time
 
 import DB.PostgreSQL.Error
 
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.ToRow
-import Database.PostgreSQL.Simple.ToField
 
 --------------------------------------------------------------------------------
 -- Types and Conversions
@@ -51,12 +44,12 @@ import Database.PostgreSQL.Simple.ToField
 
 data AssetRow = AssetRow
   { assetName          :: Text
-  , assetIssuer        :: Address
+  , assetIssuer        :: Address AAccount
   , assetIssuedOn      :: Int64
   , assetSupply        :: Int64
   , assetReference     :: Maybe Asset.Ref
   , assetType          :: Asset.AssetType
-  , assetAddress       :: Address
+  , assetAddress       :: Address AAsset
   , assetMetadata      :: Metadata.Metadata
   } deriving (Show, Generic)
 
@@ -64,8 +57,8 @@ instance ToRow AssetRow
 instance FromRow AssetRow
 
 data HoldingsRow = HoldingsRow
-  { holdingsAsset   :: Address
-  , holdingsHolder  :: Address
+  { holdingsAsset   :: Address AAsset
+  , holdingsHolder  :: Holder
   , holdingsBalance :: Int64
   } deriving (Show, Generic)
 
@@ -114,7 +107,7 @@ rowTypesToAsset (assetRow, holdingsRows) =
 -- Queries (SELECTs)
 --------------------------------------------------------------------------------
 
-queryAsset :: Connection -> Address -> IO (Either PostgreSQLError Asset)
+queryAsset :: Connection -> (Address AAsset) -> IO (Either PostgreSQLError Asset)
 queryAsset conn assetAddr = do
   mAssetRow <- queryAssetRow conn assetAddr
   case mAssetRow of
@@ -134,7 +127,7 @@ queryAssets conn = do
 
 queryAssetsByAddrs
   :: Connection
-  -> [Address]
+  -> [Address AAsset]
   -> IO (Either PostgreSQLError [Asset])
 queryAssetsByAddrs conn addrs = do
   eAssetRows <- queryAssetRowsByAddrs conn addrs
@@ -154,7 +147,7 @@ assetRowsToAssets conn =
 
 --------------------------------------------------------------------------------
 
-queryAssetRow :: Connection -> Address -> IO (Either PostgreSQLError (Maybe AssetRow))
+queryAssetRow :: Connection -> (Address AAsset) -> IO (Either PostgreSQLError (Maybe AssetRow))
 queryAssetRow conn assetAddr = fmap headMay <$>
   querySafe conn "SELECT * FROM assets WHERE address=?" (Only assetAddr)
 
@@ -162,12 +155,12 @@ queryAssetRows :: Connection -> IO (Either PostgreSQLError [AssetRow])
 queryAssetRows conn =
   querySafe_ conn "SELECT * FROM assets"
 
-queryAssetRowsByAddrs :: Connection -> [Address] -> IO (Either PostgreSQLError [AssetRow])
+queryAssetRowsByAddrs :: Connection -> [Address AAsset] -> IO (Either PostgreSQLError [AssetRow])
 queryAssetRowsByAddrs conn addrs =
   querySafe conn "SELECT * from assets WHERE address IN ?" $
     Only $ In addrs
 
-queryHoldingsRows :: Connection -> Address -> IO (Either PostgreSQLError [HoldingsRow])
+queryHoldingsRows :: Connection -> Address AAsset -> IO (Either PostgreSQLError [HoldingsRow])
 queryHoldingsRows conn assetAddr =
   querySafe conn "SELECT * FROM holdings WHERE asset=?" (Only assetAddr)
 
@@ -198,7 +191,7 @@ insertHoldingsRows conn holdingsRows =
 -- Deletes
 --------------------------------------------------------------------------------
 
-deleteAsset :: Connection -> Address -> IO (Either PostgreSQLError Int64)
+deleteAsset :: Connection -> Address AAsset -> IO (Either PostgreSQLError Int64)
 deleteAsset conn addr = do
   _ <- executeSafe conn "DELETE FROM assets WHERE address=?" (Only addr)
   executeSafe conn "DELETE FROM holdings WHERE asset=?" (Only addr)

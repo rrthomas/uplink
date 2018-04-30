@@ -1,19 +1,20 @@
 {-|
 
-Consensus is the property in which all nodes in a distributed system of replicated
-state machines agree upon the current state of their respective state machine. Regarding
-DLTs, consensus around the Ledger state and block chain is essential.
+Consensus is the property in which all nodes in a distributed system of
+replicated state machines agree upon the current state of their respective state
+machine. Regarding DLTs, consensus around the Ledger state and block chain is
+essential.
 
-In this model, each block in the chain stores the consensus algorithm in which to evaluate
-the validity of the next block, as well as the arguments to the consensus algorithm by
-which it should be validated. A block is not valid if it's consensus arguments do not provide
-the necessary values for which a block is valid.
+In this model, each block in the chain stores the consensus algorithm in which
+to evaluate the validity of the next block, as well as the arguments to the
+consensus algorithm by which it should be validated. A block is not valid if
+it's consensus arguments do not provide the necessary values for which a block
+is valid.
 
-PoA:
-  A record representing the M-of-N multisig PoA consensus algorithm parameters. These
-  parameters can be tweaked in the chain.config file and determine the constraints in
-  which to validate and accept a block when a node receives a new block from a
-  signing/generating node.
+A record representing the M-of-N multisig consensus algorithm parameters.  These
+parameters can be tweaked in the chain.config file and determine the constraints
+in which to validate and accept a block when a node receives a new block from a
+signing/generating node.
 
 -}
 
@@ -33,29 +34,26 @@ module Consensus.Authority.Params (
 
 import Protolude hiding (put, get)
 
-import Control.Monad.Fail (fail)
-
 import Data.Aeson (ToJSON(..), FromJSON(..))
-import Data.Ord (compare)
 import qualified Data.Set as Set
+import qualified Data.Binary as B
 import qualified Data.Serialize as S
 
-import Address (Address)
+import Address (Address, AAccount)
 import qualified Address
 import qualified Hash
-import qualified Key
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
 
 -------------------------------------------------------------------------------
--- Proof of Authority (Federated Consensus, M-of-N Multi-signature)
+-- Federated Consensus, M-of-N Multi-signature
 -------------------------------------------------------------------------------
 
 -- | Set of validating nodes that sign blocks
 newtype ValidatorSet = ValidatorSet
-  { unValidatorSet :: Set.Set Address }
-  deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
+  { unValidatorSet :: Set.Set (Address AAccount) }
+  deriving (Show, Eq, Generic, NFData, B.Binary, S.Serialize, Hash.Hashable)
 
 instance Monoid ValidatorSet where
   mempty = ValidatorSet mempty
@@ -68,7 +66,7 @@ instance ToJSON ValidatorSet where
 instance FromJSON ValidatorSet where
   parseJSON = fmap ValidatorSet . parseJSON
 
-isValidatorAddr :: Address -> ValidatorSet ->  Bool
+isValidatorAddr :: (Address AAccount)-> ValidatorSet ->  Bool
 isValidatorAddr addr validators = addr `Set.member` unValidatorSet validators
 
 -- | M-of-N Multi-sig PoA Consensus Parameters
@@ -79,7 +77,7 @@ data PoA = PoA
   , threshold     :: Int          -- ^ # of signatures/votes required for block approval
   , minTxs        :: Int          -- ^ Minimum # of transactions per block
   , signerLimit   :: Int          -- ^ # of consecutive blocks of which the validator can sign one block
-  } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable, ToJSON, FromJSON)
+  } deriving (Show, Eq, Generic, NFData, B.Binary, S.Serialize, Hash.Hashable, ToJSON, FromJSON)
 
 mkGenesisPoA
   :: [Text]
@@ -122,7 +120,7 @@ mkGenesisPoA' validators blkPeriod blkLimit sgnLimit thresh mintxs =
       }
   where
     validatorSet = ValidatorSet $ Set.fromList $
-      map (Address.parseAddress . toS) validators
+      map (Address.fromRaw . toS) validators
 
 data PoAValidationError
   = PoAValidationError Text

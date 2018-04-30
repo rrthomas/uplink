@@ -13,8 +13,6 @@ module Console.Command (
 
 import Protolude hiding (newChan)
 
-import Control.Monad.Base
-
 import Control.Distributed.Process hiding (reconnect)
 
 import System.Console.Repline
@@ -25,23 +23,18 @@ import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import qualified Data.String as String
 import qualified Data.Serialize as S
-import qualified Data.Set as Set
-
-import Text.Parsec
 
 import Account (Account)
-import Address (Address)
+import Asset (Holder(..))
+import Address (Address, AAsset)
 import qualified Time
-import qualified NodeState
 import qualified Transaction
 import qualified Key
-import qualified Storage
 import qualified Address
 import qualified Asset
 import qualified Metadata
 import qualified Account
 import qualified Network.P2P.Cmd as Cmd
-import qualified Validate
 import qualified Utils
 import qualified SafeString
 
@@ -71,10 +64,10 @@ data ConsoleCmd =
 
   -- Transactions
   | CreateAccount FilePath
-  | CreateAsset Text Integer (Maybe Asset.Ref) (Asset.AssetType)
+  | CreateAsset Text Integer (Maybe Asset.Ref) Asset.AssetType
   | CreateContract FilePath
-  | TransferAsset Address Address Integer
-  | CirculateAsset Address Integer
+  | TransferAsset (Address AAsset) Holder Integer
+  | CirculateAsset (Address AAsset) Integer
   | CallContract
 
   | Transaction FilePath
@@ -132,7 +125,7 @@ getCmd c = do
           name <- liftIO $ Utils.prompt "Name: "
           tz <- liftIO $ Utils.prompt "Timezone: "
 
-          let metadata' = Metadata.Metadata $ Map.singleton "name" $ encodeUtf8 name
+          let metadata' = Metadata.Metadata $ Map.singleton "name" name
               hdr = Transaction.TxAccount $
                 Transaction.CreateAccount
                   { pubKey   = SafeString.fromBytes' $ Key.exportPub $ fst priv
@@ -292,11 +285,11 @@ accountPrompt Nothing = do
 -- Parse args on Cmd line
 -------------------------------------------------------------------------------
 
-consoleParseAddr :: Text -> ConsoleM Address.Address
+consoleParseAddr :: Text -> ConsoleM (Address a)
 consoleParseAddr addr = hoistErr $
-  case (Address.parseAddr $ encodeUtf8 addr) of
-    Nothing   -> Left "Address given is invalid"
-    Just addr -> Right addr
+  case Address.parseAddress (encodeUtf8 addr)  of
+    Left err -> Left "Address given is invalid"
+    Right addr -> Right addr
 
 -------------------------------------------------------------------------------
 -- Help

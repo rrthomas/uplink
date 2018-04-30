@@ -34,6 +34,7 @@ import Network.P2P.Consensus as NPC
 import qualified Reference as Ref
 
 import Crypto.Number.Basic
+import Crypto.Random.Types (getRandomBytes)
 
 instance Arbitrary SI.SafeInteger where
   arbitrary =
@@ -57,24 +58,23 @@ binaryTests =
     [ testCase "Block Serialization" $ do
         let testGenBlockSeed = "83bc234a"
         genBlock <- Block.genesisBlock testGenBlockSeed Ref.testTimestamp Ref.testPoA
-        binaryTest Block.encodeBlock Block.decodeBlock (Ref.testBlock genBlock [])
+        binaryTestHUnit Block.encodeBlock Block.decodeBlock (Ref.testBlock genBlock [])
 
     , testCase "Address Serialization" $ do
-        binaryTest S.encode S.decode (pure Ref.testAddr)
-
+        binaryTestHUnit S.encode S.decode (pure Ref.testAddr)
     , testCase "Transaction binary roundtrip (uses Serialize instance)" $ do
         let tx = Ref.testTx Ref.testCall
-        binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure tx)
+        binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) (pure tx)
     , testCase "Account binary roundtrip (uses Serialize instance)" $
-        binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAccount)
+        binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAccount)
     , testCase "Asset binary roundtrip (uses Serialize instance)" $
-        binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAsset1)
+        binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) (pure Ref.testAsset1)
     , testCase "Contract binary roundtrip (uses Serialize instance)" $
-        binaryTest (toS . B.encode) (Right . B.decode . toSL) (pure $ Ref.testContract Ref.testTimestamp)
+        binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) (pure $ Ref.testContract Ref.testTimestamp)
 
     , testCase "Account Serialization" $ do
         (acct, _) <- Account.newAccount mempty mempty
-        binaryTest Account.encodeAccount Account.decodeAccount (pure acct)
+        binaryTestHUnit Account.encodeAccount Account.decodeAccount (pure acct)
 
     , localOption (QuickCheckTests 10000) $
         testProperty "decode(encode(SafeString)) == SafeString)" $ \(str :: [Char]) ->
@@ -99,30 +99,30 @@ binaryTests =
             let n' = SI.fromSafeInteger safeInt
             in numBits n' <= SI.maxBits
 
-    , testProperty "ECDSA.Signature Serialization" $ \(Positive n) ->
-        monadicIO $ do
-          let (pubKey, privKey) = Key.new' n
-          blockHash <- run $ Ref.testBlockHash
-          sig <- run $ Key.sign privKey blockHash
-          assert $ Right sig == Key.decodeSig (Key.encodeSig sig)
+    , testGroup "ECDSA.Signature Serialization"
+        [ testProperty "Data.Serialize" $ \(Positive n) ->
+            monadicIO $ do
+              let (pubKey, privKey) = Key.new' n
+              randBytes <- run (getRandomBytes $ fromIntegral n)
+              sig <- run $ Key.sign privKey randBytes
+              assert $ Right sig == Key.decodeSig (Key.encodeSig sig)
+        , testProperty "Data.Binary" $ \(Positive n) ->
+            monadicIO $ do
+              let (pubKey, privKey) = Key.new' n
+              randBytes <- run (getRandomBytes $ fromIntegral n)
+              sig <- run $ Key.sign privKey randBytes
+              assert $ sig == B.decode (B.encode sig)
+        ]
 
     , testProperty "BlockSignature Serialization" $ \(Positive n) ->
         monadicIO $ do
           let (pubKey, privKey) = Key.new' n
           let addr = Address.deriveAddress pubKey
-          blockHash <- run $ Ref.testBlockHash
-          sig <- run $ Key.sign privKey blockHash
+          genesis <- run Ref.testGenesis
+          block <- run $ Ref.testBlock genesis Ref.testTxs
+          sig <- run $ Key.sign privKey (S.encode block)
           let blockSig = Block.BlockSignature sig addr
           assert $ Right blockSig == S.decode (S.encode blockSig)
-
-    , testCase "BlockSigMsg Serialization" $
-        binaryTest S.encode S.decode $ do
-          (pk,sk) <- Key.new
-          let addr = Address.deriveAddress pk
-          blockHash <- Ref.testBlockHash
-          sig <- Key.sign sk blockHash
-          let blockSig = Block.BlockSignature sig addr
-          return $ NPC.BlockSigMsg blockSig
 
     , testProperty "FixedN Serialization" $ \(n' :: SI.SafeInteger) ->
         let n = SI.fromSafeInteger n'
@@ -146,18 +146,18 @@ binaryTests =
 consensusMsgBinTests :: [TestTree]
 consensusMsgBinTests =
   [ testCase "Data.Binary: SignBlockMsg de/serialization" $
-      binaryTest (toS . B.encode) (Right . B.decode . toSL) Ref.testSignBlockMsg
+      binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) Ref.testSignBlockMsg
   , testCase "Data.Binary: BlockSigMsg de/serialization" $
-      binaryTest (toS . B.encode) (Right . B.decode . toSL) Ref.testBlockSigMsg
+      binaryTestHUnit (toS . B.encode) (Right . B.decode . toSL) Ref.testBlockSigMsg
   ]
 
 type Encoder a = a -> ByteString
 type Decoder a = ByteString -> Either [Char] a
 
-binaryTest
+binaryTestHUnit
   :: (Eq a, Show a)
   => Encoder a
   -> Decoder a
   -> IO a
   -> Assertion
-binaryTest f g gen = gen >>= \x -> Right x @=? (g (f x))
+binaryTestHUnit f g gen = gen >>= \x -> Right x @=? (g (f x))

@@ -59,12 +59,10 @@ import Control.Monad.Base
 import Data.Aeson (ToJSON)
 import qualified Data.ByteString as BS
 import qualified Data.List
-import qualified Data.Serialize as S
-import Data.Set hiding (map)
+import qualified Data.List.NonEmpty as NE
 import Data.String (fromString)
 
 import DB.PostgreSQL.Error
-import DB.PostgreSQL.Account
 import DB.PostgreSQL.Asset
 import DB.PostgreSQL.Block
 import DB.PostgreSQL.Contract
@@ -79,16 +77,13 @@ import Storage
 import Transaction
 import qualified Key
 
-import Consensus.Authority.Params (PoA)
-
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.FromRow
 import Database.PostgreSQL.Simple.ToField
 
 import DB.Class
 import DB.PostgreSQL
 
-import Script.Pretty (Pretty(..), dquotes, squotes, (<+>))
+import Script.Pretty (Pretty(..), dquotes, (<+>))
 import qualified Script.Pretty as Pretty
 import qualified Script.Graph as Graph
 
@@ -180,7 +175,7 @@ class HasColName col where
 -- | Accounts Columns
 data AccountCol
   = AccountPubKey   Key.PubKey
-  | AccountAddress  Address
+  | AccountAddress  (Address AAccount)
   | AccountTimezone Text
   deriving (Eq, Show)
 
@@ -203,12 +198,12 @@ instance ToField AccountCol where
 -- | Asset Columns
 data AssetCol
   = AssetName      Text
-  | AssetIssuer    Address
+  | AssetIssuer    (Address AAccount)
   | AssetIssuedOn  Int64
   | AssetSupply    Int64
   | AssetReference Asset.Ref
   | AssetType      Asset.AssetType
-  | AssetAddress   Address
+  | AssetAddress   (Address AAsset)
   -- Ad Hoc "Column" to query assets by holder
   | HoldingsCol    HoldingsCol
   deriving (Eq, Ord, Show)
@@ -243,8 +238,8 @@ instance ToField AssetCol where
 
 -- | Holdings Columns
 data HoldingsCol
-  = HoldingsAsset   Address
-  | HoldingsHolder  Address
+  = HoldingsAsset   (Address AAsset)
+  | HoldingsHolder  Holder
   | HoldingsBalance Int64
   deriving (Eq, Ord, Show)
 
@@ -268,8 +263,8 @@ instance ToField HoldingsCol where
 data ContractCol
   = ContractTimestamp Int64
   | ContractState     Graph.GraphState
-  | ContractOwner     Address
-  | ContractAddress   Address
+  | ContractOwner     (Address AAccount)
+  | ContractAddress   (Address AContract)
   deriving (Eq, Ord, Show)
 
 instance HasColName ContractCol where
@@ -289,7 +284,7 @@ instance ToField ContractCol where
       ContractAddress   c -> toField c
 
 data GlobalStorageCol
-  = GSContract Address
+  = GSContract (Address AContract)
   | GSKey      Key
   deriving (Eq, Ord, Show)
 
@@ -307,8 +302,8 @@ instance ToField GlobalStorageCol where
 
 -- | LocalStorage Columns
 data LocalStorageCol
-  = LSContract Address
-  | LSAccount  Address
+  = LSContract (Address AContract)
+  | LSAccount  (Address AAccount)
   | LSKey      Key
   deriving (Eq, Ord, Show)
 
@@ -331,7 +326,7 @@ instance ToField LocalStorageCol where
 -- | Block Columns
 data BlockCol
   = BlockIdx        Int
-  | BlockOrigin     Address
+  | BlockOrigin     (Address AAccount)
   | BlockTimestamp  Int64
   deriving (Eq, Ord, Show)
 
@@ -352,7 +347,7 @@ instance ToField BlockCol where
 -- | Transaction Columns
 data TransactionCol
   = TxType      Text
-  | TxOrigin    Address
+  | TxOrigin    (Address AAccount)
   | TxHash      Text
   deriving (Eq, Ord, Show)
 
@@ -375,22 +370,27 @@ instance ToField TransactionCol where
 --------------------------------------------------------------------------------
 
 -- | Conditional Expressions
+-- XXX Could constrain the arguments to have Eq, Ord instances
+-- XXX ... but would need each column to be a value on it's own, associated with
+--     it's table via type family
 data Cond a where
-  ColEquals :: (HasColName a, ToField a) => a -> Cond a
-  ColGT     :: (HasColName a, ToField a) => a -> Cond a
-  ColGTE    :: (HasColName a, ToField a) => a -> Cond a
-  ColLT     :: (HasColName a, ToField a) => a -> Cond a
-  ColLTE    :: (HasColName a, ToField a) => a -> Cond a
+  ColEq  :: (HasColName a, ToField a) => a -> Cond a
+  ColGT  :: (HasColName a, ToField a) => a -> Cond a
+  ColGTE :: (HasColName a, ToField a) => a -> Cond a
+  ColLT  :: (HasColName a, ToField a) => a -> Cond a
+  ColLTE :: (HasColName a, ToField a) => a -> Cond a
+  ColIn  :: (HasColName a, ToField a) => NE.NonEmpty a -> Cond a
 
 deriving instance (Show a) => Show (Cond a)
 deriving instance (Eq a) => Eq (Cond a)
 
 instance ToField c => ToField (Cond c) where
-  toField (ColEquals e) = toField e
-  toField (ColGT e)     = toField e
-  toField (ColGTE e)    = toField e
-  toField (ColLT e)     = toField e
-  toField (ColLTE e)    = toField e
+  toField (ColEq e)  = toField e
+  toField (ColGT e)  = toField e
+  toField (ColGTE e) = toField e
+  toField (ColLT e)  = toField e
+  toField (ColLTE e) = toField e
+  toField (ColIn es) = toField (In $ NE.toList es)
 
 --------------------------------------------------------------------------------
 
@@ -401,7 +401,7 @@ data Conj = And | Or
 -- | SQL Where clauses made up of 1 or more conditonal statements
 -- GADT to enforce (ToField a)
 data WhereClause a where
-  Where    -- ^ Single Where condition
+  Where    -- Single Where condition
     :: ToField a
     => Cond a
     -> WhereClause a
@@ -436,8 +436,8 @@ type SelectConstraints a =
 data Select' a where
   Select'
     :: SelectConstraints a
-    => a                      -- ^ Type corresponding to which table to query
-    -> Maybe (WhereClause (ColType a)) -- ^ Where clause to restrict the rows returned
+    => a                      -- Type corresponding to which table to query
+    -> Maybe (WhereClause (ColType a)) -- Where clause to restrict the rows returned
     -> Select' a
 
 deriving instance Show a => Show (Select' a)
@@ -470,11 +470,12 @@ condSQL :: (ToField a) => Cond a -> (ByteString,Action)
 condSQL cond =
   (,toField cond) $
     case cond of
-      ColEquals c -> colName c <> "=?"
-      ColGT     c -> colName c <> ">?"
-      ColGTE    c -> colName c <> ">=?"
-      ColLT     c -> colName c <> "<?"
-      ColLTE    c -> colName c <> "<=?"
+      ColEq  c -> colName c <> "=?"
+      ColGT  c -> colName c <> ">?"
+      ColGTE c -> colName c <> ">=?"
+      ColLT  c -> colName c <> "<?"
+      ColLTE c -> colName c <> "<=?"
+      ColIn cs -> colName (NE.head cs) <> " in ?"
 
 
 whereSQL :: WhereClause a -> (ByteString, [Action])
@@ -651,7 +652,7 @@ runSelectDB select =
 type SplitConstraints a b =
   (Eq (LedgerType a), FromRow a, FromRow b, HasLedgerType a, HasLedgerType b, LedgerType a ~ LedgerType b)
 
--- Should the sub query be ANDed or ORed together?
+-- Should the sub query be ANDed or ORed together, or not at all?
 data Split a b
   = SplitLeft  (Select' a)
   | SplitRight (Select' b)
@@ -699,20 +700,19 @@ splitSelect select =
           case wc of
             -- In the case of a single where condition
             Where cond ->
-              let (constr, col) = explodeCond cond
-               in case col of
-                    -- In the case that only the hodlings
-                    -- column is in the where clause
-                    HoldingsCol hcol ->
-                      SplitRight $
-                        Select' HoldingsTable $
-                          Just $ Where (constr hcol)
-                    -- In the case that only one condition is in
-                    -- the where clause, and it's an asset col
-                    otherwise ->
-                      SplitLeft $
-                        Select' AssetsTable $
-                          Just $ Where cond
+              case splitCond cond of
+                -- In the case that only one condition is in
+                -- the where clause, and it's an asset col
+                Left aCond ->
+                  SplitLeft $
+                    Select' AssetsTable $
+                      Just $ Where aCond
+                -- In the case that only the hodlings
+                -- column is in the where clause
+                Right hCond ->
+                  SplitRight $
+                    Select' HoldingsTable $
+                      Just $ Where hCond
             -- In the case of multiple conditions in the where clause
             -- recursively split the query, and add the current where
             -- condition to the split query afterwards
@@ -726,33 +726,32 @@ splitSelect select =
           -> Split AssetsTable HoldingsTable
           -> Split AssetsTable HoldingsTable
         addWhereCondToSplit cond conj split =
-          let (constr, col) = explodeCond cond
-           in case col of
-                HoldingsCol hCol ->
-                  let hCond = constr hCol
-                   in case split of
-                        SplitLeft aselect     ->
-                          Split conj aselect $
-                            Select' HoldingsTable $
-                              Just $ Where hCond
-                        SplitRight hselect    ->
-                          SplitRight $
-                            addWhereCond hCond conj hselect
-                        Split conj' aselect hselect ->
-                          Split conj' aselect $
-                            addWhereCond hCond conj hselect
-                otherwise ->
-                  case split of
-                    SplitLeft aselect ->
-                      SplitLeft $
-                        addWhereCond cond conj aselect
-                    SplitRight hselect ->
-                      flip (Split conj) hselect $
-                        Select' AssetsTable $
-                          Just $ Where cond
-                    Split conj' aselect hselect ->
-                      flip (Split conj') hselect $
-                        addWhereCond cond conj aselect
+          case splitCond cond of
+            Left cond ->
+              case split of
+                SplitLeft aselect ->
+                  SplitLeft $
+                    addWhereCond cond conj aselect
+                SplitRight hselect ->
+                  flip (Split conj) hselect $
+                    Select' AssetsTable $
+                      Just $ Where cond
+                Split conj' aselect hselect ->
+                  flip (Split conj') hselect $
+                    addWhereCond cond conj aselect
+
+            Right hCond ->
+              case split of
+                SplitLeft aselect     ->
+                  Split conj aselect $
+                    Select' HoldingsTable $
+                      Just $ Where hCond
+                SplitRight hselect    ->
+                  SplitRight $
+                    addWhereCond hCond conj hselect
+                Split conj' aselect hselect ->
+                  Split conj' aselect $
+                    addWhereCond hCond conj hselect
 
         addWhereCond
           :: ToField (ColType a)
@@ -767,16 +766,44 @@ splitSelect select =
            in Select' t (Just wc)
 
     explodeCond
-      :: (HasColName b, ToField b)
+      :: (HasColName a, ToField a, HasColName b, ToField b)
       => Cond a
-      -> (b -> Cond b, a)
+      -> (OneOrMore a -> Cond a, OneOrMore b -> Cond b, OneOrMore a)
     explodeCond cond =
       case cond  of
-        ColEquals c -> (ColEquals, c)
-        ColGT     c -> (ColGT, c)
-        ColGTE    c -> (ColGTE, c)
-        ColLT     c -> (ColLT, c)
-        ColLTE    c -> (ColLTE, c)
+        ColEq  c -> (ColEq . unOne, ColEq . unOne, One c)
+        ColGT  c -> (ColGT . unOne, ColGT . unOne, One c)
+        ColGTE c -> (ColGTE . unOne, ColGTE . unOne, One c)
+        ColLT  c -> (ColLT . unOne, ColLT . unOne, One c)
+        ColLTE c -> (ColLTE . unOne, ColLTE . unOne, One c)
+        ColIn cs -> (ColIn . unOrMore, ColIn . unOrMore, OrMore cs)
+
+    splitCond
+      :: Cond AssetCol
+      -> Either (Cond AssetCol) (Cond HoldingsCol)
+    splitCond cond = mkNewCond ac hc col
+      where
+        (ac, hc, col) = explodeCond cond
+
+        mkNewCond
+          :: (OneOrMore AssetCol -> Cond AssetCol)
+          -> (OneOrMore HoldingsCol -> Cond HoldingsCol)
+          -> OneOrMore AssetCol
+          -> Either (Cond AssetCol) (Cond HoldingsCol)
+        mkNewCond ac hc = \case
+            One c -> bimap (ac . One) (hc . One) $ toHoldingsCol c
+            OrMore cs ->
+              let cols = map toHoldingsCol $ NE.toList cs
+               in case lefts cols of
+                    [] -> Right $ hc $ OrMore $ NE.fromList $ rights cols
+                    lcols -> Left $ ac $ OrMore $ NE.fromList lcols
+          where
+            toHoldingsCol (HoldingsCol hcol) = Right hcol
+            toHoldingsCol allOtherAssetCols  = Left allOtherAssetCols
+
+data OneOrMore a
+  = One { unOne :: a }
+  | OrMore { unOrMore :: NonEmpty a }
 
 --------------------------------------------------------------------------------
 -- SelectResult to Account, Asset, or Contract
@@ -899,11 +926,12 @@ instance Pretty TransactionCol where
     TxHash      hash     -> ppr hash
 
 instance Pretty a => Pretty (Cond a) where
-  ppr (ColEquals col) = ppr (colName col) <+> "="  <+> ppr col
-  ppr (ColGT col)     = ppr (colName col) <+> ">"  <+> ppr col
-  ppr (ColGTE col)    = ppr (colName col) <+> ">=" <+> ppr col
-  ppr (ColLT col)     = ppr (colName col) <+> "<"  <+> ppr col
-  ppr (ColLTE col)    = ppr (colName col) <+> "<=" <+> ppr col
+  ppr (ColEq col)  = ppr (colName col) <+> "="  <+> ppr col
+  ppr (ColGT col)  = ppr (colName col) <+> ">"  <+> ppr col
+  ppr (ColGTE col) = ppr (colName col) <+> ">=" <+> ppr col
+  ppr (ColLT col)  = ppr (colName col) <+> "<"  <+> ppr col
+  ppr (ColLTE col) = ppr (colName col) <+> "<=" <+> ppr col
+  ppr (ColIn cols) = ppr (colName $ NE.head cols) <+> "in" <+> Pretty.tupleOf (NE.toList cols)
 
 instance Pretty Conj where
   ppr And = "AND"

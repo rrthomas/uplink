@@ -2,9 +2,9 @@
 <blocks>
     <block index="0">
         <signatures>
-            <BlockSignature signature="&quot;AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE0zNDMyMDI5NDIxMzI4MTA2OTgzNTQwNjkyMDAxNDY1MTc4NDA1MjA5ODQ4MjkxMTA0NDYzMjk1NDcwODM5OTc0OTU1MzIzNTc2ODcwNA==&quot;" signerAddr="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"/>
+            <BlockSignature signature="&quot;AE4xMTUxMzY4MDA4MjA0NTY4MzM3Mzc5OTQxMjY3NzEzODYwMTUwMjYyODcwOTUwMzQ2MjU2MjM2NDQxODYyNzgxMDg5MjY2OTA3Nzk1Njc6AE01NzI2MDE1NjQxMjE4MTg3ODU1NTcwNTM3MTQ1MTc5MzQyMTI1OTA1ODIzMzAyNzg1MDUzMDQzMTI2ODM0MDExMDM0MTY2NTMwOTQwMA==&quot;" signerAddr="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"/>
         </signatures>
-        <header origin="fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve" prevHash="&quot;&quot;" merkleRoot="&quot;a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a&quot;" timestamp="1231006505">
+        <header origin="Address &quot;fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve&quot;" prevHash="0000000000000000000000000000000000000000000000000000000000000000" merkleRoot="&quot;a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a&quot;" timestamp="1231006505">
             <consensus validatorSet="fromList []" blockPeriod="1" blockGenLimit="1" blockSignLimit="1" threshold="1" minTxs="1"/>
         </header>
         <transactions/>

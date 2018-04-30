@@ -67,7 +67,7 @@ shareReveal priv1 pub2 commit = do
 shareFinalize
   :: Key.PrivateKey
   -> Key.PubKey
-  -> Address
+  -> Address AContract
   -> Storage
   -> IO (Either HugeInteger SyncLocalOp)
 shareFinalize priv pub addr store = do

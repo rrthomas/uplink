@@ -28,14 +28,7 @@ module Account (
   createAccPrompt',
 
   readKeys,
-  readKeys',
   writeKeys,
-  writePrivKey,
-  writePrivKey',
-  writePrivKey_,
-  writePubKey,
-  writePubKey',
-  writePubKey_,
 
   readAccount,
   writeAccount,
@@ -57,25 +50,17 @@ import qualified Hash
 import qualified Utils
 import qualified Address
 import qualified SafeString
-import Metadata (Metadata(..), parseMetadata)
+import Metadata (Metadata(..))
 import Data.Aeson ((.=), (.:))
 import Data.Aeson.Types (typeMismatch)
-import qualified Data.Map as Map
 import qualified Data.Aeson as A
 import qualified Data.Serialize as S
-import qualified Data.Text as T
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Encode.Pretty as A
 import qualified Data.Binary as Binary
-import qualified Text.PrettyPrint.Leijen.Text as PP
-
-import Control.Monad (fail)
 
 import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
-import Database.PostgreSQL.Simple.FromRow   (FromRow(..), field)
-import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
-import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+import Database.PostgreSQL.Simple.FromRow   (FromRow(..))
 
 import System.FilePath
 import System.Directory
@@ -98,7 +83,7 @@ import System.Posix.Files
 -- company, geography, etc)
 data Account = Account
   { publicKey   :: Key.PubKey
-  , address     :: Address.Address
+  , address     :: Address.Address Address.AAccount
   , timezone    :: SafeString.SafeString
   , metadata    :: Metadata.Metadata
   } deriving (Show, Eq, Generic, NFData, S.Serialize, Hash.Hashable)
@@ -107,7 +92,6 @@ data Account = Account
 validateAccount :: Account -> Bool
 validateAccount Account {..} = and [
     Key.validateKey publicKey
-  , Address.validateAddress address
   , Address.verifyAddress publicKey address
   ]
 
@@ -161,7 +145,7 @@ readAccountData root = do
         pk   <- Key.importPub pubKeyPem
         pair <- Key.importPriv privKeyPem
         acc  <- first toS $ A.eitherDecode' (toS account)
-        if (Key.validatePair pair) && (pk == publicKey acc)
+        if Key.validatePair pair && pk == publicKey acc
           then pure (acc, pair)
           else (Left "key.pub and account don't match keys")
 
@@ -240,79 +224,22 @@ readKeys root = do
   rootExists <- doesDirectoryExist root
   if rootExists then do
     let privFile = privKeyFile root
-    readKeys' privFile
+    Key.readKeys privFile
   else
     pure $ Left "Node root directory has not been initialized."
-
--- | Reads a private key found at the given path
-readKeys' :: FilePath -> IO (Either Text Key.ECDSAKeyPair)
-readKeys' privKeyPath =
-  join . fmap Key.importPriv <$> Utils.safeRead privKeyPath
 
 -- | Write account key data to disk
 -- Note: does not overwrite existing keys
 writeKeys :: FilePath -> Key.ECDSAKeyPair -> IO (Either Text ())
 writeKeys root (publicKey, privateKey) = do
   rootExists <- doesDirectoryExist root
-  if rootExists then do
-    e1 <- writePrivKey root privateKey
-    e2 <- writePubKey root publicKey
-    pure (e1 >> e2)
+  if rootExists
+     then do
+       e1 <- Key.safeWritePrivKey (privKeyFile root) privateKey
+       e2 <- Key.safeWritePubKey (pubKeyFile root) publicKey
+       pure (e1 >> e2)
   else
     pure (Left "Root directory does not exist.")
-
---------------------------------------------------------------------------------
-
--- | Writes a private key to the given directory in PEM format tothe file <root>/key
-writePrivKey :: FilePath -> Key.PrivateKey -> IO (Either Text ())
-writePrivKey root = writePrivKey' (privKeyFile root)
-
--- | Writes a private key to a given file in PEM format
--- Note: Does not overwrite existing files
-writePrivKey' :: FilePath -> Key.PrivateKey -> IO (Either Text ())
-writePrivKey' file privKey = do
-  privExists <- doesFileExist file
-  if privExists
-    then pure $ Left $
-      "Not overwriting existing Private Key at: " <> toS file
-    else writePrivKey_ file privKey
-
--- | Writes a private key to a given file in PEM format
--- Note: Overwrites existing file
-writePrivKey_ :: FilePath -> Key.PrivateKey -> IO (Either Text ())
-writePrivKey_ file privKey = do
-  eRes <- Utils.safeWrite file $ Key.exportPriv privKey
-  case eRes of
-    Left err -> pure $ Left err -- V Set chmod 0400
-    Right _  -> Right <$> setFileMode file ownerReadMode
-
---------------------------------------------------------------------------------
-
--- | Write a PEM serialized Public Key to disk
-writePubKey :: FilePath -> Key.PubKey -> IO (Either Text ())
-writePubKey root = writePubKey' (pubKeyFile root)
-
--- | Write a PEM serialized Public Key to disk
--- Note: Does not overwrite existing file at the given filepath
-writePubKey' :: FilePath -> Key.PubKey -> IO (Either Text ())
-writePubKey' file pubKey = do
-  pubExists <- doesFileExist file
-  if pubExists
-    then pure $ Left $
-      "Not overwriting existing Public Key at: " <> toS file
-    else do
-      BS.writeFile file (Key.exportPub pubKey)
-      setFileMode file ownerReadMode -- Set chmod 0400
-      pure $ Right ()
-
--- | Write a PEM serialized Public Key to disk
--- Warning: Overwrites existing file at the given filepath
-writePubKey_ :: FilePath -> Key.PubKey -> IO (Either Text ())
-writePubKey_ file pubKey = do
-  eRes <- Utils.safeWrite file $ Key.exportPub pubKey
-  case eRes of
-    Left err -> pure $ Left err -- V Set chmod 0400
-    Right _  -> Right <$> setFileMode file ownerReadMode
 
 --------------------------------------------------------------------------------
 
@@ -366,7 +293,7 @@ readAccountsFromDir dir = do
       "No directory found at path '" <> toS dir <> "'."
     else do
       accDirs <- listDirectory dir
-      if (null accDirs)
+      if null accDirs
         then pure $ Left $
           "No account directories found in directory '" <> show dir <> "'."
         else fmap (Right . rights) $
@@ -391,26 +318,18 @@ instance A.ToJSON Account where
 
 instance A.FromJSON Account where
   parseJSON o@(A.Object v) = do
-    pubKey   <- v .: "publicKey"
-    addr     <- v .: "address"
-    timezone <- v .: "timezone"
-    metadata <- v .: "metadata"
+    publicKey <- v .: "publicKey"
+    address   <- v .: "address"
+    timezone  <- v .: "timezone"
+    metadata  <- v .: "metadata"
 
-    pure $ Account
-      pubKey
-      addr
-      timezone
-      (Metadata.parseMetadata metadata)
+    pure $ Account{..}
 
   parseJSON invalid = typeMismatch "Account" invalid
 
 instance Binary.Binary Account where
-  put tx = Binary.put $ S.encode tx
-  get = do
-    bs <- Binary.get
-    case S.decode bs of
-      (Right tx) -> return tx
-      (Left err) -> fail err
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 -- | Binary serialize account
 encodeAccount :: Account -> ByteString
@@ -420,7 +339,7 @@ encodeAccount = S.encode
 decodeAccount :: ByteString -> Either [Char] Account
 decodeAccount = S.decode
 
-accountKeyVal :: Account -> (Address.Address, Account)
+accountKeyVal :: Account -> (Address.Address Address.AAccount, Account)
 accountKeyVal acct = (address acct, acct)
 
 readAccount :: FilePath -> IO (Either Text Account)

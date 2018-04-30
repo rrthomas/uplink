@@ -41,9 +41,10 @@ import Protolude hiding (Type)
 import qualified Utils
 import qualified Storage
 import qualified Address
+import Address (AContract)
 import qualified Encoding
 
-import Script (Script, Name(..), Type, Located)
+import Script (Script, Name(..), Type)
 import qualified Script
 import Script.Typecheck (Sig)
 import qualified Script.Pretty as Pretty
@@ -53,14 +54,12 @@ import qualified Script.Duplicate as Dupl
 import qualified Script.Effect as Effect
 import qualified Script.Typecheck as Typecheck
 import qualified Script.Undefinedness as Undef
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (first)
 import Data.Serialize as S
-import qualified Data.Text as T
 import qualified Data.ByteString as BS
 import qualified Hexdump
 import qualified Data.Aeson as A
 import qualified Data.Map as Map
-import System.Directory
 import Control.Monad (fail)
 
 -------------------------------------------------------------------------------
@@ -199,7 +198,7 @@ maxStorage :: Int16
 maxStorage = maxBound
 
 -- | Serialize a script to disk.
-putScript :: Script -> Maybe Storage.Storage -> Address.Address -> PutM ()
+putScript :: Script -> Maybe Storage.Storage -> Address.Address AContract -> PutM ()
 putScript script store addr = do
   -- Header
   S.putByteString magicNumber
@@ -217,13 +216,9 @@ putScript script store addr = do
   Address.putAddress addr
 
    -- Script
-  let scriptbs = Encoding.base64 (encode script)
-  let len = (fromIntegral (BS.length scriptbs))
-  putWord16be len
-  S.putByteString scriptbs
+  S.put $ Encoding.encodeBase64 (encode script)
 
-
-getScript :: Get (Script, Maybe Storage.Storage, Address.Address)
+getScript :: Get (Script, Maybe Storage.Storage, Address.Address AContract)
 getScript = do
   -- Storage
   storeLen <- fromIntegral <$> getWord16be
@@ -234,18 +229,15 @@ getScript = do
          sto <- decode <$> getByteString storeLen
          case sto of
            Left err -> fail "Could not decode storage."
-
            Right s -> return $ Just s
 
   -- Address
   addr <- Address.getAddress
-  -- Script
-  len <- fromIntegral <$> getWord16be
-  scriptb64 <- getByteString len
-  script <- return $ Encoding.unbase64 scriptb64 >>= decode
-  case script of
-    Left err -> fail "Could not decode script."
 
+  -- Script
+  scriptBS <- Encoding.decodeBase <$> (S.get :: Get Encoding.Base64ByteString)
+  case S.decode (Encoding.unbase scriptBS) of
+    Left err -> fail "Could not decode script."
     Right script ->
       pure (script, storage, addr)
 
@@ -254,15 +246,15 @@ getScript = do
 -------------------------------------------------------------------------------
 
 -- | Read a script from disk.
-readScript :: ByteString -> Either [Char] (Script, Maybe Storage.Storage, Address.Address)
+readScript :: ByteString -> Either [Char] (Script, Maybe Storage.Storage, Address.Address AContract)
 readScript s = case BS.splitAt (BS.length magicNumber) s of
-  (header, contents) -> do
+  (header, contents) ->
     if header == magicNumber
       then runGet getScript contents
       else Left "Header does not match"
 
 -- | Write a script to disk.
-writeScript :: Script -> Maybe Storage.Storage -> Address.Address -> ByteString
+writeScript :: Script -> Maybe Storage.Storage -> Address.Address AContract -> ByteString
 writeScript script store addr = snd (runPutM (putScript script store addr))
 
 -------------------------------------------------------------------------------
@@ -270,7 +262,7 @@ writeScript script store addr = snd (runPutM (putScript script store addr))
 -------------------------------------------------------------------------------
 
 scriptString :: Script -> ByteString
-scriptString s = magicNumber <> (encode s)
+scriptString s = magicNumber <> encode s
 
 scriptBytes :: Script -> [Word8]
 scriptBytes s = Utils.toByteList (magicNumber <> encode s)

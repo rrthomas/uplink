@@ -29,7 +29,6 @@ module Storage (
   storageSize,
 
   -- ** Validation
-  validKey,
   validateStorage,
 
   -- ** Schema
@@ -41,28 +40,19 @@ module Storage (
 
 import Protolude hiding (Type)
 
-import Address (Address, fromRaw, addrSize)
 import Script (Type(..), Value(..), DateTime(..))
 import Script.Pretty (Pretty(..))
-import SafeInteger (maxBits, toSafeInteger', fromSafeInteger)
-import qualified Key
+import SafeInteger ( toSafeInteger', fromSafeInteger)
 import qualified Hash
-import qualified Script
 
 import Datetime.Types
 
-import Data.Char (isAscii)
-import Data.Hashable
 import Data.Scientific
 import Data.Serialize as S (Serialize, encode, decode, put, get)
 import Data.Aeson (FromJSONKey(..), ToJSONKey(..), ToJSON(..), FromJSON(..), object, (.=), (.:))
 import Data.Aeson.Types (Parser, typeMismatch, toJSONKeyText)
 import qualified Data.Aeson as A
-import qualified Data.Aeson.Types as A
 import qualified Data.Map as Map
-import qualified Data.HashMap.Strict as HM
-import qualified Data.ByteString as BS
-import Foreign.Storable (sizeOf)
 
 import Database.PostgreSQL.Simple.ToField
 import Database.PostgreSQL.Simple.FromField
@@ -71,7 +61,7 @@ import Database.PostgreSQL.Simple.FromField
 -- Types
 -------------------------------------------------------------------------------
 
-newtype Key = Key { unKey :: ByteString }
+newtype Key = Key { unKey :: Text }
   deriving (Eq, Show, Generic, Ord, NFData, IsString)
 
 type Storage = Map.Map Key Value
@@ -96,16 +86,6 @@ instance Monoid LocalStorage where
 
 storageSize :: Storage -> Int
 storageSize = Map.size
-
-validKey :: ByteString -> Bool
-validKey bs = and [
-    len > 0
-  , len < 255
-  , all isAscii chrs
-  ]
-  where
-    len = BS.length bs
-    chrs = fmap (chr . fromIntegral) (BS.unpack bs)
 
 -- XXX
 validateStorage :: Storage -> IO Bool
@@ -209,18 +189,19 @@ instance FromJSON Value where
         tag -> typeMismatch "Value tag as a string" v
 
 instance ToJSONKey Key where
-  toJSONKey = toJSONKeyText (decodeUtf8 . unKey)
+  toJSONKey = toJSONKeyText unKey
 
 instance FromJSONKey Key where
-  fromJSONKey = A.FromJSONKeyText (Key . encodeUtf8)
+  fromJSONKey = A.FromJSONKeyText Key
 
 instance ToJSON Key where
-  toJSON  = toJSON . decodeUtf8 . unKey
+  toJSON  = toJSON . unKey
 
 instance FromJSON Key where
-  parseJSON v = case v of
-    A.String s -> pure  (Key (encodeUtf8 s))
-    _ -> typeMismatch "Cannot parse key" v
+  parseJSON v =
+    case v of
+      A.String s -> pure  $ Key s
+      _ -> typeMismatch "Key" v
 
 -------------------------------------------------------------------------------
 

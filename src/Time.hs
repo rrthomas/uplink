@@ -20,7 +20,6 @@ module Time (
 ) where
 
 import Protolude
-import Data.Time.Clock
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Hourglass
 

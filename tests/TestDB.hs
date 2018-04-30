@@ -42,7 +42,7 @@ import qualified Database.PostgreSQL.Tmp as PGTmp
 
 import qualified DB
 import DB.Class
-import DB.LevelDB hiding (close)
+import DB.LevelDB
 import DB.PostgreSQL
 import DB.PostgreSQL.Asset
 import DB.PostgreSQL.Contract
@@ -162,15 +162,15 @@ dbReadWriteTests testNm runDB = do
     -- For some reason, LevelDB doesn't read back transactions in the order they
     -- are written to disk... so we need to sort them before and after writing/reading
     sortItxs :: [Transaction.InvalidTransaction] -> [Transaction.InvalidTransaction]
-    sortItxs = sortBy (comparing Transaction.base16HashInvalidTx)
+    sortItxs = sortBy (comparing Transaction.hashInvalidTx)
 
-    testInvalidTxsDB = do
+    testInvalidTxsDB =
       testDB "writeInvalidTxs -> readInvalidTxs"
         (sortItxs Ref.testInvalidTxs)
         (DB.writeInvalidTxs)
         (fmap sortItxs <$> DB.readInvalidTxs)
 
-    testDB testName vals write read = do
+    testDB testName vals write read =
       runDB $ do
         -- Write/Read
         write vals

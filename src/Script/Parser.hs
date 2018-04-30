@@ -48,24 +48,21 @@ import Protolude hiding
   ((<|>), (<>), bool, many, try, option, optional, sourceLine, sourceColumn, Type)
 
 import Text.Parsec
-import Text.Parsec.Pos
 import Text.Parsec.Text
 import Text.Parsec.Expr as Expr
 import Text.ParserCombinators.Parsec.Error
 import qualified Text.Parsec.Token as Tok
-import qualified Text.Parsec.Language as Lang
 
 import Data.Char (digitToInt)
 import Data.Functor.Identity (Identity)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
+import Data.Aeson (ToJSON(..), FromJSON)
 
 import Fixed
 import Script
 import Address
-import Asset (AssetType(..))
 import Script.Lexer as Lexer
 import Script.Pretty hiding (parens)
 import qualified SafeString as SS

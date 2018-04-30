@@ -26,20 +26,19 @@ import Protolude hiding (sourceLine, sourceColumn, catch)
 import Control.Monad.Base (MonadBase, liftBase)
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Exception.Lifted (catch)
-import Control.Distributed.Process.Lifted.Class
-import Control.Distributed.Process.Lifted (Process, ProcessId, WhereIsReply(..), whereis, expectTimeout)
 import Control.Distributed.Process.Node.Lifted (runProcess, LocalNode)
 
 import DB
 import DB.PostgreSQL
 import DB.PostgreSQL.Error
-import NodeState (NodeT, runNodeT)
+import NodeState (NodeT)
 import Script.Pretty (prettyPrint)
-import qualified DB
-import qualified Key
+import Address (AAccount, AAsset, AContract)
 import qualified Utils
 import qualified Asset
 import qualified Block
+import qualified Encoding
+import qualified Hash
 import qualified Config
 import qualified Script
 import qualified Ledger
@@ -48,28 +47,20 @@ import qualified Version
 import qualified MemPool
 import qualified Address
 import qualified Contract
-import qualified Validate
 import qualified NodeState
+import qualified Encoding as E
 import qualified Node.Peer
 import qualified Transaction as Tx
-import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Network.P2P.Cmd as Cmd
 import qualified Network.P2P.Simulate as Sim
 
-import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
+import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), object)
 import Data.Aeson.Types (typeMismatch)
 import qualified Data.Aeson as A
 import qualified Data.Pool as Pool
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import qualified Data.Text.Lazy as TL
-import qualified Data.Text.Lazy.Encoding as TLE
-
-import Control.Distributed.Process (nodeAddress, processNodeId)
-import Network.Transport (endPointAddressToByteString)
-
-import qualified Control.Concurrent.Chan as Chan
 
 import Network.Utils as NUtils
 import Network.P2P.Service as Service
@@ -78,7 +69,6 @@ import Network
 import Network.HTTP.Client
 import Network.HTTP.Types.Status
 import qualified Web.Scotty.Trans as WS
-import qualified Web.Scotty.Internal.Types as WS
 import qualified Network.Wai as Warp
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WarpTLS as Warp
@@ -154,11 +144,11 @@ rpcServer config runInIO localNode mConnPool = do
         if Config.rpcSsl config
           then
             scottyTLS appLogger rpcPort key cert runInIO $
-              rpcApi mConnPool localNode
+              rpcApi localNode mConnPool (Config.rpcReadOnly config)
           else do
             sock <- listenOn $ PortNumber (fromIntegral rpcPort)
             WS.scottySocketT (opts appLogger) sock runInIO $
-              rpcApi mConnPool localNode
+              rpcApi localNode mConnPool (Config.rpcReadOnly config)
   where
     catchFailedSocketBind port a =
       catch a $ \(SomeException err) ->
@@ -192,18 +182,18 @@ post_ route action =
 
 rpcApi
   :: MonadIOReadDB m
-  => Maybe ConnectionPool -- Connection to PostgresDB to run DB Queries
-  -> LocalNode
+  => LocalNode            -- Node to spawn cloud-haskell processes
+  -> Maybe ConnectionPool -- Connection to PostgresDB to run DB Queries
+  -> Bool                 -- Read only?
   -> RpcT m ()
-rpcApi mConnPool localNode = do
+rpcApi localNode mConnPool readOnly = do
 
     --------------------------------------------------
     -- RPC Command API
     --------------------------------------------------
 
     post_ "/" $ do
-      config <- lift $ NodeState.askConfig
-      if Config.rpcReadOnly config
+      if readOnly
         then jsonReadOnlyErr
         else do
           reqBody <- WS.body
@@ -271,12 +261,10 @@ rpcApi mConnPool localNode = do
       jsonRPCRespM =<< lift getAccounts
 
     post_ "/accounts/:addr" $ do
-      addr <- Address.fromRaw <$> WS.param "addr"
-      if Address.validateAddress addr
-        then do
-          eAcct <- lift $ getAccount addr
-          either (jsonNotFoundErr . toS) jsonRPCRespM eAcct
-      else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
+      addrBS <-  WS.param "addr"
+      withAddr addrBS $ \addr -> do
+        eAcct <- lift $ getAccount addr
+        either (jsonNotFoundErr . toS) jsonRPCRespM eAcct
 
     ---------------------------
     -- Assets API
@@ -286,12 +274,10 @@ rpcApi mConnPool localNode = do
       jsonRPCRespM =<< lift getAssets
 
     post_ "/assets/:addr" $ do
-      addr <- Address.fromRaw <$> WS.param "addr"
-      if Address.validateAddress addr
-        then do
-          eAsset <- lift $ getAsset addr
-          either (jsonNotFoundErr . toS) jsonRPCRespM eAsset
-      else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
+      addrBS <- WS.param "addr"
+      withAddr addrBS $ \addr -> do
+        eAsset <- lift $ getAsset addr
+        either (jsonNotFoundErr . toS) jsonRPCRespM eAsset
 
     ---------------------------
     -- Contract API
@@ -301,26 +287,22 @@ rpcApi mConnPool localNode = do
       jsonRPCRespM =<< lift getContracts
 
     post_ "/contracts/:addr" $ do
-      addr <- Address.fromRaw <$> WS.param "addr"
-      if Address.validateAddress addr
-        then do
-          eContract <- lift $ getContract addr
-          either (jsonNotFoundErr . toS) jsonRPCRespM eContract
-      else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
+      addrBS <- WS.param "addr"
+      withAddr addrBS $ \addr -> do
+        eContract <- lift $ getContract addr
+        either (jsonNotFoundErr . toS) jsonRPCRespM eContract
 
     post_ "/contracts/:addr/callable" $ do
-      addr <- Address.fromRaw <$> WS.param "addr"
-      if Address.validateAddress addr
-        then do
-          eContract <- lift $ getContract addr
-          case eContract of
-            Left err -> jsonNotFoundErr $ toS err
-            Right contract -> do
-              let methods = Contract.callableMethods contract
-              let methodsArgsAndTypes = flip map methods $ \m ->
-                    (Script.methodName m, Script.argtys m)
-              jsonRPCRespM $ jsonMethodsArgsAndTypes methodsArgsAndTypes
-      else jsonInvalidParamErr "Address supplied is an invalid Sha256 hash"
+      addrBS <- WS.param "addr"
+      withAddr addrBS $ \addr -> do
+        eContract <- lift $ getContract addr
+        case eContract of
+          Left err -> jsonNotFoundErr $ toS err
+          Right contract -> do
+            let methods = Contract.callableMethods contract
+            let methodsArgsAndTypes = flip map methods $ \m ->
+                  (Script.methodName m, Script.argtys m)
+            jsonRPCRespM $ jsonMethodsArgsAndTypes methodsArgsAndTypes
 
     ---------------------------
     -- Transactions API
@@ -347,11 +329,11 @@ rpcApi mConnPool localNode = do
 
     -- Query the status of a transaction
     post_ "/transactions/status/:hash" $ do
-      eTxHash <- WS.parseParam <$> WS.param "hash"
-      case encodeUtf8 <$> eTxHash of
-        Left _ -> jsonInvalidParamErr "Invalid transaction hash"
-        Right txHash -> jsonRPCRespM =<<
-          lift (NodeState.getTxStatus txHash)
+      eTxHash <- Hash.parseRawHash <$> WS.param "hash"
+      case eTxHash of
+        Left err -> jsonInvalidParamErr err
+        Right (txHash :: Hash.Hash E.Base16ByteString) ->
+          jsonRPCRespM =<< lift (NodeState.getTxStatus txHash)
 
     -- XXX Pagination, because could have unbounded invalid txs
     post_ "/transactions/invalid" $ do
@@ -367,7 +349,7 @@ rpcApi mConnPool localNode = do
       case encodeUtf8 <$> eTxHash of
         Left _ -> jsonInvalidParamErr "Invalid transaction hash"
         Right txHash -> do
-          itx <- lift $ lift $ getInvalidTx txHash
+          itx <- lift $ lift $ getInvalidTx (Hash.toHash txHash)
           jsonRPCRespM itx
 
     post_ "/transactions/:blockIdx" $ do
@@ -390,20 +372,6 @@ rpcApi mConnPool localNode = do
         Right (blockIdx, txIdx) -> do
           eTx <- lift $ lift $ getTransaction blockIdx txIdx
           either (jsonNotFoundErr . show) jsonRPCRespM eTx
-
-    ---------------------------
-    -- Contract Simulation API
-    ---------------------------
-
-    post_ "/simulation/create" $
-      jsonRPCRespOK -- XXX TODO
-
-    post_ "/simulation/update"
-      jsonRPCRespOK -- XXX TODO
-
-    post_ "/simulation/query"
-      jsonRPCRespOK -- XXX TODO
-
 
 -- | Construct a RPC response from a serializeable structure
 jsonRPCRespM :: (Monad m, ToJSON a) => a -> WS.ActionT Text m ()
@@ -438,22 +406,32 @@ jsonSelectError = WS.json . RPCRespError . SelectError . show
 -- Querying (Local NodeState or DB)
 -------------------------------------------------------------------------------
 
+withAddr
+  :: MonadBase IO m
+  => ByteString
+  -> (Address.Address a -> WS.ActionT Text m ())
+  -> WS.ActionT Text m ()
+withAddr bs get =
+  case Address.parseAddress bs of
+    Left err   -> jsonInvalidParamErr err
+    Right addr -> get addr
+
 getAccounts :: MonadBase IO m => NodeT m [Account.Account]
 getAccounts = NodeState.withLedgerState $ pure . Map.elems . Ledger.accounts
 
-getAccount :: MonadBase IO m => Address.Address -> NodeT m (Either Text Account.Account)
+getAccount :: MonadBase IO m => (Address.Address AAccount)-> NodeT m (Either Text Account.Account)
 getAccount addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAccount addr
 
 getAssets :: MonadBase IO m => NodeT m [Asset.Asset]
 getAssets = NodeState.withLedgerState $ pure . Map.elems . Ledger.assets
 
-getAsset :: MonadBase IO m => Address.Address -> NodeT m (Either Text Asset.Asset)
+getAsset :: MonadBase IO m => (Address.Address AAsset) -> NodeT m (Either Text Asset.Asset)
 getAsset addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupAsset addr
 
 getContracts :: MonadBase IO m => NodeT m [Contract.Contract]
 getContracts = NodeState.withLedgerState $ pure . Map.elems . Ledger.contracts
 
-getContract :: MonadBase IO m => Address.Address -> NodeT m (Either Text Contract.Contract)
+getContract :: MonadBase IO m => (Address.Address AContract) -> NodeT m (Either Text Contract.Contract)
 getContract addr = NodeState.withLedgerState $ pure . first show . Ledger.lookupContract addr
 
 getTransactions :: MonadReadDB m => Int -> m (Either Text [Tx.Transaction])
@@ -471,7 +449,7 @@ getTransaction blockIdx txIdx = do
       Nothing -> Left $ toS $ "No transaction at index " ++ show txIdx
       Just tx -> Right tx
 
-getInvalidTx :: MonadReadDB m => ByteString -> m (Either Text Tx.InvalidTransaction)
+getInvalidTx :: MonadReadDB m => Hash.Hash Encoding.Base16ByteString -> m (Either Text Tx.InvalidTransaction)
 getInvalidTx = fmap (first show) . DB.readInvalidTx
 
 getInvalidTxs :: MonadReadDB m => m (Either Text [Tx.InvalidTransaction])
@@ -540,7 +518,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
         runProcess localNode $ do
           -- XXX handle potential failure on submission
           _ <- Cmd.commTasksProc $ Cmd.Transaction tx
-          let txHashText = toS $ Tx.base16HashTransaction tx
+          let txHashText = toS $ Hash.getRawHash $ Tx.hashTransaction tx
           liftBase $ putMVar rpcRespMVar $ RPCTransactionOK txHashText
 
       Query textQ -> do
@@ -565,7 +543,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
                       Right qres ->
                         RPCResp (toJSON qres)
 
-      -- | Issue a Simulate msg to the Simulation process
+      -- Issue a Simulate msg to the Simulation process
       Simulate simMsg -> do
         liftBase $ putText $
           "RPC Recieved Query:\n   " <> show simMsg
@@ -601,7 +579,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
               Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
 
             ResetMemPools ->
-              Cmd.Test $ Cmd.ResetMemPools
+              Cmd.Test Cmd.ResetMemPools
 
             ResetDB addr sig ->
               Cmd.Test $ Cmd.ResetDB addr sig
@@ -630,8 +608,8 @@ data TestRPCCmd
     }
   | ResetMemPools
   | ResetDB
-    { address   :: Address.Address
-    , signature :: ByteString
+    { address   :: Address.Address AAccount
+    , signature :: Encoding.Base64PByteString
     }
   deriving (Eq, Show)
 
@@ -714,12 +692,9 @@ instance FromJSON TestRPCCmd where
       "ResetMemPools" -> pure ResetMemPools
       "ResetDB" -> ResetDB
         <$> params .: "address"
-        <*> fmap encodeUtf8 (params .: "signature")
+        <*> params .: "signature"
       invalid -> typeMismatch "TestRPCCmd" $ A.String invalid
   parseJSON invalid = typeMismatch "TestRPCCmd" invalid
-
-mapTextToMapBS :: Map Text Text -> Map ByteString ByteString
-mapTextToMapBS = Map.mapKeys encodeUtf8 . Map.map encodeUtf8
 
 instance ToJSON RPCResponseError where
   toJSON (InvalidParam msg) = object

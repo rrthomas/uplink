@@ -37,7 +37,6 @@ import qualified Data.ByteString.Lazy as BSL
 import Address
 import Utils
 
-import System.Directory
 import System.FilePath
 
 -------------------------------------------------------------------------------
@@ -46,7 +45,7 @@ import System.FilePath
 
 data Peer = Peer
   { peerPid     :: ProcessId  -- ProcessId of Peer Controller Process
-  , peerAccAddr :: Address    -- Address of Peer node account
+  , peerAccAddr :: (Address AAccount)    -- Address of Peer node account
   } deriving (Eq, Ord, Show, Generic)
 
 instance Binary.Binary Peer where
@@ -72,7 +71,7 @@ peersToPids = map peerPid . Set.toList
 peersToNodeIds :: Peers -> [NodeId]
 peersToNodeIds = map (processNodeId . peerPid) . Set.toList
 
-peersToAddresses :: Peers -> [Address]
+peersToAddresses :: Peers -> [Address AAccount]
 peersToAddresses = map peerAccAddr . Set.toList
 
 pidToNodeIdBS :: ProcessId -> ByteString

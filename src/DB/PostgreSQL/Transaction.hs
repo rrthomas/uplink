@@ -25,31 +25,15 @@ module DB.PostgreSQL.Transaction (
 
 import Protolude
 
-import Control.Monad (fail)
-import Control.Arrow ((&&&))
-
-import Data.Int as Int
-import qualified Data.Map as Map
-import qualified Data.Set as Set
-import qualified Data.Text as Text
-import qualified Data.Serialize as S
-
 import Address
-import Account
-import Asset
-import Transaction (Transaction(..), TransactionHeader(..), SyncLocalOp(..), base16HashTransaction)
-import Script
-import Storage
-import SafeString
-import SafeInteger
+import qualified Encoding
+import qualified Hash
+import Transaction (Transaction(..), TransactionHeader(..), hashTransaction)
 import qualified Transaction as TX
-import Time
 
 import DB.PostgreSQL.Error
 
 import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.ToRow
-import Database.PostgreSQL.Simple.ToField
 
 --------------------------------------------------------------------------------
 -- Types and Conversions
@@ -57,11 +41,11 @@ import Database.PostgreSQL.Simple.ToField
 
 data TransactionRow = TransactionRow
   { txBlockIndex :: Int
-  , txHash       :: ByteString
+  , txHash       :: Hash.Hash Encoding.Base16ByteString
   , txType       :: ByteString
   , txHeader     :: TransactionHeader
-  , txSignature  :: ByteString
-  , txOrigin     :: Address
+  , txSignature  :: Encoding.Base64PByteString
+  , txOrigin     :: Address AAccount
   } deriving (Generic)
 
 instance ToRow TransactionRow
@@ -71,7 +55,7 @@ transactionToRowType :: Int -> Transaction -> TransactionRow
 transactionToRowType blockIdx tx@Transaction{..} =
   TransactionRow
     { txBlockIndex = blockIdx
-    , txHash       = base16HashTransaction tx
+    , txHash       = hashTransaction tx
     , txType       = getTxType header
     , txHeader     = header
     , txSignature  = signature
@@ -111,15 +95,15 @@ rowTypeToTransaction TransactionRow{..} = do
 
 queryTransactionByHash
   :: Connection
-  -> ByteString -- ^ must be base16 encoded sha3_256 hash
+  -> Hash.Hash Encoding.Base16ByteString -- ^ must be base16 encoded sha3_256 hash
   -> IO (Either PostgreSQLError Transaction)
-queryTransactionByHash conn b16txHash = do
-  txRows <- querySafe conn "SELECT * from transactions where hash=?" (Only b16txHash)
+queryTransactionByHash conn hash = do
+  txRows <- querySafe conn "SELECT * from transactions where hash=?" (Only hash)
   case fmap headMay txRows of
     Left err        ->
       pure $ Left err
     Right Nothing   ->
-      pure $ Left $ TransactionDoesNotExist b16txHash
+      pure $ Left $ TransactionDoesNotExist hash
     Right (Just tx) ->
       pure $ Right $ rowTypeToTransaction tx
 

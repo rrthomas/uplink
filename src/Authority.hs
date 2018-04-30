@@ -21,7 +21,6 @@ module Authority (
 
 import Protolude
 
-import System.FilePath
 import qualified Data.Map as Map
 import qualified Data.ByteArray as BS
 import qualified Data.ByteString.Lazy as BS
@@ -72,16 +71,16 @@ newtype Token = Token ByteString
 createAccessToken :: ByteString -> IO (Time.Timestamp, Token)
 createAccessToken secret = do
   ts <- Time.now
-  let sig = Encoding.base64 (Key.hmacSha256 secret (show ts))
-  return (ts, Token sig)
+  let sig = Encoding.encodeBase (Key.hmacSha256 secret (show ts))
+  return (ts, Token (Encoding.unbase64 sig))
 
-signWithToken :: Token -> ByteString -> ByteString
-signWithToken (Token token) msg = Encoding.base64 (Key.hmacSha256 token msg)
+signWithToken :: Token -> ByteString -> Encoding.Base64ByteString
+signWithToken (Token token) msg = Encoding.encodeBase (Key.hmacSha256 token msg)
 
 verifyMsg
-  :: Token      -- ^ Access token
-  -> ByteString -- ^ Message
-  -> ByteString -- ^ Digest
+  :: Token                      -- ^ Access token
+  -> ByteString                 -- ^ Message
+  -> Encoding.Base64ByteString  -- ^ Digest
   -> Bool
 verifyMsg tok msg digest =
   -- IMPORTANT: use constant time equality, not (==)

@@ -29,9 +29,8 @@ packages:
   extra-dep: true
 
 extra-deps:
-- protolude-0.2.1
-#- repline-0.1.7.0
 - pretty-hex-1.0
+- protolude-0.2.2
 - base58-bytestring-0.1.0
 - template-haskell-2.11.1.0
 - hexpat-pickle-0.6

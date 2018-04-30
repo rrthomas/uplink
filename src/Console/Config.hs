@@ -13,17 +13,11 @@ module Console.Config (
 
 import Protolude
 
-import Control.Distributed.Process
-
-import qualified Data.Set as Set
 import qualified Data.Map as Map
 
 import Script
-import NodeState
 import Account
 import Key
-
-import qualified Network.P2P.Cmd as Cmd
 
 import System.Console.Repline
 import System.Console.Haskeline.MonadException

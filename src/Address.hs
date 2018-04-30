@@ -15,14 +15,14 @@ Adress datatypes and operations.
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeInType #-}
 
 module Address (
   -- ** Types
-  Address,
+  Address(..),
   rawAddr,
   fromRaw,
   emptyAddr,
-  isEmpty,
   shortAddr,
   addrSize,
 
@@ -30,17 +30,22 @@ module Address (
   AContract,
   AAccount,
   AAsset,
+  AUnknown,
   showAddr,
+  addrFromUnknown,
+  unknownAddrFromAddr,
+  EitherAccountContract,
 
   -- ** Parsing
-  parseAddr,
   parseAddress,
+
+  -- ** FromField
+  addressFromField,
 
   -- ** Validation
   deriveHash,
   deriveAddress,
   verifyAddress,
-  validateAddress,
   recoverAddress,
   recoverAddress',
 
@@ -56,31 +61,30 @@ module Address (
 ) where
 
 import Prelude (Show(..), show)
+import Data.Typeable
 import Protolude hiding (Show, show)
 import qualified GHC.TypeLits as Lits
-
-import Encoding
+import qualified Data.Coerce
+import Utils (panicImpossible)
+import qualified Encoding
 import qualified Key
 import qualified Hash
 import Script.Pretty (Pretty(..), squotes)
 
-import Control.Monad (fail)
 
-import Data.Aeson (Value(..), ToJSON(..), FromJSON(..), ToJSONKey(..), FromJSONKey(..), FromJSONKeyFunction(..))
+import Data.Aeson (Value(..), ToJSON(..), FromJSON(..), ToJSONKey(..), FromJSONKey(..))
 
-import Data.Aeson.Types (typeMismatch, toJSONKeyText)
-import Data.Hashable (Hashable)
-import Data.Serialize (Serialize, encode, decode)
+import Data.Aeson.Types (typeMismatch, toJSONKeyText, FromJSONKeyFunction(..))
+import Data.Serialize (Serialize)
 import qualified Data.Binary as B
 import qualified Data.Serialize as S
 import qualified Data.ByteString as BS
 
-import Database.PostgreSQL.Simple.FromRow   (FromRow)
+import Database.PostgreSQL.Simple.FromRow   (FromRow(..))
 import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
 import Database.PostgreSQL.Simple.ToField   (ToField(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
-
-import Crypto.Number.Serialize (i2osp)
+import Database.PostgreSQL.Simple.Internal (Field, Conversion)
 
 -------------------------------------------------------------------------------
 -- Address
@@ -90,46 +94,69 @@ import Crypto.Number.Serialize (i2osp)
 addrSize :: Int
 addrSize = Hash.hashSize
 
--- | XXX: Roll underlying type to use Digest SHA3_256
--- | XXX: phantom type parameter to distinguish address types
-
 -- | A ledger address, derived from elliptic curve point
-newtype Address = Address ByteString
-  deriving (Eq, Ord, Monoid, Generic, NFData, B.Binary, Hashable, Hash.Hashable, Read)
+newtype Address a = Address (Hash.Hash Encoding.Base58ByteString)
+  deriving (Show, Read, Eq, Ord, Generic, NFData, B.Binary, Typeable, Hash.Hashable)
 
-instance ToJSON Address where
-  toJSON (Address bs) = Data.Aeson.String (decodeUtf8 bs)
+instance Hashable (Address a) where
+  hashWithSalt salt (Address h) = hashWithSalt salt (Hash.getRawHash h)
 
-instance FromJSON Address where
-  parseJSON (String v) =
-    case unb58 (encodeUtf8 v) of
-      Nothing -> fail "String is not valid base 58 encoded."
-      Just bs ->
-        case validateAddress (Address (encodeUtf8 v)) of
-          False -> fail "String is malformed address."
-          True  -> pure (Address (encodeUtf8 v))
-  parseJSON _ = fail "Cannot parse address from non-string."
+instance ToJSON (Address a) where
+  toJSON (Address b) = toJSON b
 
-instance FromJSONKey Address where
-  fromJSONKey = Address . encodeUtf8 <$> fromJSONKey
+instance FromJSON (Address a) where
+  parseJSON v = Address <$> parseJSON v
 
-instance Serialize Address where
-  put (Address bs) = case unb58 bs of
-    Just raw -> S.putByteString raw
-    Nothing  -> panic ("Cannot serialize invalid address:" <> (toS (show bs)))
-  get = Address . b58 <$> S.getByteString addrSize
-
-instance Pretty Address where
-  ppr (Address bs) = squotes $ ppr bs
-
-
-instance ToJSONKey Address where
+instance ToJSONKey (Address a) where
   toJSONKey = toJSONKeyText (decodeUtf8 . rawAddr)
+
+instance FromJSONKey (Address a) where
+  fromJSONKey = FromJSONKeyTextParser parser
+    where
+      parser t =
+        case Hash.parseRawHash (toS t) of
+          Left err -> typeMismatch "Address" (String t)
+          Right h  -> pure $ Address h
+
+instance Serialize (Address a) where
+  put (Address b) = S.put b
+  get = Address <$> S.get
+
+instance Pretty (Address a) where
+  ppr (Address b) = squotes $ ppr $ Hash.getHash b
 
 -- | Type level tags of address type
 data AContract
 data AAccount
 data AAsset
+data AUnknown
+
+instance Show AAccount where
+  show = panicImpossible $ Just "Cannot evaluate address tag"
+instance Eq AAccount where
+  (==) = panicImpossible $ Just "Cannot evaluate address tag"
+
+instance Show AContract where
+  show = panicImpossible $ Just "Cannot evaluate address tag"
+instance Eq AContract where
+  (==) = panicImpossible $ Just "Cannot evaluate address tag"
+
+instance Show AAsset where
+  show = panicImpossible $ Just "Cannot evaluate address tag"
+instance Eq AAsset where
+  (==) = panicImpossible $ Just "Cannot evaluate address tag"
+
+instance Show AUnknown where
+  show = panicImpossible $ Just "Cannot evaluate address tag"
+instance Eq AUnknown where
+  (==) = panicImpossible $ Just "Cannot evaluate address tag"
+
+
+addrFromUnknown :: Address AUnknown -> Address a
+addrFromUnknown = Data.Coerce.coerce
+
+unknownAddrFromAddr :: Address a -> Address AUnknown
+unknownAddrFromAddr = Data.Coerce.coerce
 
 type family AddrTag i where
   AddrTag AContract = "c"
@@ -137,52 +164,54 @@ type family AddrTag i where
   AddrTag AAsset    = "a"
   AddrTag _         = Lits.TypeError (Lits.Text "Cannot lower tag of unknown address")
 
+type family EitherAccountContract a :: Constraint where
+  EitherAccountContract AAccount = ()
+  EitherAccountContract AContract = ()
+  EitherAccountContract _ = Lits.TypeError (Lits.Text "Expecting either an account or contract")
+
 -- | Lower the typelevel tag of an address to it's display value.
 {-showAddr :: forall a. (KnownSymbol (AddrTag a)) => (Address a) -> Text-}
-showAddr :: forall a. (KnownSymbol (AddrTag a)) => (a, Address) -> Text
-showAddr (_, addr) = toS (symbolVal (Proxy :: Proxy (AddrTag a))) <> toS (show addr)
+showAddr :: forall a. (KnownSymbol (AddrTag a)) => Address a -> Text
+showAddr addr = toS (symbolVal (Proxy :: Proxy (AddrTag a))) <> toS (show addr)
 
-putAddress :: Address.Address -> S.PutM ()
-putAddress addr =
-  case unb58 $ rawAddr addr of
-    Nothing -> fail "Invalid base58 encoded address."
-    Just addr' -> S.putByteString addr'
+putAddress :: Address a -> S.PutM ()
+putAddress (Address base) = S.put base
 
-getAddress :: S.Get Address.Address
-getAddress =  parseAddress . b58 <$> S.getByteString addrSize
+getAddress :: S.Get (Address a)
+getAddress =  Address <$> S.get
 
--- | Extract underlying bytes from an 'Address'
-rawAddr :: Address -> ByteString
-rawAddr (Address n) = n
+-- | Extract underlying bytes from an 'Address' in base58 encoding
+rawAddr :: Address a -> ByteString
+rawAddr (Address b) = Hash.getRawHash b
 
--- | Build an 'Address' from a bytestring. ( Not safe )
-fromRaw :: ByteString -> Address
+-- | Build an 'Address' from a raw base 58 encoded bytestring. ( Not safe )
+fromRaw :: ByteString -> Address a
 fromRaw bs =
-  let addr = Address bs
-  in if validateAddress addr
-    then addr
-    else panic $ "Cannot validate address as input to \'fromRaw\': " <> toS bs
+    case Encoding.parseEncodedBS bs of
+      Left err -> panicErr err
+      Right (b58bs :: Encoding.Base58ByteString) ->
+        case Hash.parseHash b58bs of
+          Left err -> panicErr err
+          Right h  -> Address h
+  where
+    panicErr err = panic $
+      "Cannot validate address as input to 'fromRaw': " <> toS (show err)
 
 -- | Empty address
-emptyAddr :: Address
-emptyAddr = Address (b58 (BS.replicate addrSize 0))
-
--- | Check if address is empty
-isEmpty :: Address -> Bool
-isEmpty (Address s) = s == mempty
+emptyAddr :: Address a
+emptyAddr = Address Hash.emptyHash
 
 -- | Shortened address for logging
-shortAddr :: Address -> ByteString
-shortAddr (Address addr) = BS.take 7 addr
+shortAddr :: Address a -> ByteString
+shortAddr (Address b) = BS.take 7 (Hash.getRawHash b)
 
 -- | Derive an address from a public key
 --
 -- > address(x,y) = addrHash(string(x) <> string(y))
-deriveAddress :: Key.PubKey -> Address
-deriveAddress pub = Address (b58 addr)
+deriveAddress :: Key.PubKey -> Address a
+deriveAddress pub = Address (deriveHash pstr)
   where
     (x, y) = Key.extractPoint pub
-    addr   = deriveHash pstr
     pstr   = toS (show x) <> toS (show y)
 
 -- | Address derivation function, maps a hash of a EC point to a unique,
@@ -190,65 +219,46 @@ deriveAddress pub = Address (b58 addr)
 -- any participant can verify integrity of it's coherence to a public key.
 --
 -- > addrHash(n) = sha256(sha256(ripemd160(sha256(n))))
-deriveHash :: ByteString -> ByteString
-deriveHash = Hash.sha256Raw . Hash.sha256Raw . Hash.ripemd160Raw . Hash.sha256Raw
+deriveHash :: ByteString -> Hash.Hash Encoding.Base58ByteString
+deriveHash = Hash.sha256 . Hash.sha256Raw . Hash.ripemd160Raw . Hash.sha256Raw
 
--- | Validate whether an address is a well-formed B58 encoded hash.
-validateAddress :: Address -> Bool
-validateAddress (Address s) = case unb58 s of
-  Nothing  -> False
-  Just sha -> Hash.validateSha sha
-
--- | Parses a ByteStrig into an Address. Panics on invalid inputs.
-parseAddress :: ByteString -> Address
-parseAddress = fromRaw
-
--- | XXX why do we have two of these
-parseAddr :: ByteString -> Maybe Address
-parseAddr bs =
-  let addr = Address bs
-  in if validateAddress addr
-    then Just addr
-    else Nothing
+parseAddress :: ByteString -> Either Text (Address a)
+parseAddress bs =
+  case Hash.parseRawHash bs of
+    Left err -> Left $ toS $ show err
+    Right h  -> Right (Address h)
 
 -- | Verify an address is derived from a given public key.
-verifyAddress :: Key.PubKey -> Address -> Bool
-verifyAddress pub a@(Address s) = case unb58 s of
-  Nothing -> False
-  Just _  -> deriveAddress pub == a
+verifyAddress :: Key.PubKey -> Address a -> Bool
+verifyAddress pub a = deriveAddress pub == a
 
-recoverAddress :: ByteString -> ByteString -> Either Key.InvalidSignature (Address,Address)
+recoverAddress
+  :: Encoding.Base64PByteString
+  -> ByteString
+  -> Either Key.InvalidSignature (Address a, Address a)
 recoverAddress sig msg = flip recoverAddress' msg <$> Key.decodeSig sig
 
-recoverAddress' :: Key.Signature -> ByteString -> (Address,Address)
+recoverAddress' :: Key.Signature -> ByteString -> (Address a, Address a)
 recoverAddress' sig = bimap deriveAddress deriveAddress . Key.recover sig
-
--- Hackish show method for debugging
-instance Show Address where
-  show (Address "") = "<empty>"
-  show (Address x) = toS x
-
-  showsPrec _ (Address "") = (++) "<empty>"
-  showsPrec _ (Address x) = (++) (toS x)
 
 -------------------------------------------------------------------------------
 -- Generation
 -------------------------------------------------------------------------------
 
 -- | Generate a new random 'Address' from random key.
-newAddr :: IO Address
+newAddr :: IO (Address a)
 newAddr = Key.new >>= \(pub, priv) -> pure (deriveAddress pub)
 
 -- | Generate a key public key, address pair.
-newPair :: IO (Key.PubKey, Address)
+newPair :: IO (Key.PubKey, Address a)
 newPair = Key.new >>= \(pub, priv) -> pure (pub, deriveAddress pub)
 
 -- | Generate a key private key, public key, address pair.
-newTriple :: IO (Key.PrivateKey, Key.PubKey, Address)
+newTriple :: IO (Key.PrivateKey, Key.PubKey, Address a)
 newTriple = Key.new >>= \(pub, priv) -> pure (priv, pub, deriveAddress pub)
 
 -- | Generate a set of new addresses
-newAddrs :: Int -> IO [Address]
+newAddrs :: Int -> IO [Address a]
 newAddrs n = replicateM n newAddr
 
 -------------------------------------------------------------------------------
@@ -256,16 +266,25 @@ newAddrs n = replicateM n newAddr
 -------------------------------------------------------------------------------
 
 -- XXX Maybe this is wrong (trying to convert it to `Text` before toField).
-instance ToField Address where
+instance ToField (Address a) where
   toField = toField . decodeUtf8 . rawAddr
 
-instance FromField Address where
-  fromField f mdata =
+instance FromField (Address AAccount) where
+  fromField = addressFromField
+
+instance FromField (Address AContract) where
+  fromField = addressFromField
+
+instance FromField (Address AAsset) where
+  fromField = addressFromField
+
+addressFromField
+  :: forall k (a :: k). (Typeable k, Typeable a)
+  => Field -> Maybe ByteString -> Conversion (Address a)
+addressFromField f mdata =
     case mdata of
       Nothing   -> returnError UnexpectedNull f ""
-      Just addr
-        | validateAddress (fromRaw addr) -> return $ fromRaw addr
-        | otherwise -> returnError ConversionFailed f "Invalid Address read from DB"
+      Just addr -> return $ fromRaw addr
 
-instance ToRow Address
-instance FromRow Address
+instance ToRow (Address a)
+instance FromRow (Address a)

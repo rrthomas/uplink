@@ -9,10 +9,10 @@ import Protolude
 
 import Prelude (show)
 
-import Control.Distributed.Process.Serializable
 import Data.Binary
 import Data.Serialize
 
+import qualified Hash
 
 {-
 
@@ -42,7 +42,7 @@ data Service
   | Messaging       -- ^ Message handling process
   | TestMessaging   -- ^ TestMessage handling process
   | Simulation      -- ^ Simulate smart contract method evalution
-  deriving (Eq, Ord, Generic, Binary, Serializable, Serialize)
+  deriving (Eq, Ord, Generic, Binary, Serialize, Hash.Hashable)
 
 instance Show Service where
   show Logger = "logger"

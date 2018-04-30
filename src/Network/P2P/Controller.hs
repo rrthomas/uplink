@@ -1,20 +1,10 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.P2P.Controller (
 
   peerControllerProc,
-
-  queryAllPeers,
-
-  -- ** nsendX using Data.Binary
-  nsendPeer,
-  nsendPeers,
-  nsendPeersMany,
-
-  -- ** nsendX using Data.Serialize
-  nsendPeer',
-  nsendPeers',
-  nsendPeersMany',
 
   doDiscover,
   getCachedPeers,
@@ -26,21 +16,22 @@ import Control.Monad.Base
 
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
-import Control.Distributed.Process.Serializable (Serializable)
 
+import qualified Data.Binary as B
 import qualified Data.List as List
 import qualified Data.Set as Set
-import qualified Data.Serialize as S
 
 import NodeState
 import Node.Peer
 import qualified Network.P2P.Logging as Log
 import Network.P2P.Service
-import Network.Utils (waitForLocalService, mkNodeId)
+import Network.P2P.Send (MatchProcBase(..))
+import Network.P2P.SignedMsg as SM
+import Network.Utils (mkNodeId)
 
 import qualified Block
-import qualified Config
-
+import qualified Encoding
+import qualified Hash
 
 -------------------------------------------------------------------------------
 -- Peer Controller
@@ -49,33 +40,35 @@ import qualified Config
 -- | A P2P controller service process.
 peerControllerProc
   :: forall m. MonadProcessBase m
-  => NodeT m ()
-peerControllerProc = do
+  => [ByteString]
+  -> NodeT m ()
+peerControllerProc bootnodes = do
 
   -- Construct bootnode processIds
-  cachedPeersNodeIds <- Node.Peer.peersToNodeIds <$> getCachedPeers
-  bootNodeIds <- mkNodeIds . Config.bootnodes =<< askConfig
+  bootNodeIds <- mkNodeIds bootnodes
 
+  cachedPeersNodeIds <- Node.Peer.peersToNodeIds <$> getCachedPeers
   let initNodeIds = List.nub $ bootNodeIds ++ cachedPeersNodeIds
 
   -- Add self to list of peers
   selfPid  <- getSelfPid
+  register (show PeerController) selfPid
+
   selfAddr <- NodeState.askSelfAddress
   setPeers $ Set.singleton $ Peer selfPid selfAddr
-  register (show PeerController) selfPid
 
   -- Discover boot nodes asynchronously
   mapM_ (void . spawnLocal . doDiscover) initNodeIds
 
-  controlP $ \runInBase -> do
-    Log.info "P2P controller started."
-    forever $ receiveWait
-      [ matchIf isPeerDiscover $ runInBase . onDiscover
-      , match $ runInBase . onMonitor
-      , match $ runInBase . onPeerRequest
-      , match $ runInBase . onPeerQuery
-      , match $ runInBase . onPeerConfigQuery
-      , match $ runInBase . liftP . onPeerCapable
+  Log.info "Spawning P2P Controller..."
+  forever $
+    SM.receiveWaitSigned
+      [ MatchProcBase onWhereIsSigned
+      , MatchProcBase onDiscover
+      , MatchProcBase onMonitor
+      , MatchProcBase onPeerRequest
+      , MatchProcBase onPeerQuery
+      , MatchProcBase onPeerConfigQuery
       ]
 
   where
@@ -99,12 +92,12 @@ peerControllerProc = do
 -- connection to the invalid node. To circumvent this behavior, we add a timeout
 -- to kill the discovery process if it takes longer than 2 seconds to establish
 -- a connection to the given nodeId.
-doDiscover :: forall m. MonadProcessBase m => NodeId -> m ()
+doDiscover :: forall m. MonadProcessBase m => NodeId -> NodeT m ()
 doDiscover node = void $ spawnLocal doDiscover'
   where
     -- A process that spawns a discovery process and then waits for 3 seconds
     -- for it to respond that it found a peer or not.
-    doDiscover' :: m ()
+    doDiscover' :: NodeT m ()
     doDiscover' = do
       register ("discovery-" ++ show node) =<< getSelfPid
       Log.info $ "Examining node: " <> show node
@@ -123,72 +116,80 @@ doDiscover node = void $ spawnLocal doDiscover'
     -- message to its parent process, the PeerController process to handle the
     -- message. This is done because wrapping `whereisRemoteAsync` in a a
     -- seemingly simple timeout is actually _not_ simple.
-    discoveryProc :: SendPort () -> m ()
+    discoveryProc :: SendPort () -> NodeT m ()
     discoveryProc sp = do
-      -- *** This might hang for a few minutes, so we are monitoring it
+      -- Warning: This might hang for a few minutes, so we are monitoring it
       -- with `doDiscover'`, and killing it if it takes too long.
-      whereisRemoteAsync node (show PeerController)
-      -- Wait for the reply and forward response to p2p controller process
-      reply <- expect :: m WhereIsReply
-      nsend (show PeerController) reply
+      whereisRemoteAsyncSigned node PeerController
+      -- Wait for the reply
+      eReply <- SM.expectSigned
+      case eReply  of
+        Left err -> Log.warning $ "Node " <> show node <> " responded with an invalid signature"
+        Right (reply :: WhereIsReplySigned) ->
+          -- forward response to p2p controller process
+          nsendSigned PeerController reply
       -- alert the parent process that we're finished
       sendChan sp ()
 
-doRegister :: MonadProcessBase m => Peer -> NodeT m ()
-doRegister peer@(Peer pid addr) = do
+-- | Monitor a specific process such that when it dies the monitoring process
+-- receives a ProcessMonitorNotification
+doMonitor :: MonadProcessBase m => Peer -> NodeT m ()
+doMonitor peer@(Peer pid addr) = do
   isNewPeer <- modifyPeers $ \peers ->
     if Set.member peer peers
       then (peers, False)
       else (Set.insert peer peers, True)
   when isNewPeer $ do
-    Log.info $ "Registering peer: " <> show peer
+    let peerNodeId = processNodeId pid
+    Log.info $ "Beginning to monitor peer: " <> show peerNodeId
     monitor pid
-    Log.info $ "New node with Pid: " <> show (peerPid peer)
-    doDiscover $ processNodeId pid
+    doDiscover peerNodeId
 
-doUnregister
+-- | Unmonitor a process such that if it dies no notification is received.
+doUnmonitor
   :: MonadProcessBase m
   => Maybe MonitorRef
   -> ProcessId
   -> NodeT m ()
-doUnregister mref pid = do
-  Log.info $ "Unregistering peer: " <> show pid
+doUnmonitor mref pid = do
+  Log.info $ "Unmonitoring peer: " <> show pid
   maybe (return ()) (liftP . unmonitor) mref
   modifyPeers_ $ \peers ->
     flip Set.filter peers $ \peer ->
       peerPid peer /= pid
 
-isPeerDiscover :: WhereIsReply -> Bool
-isPeerDiscover (WhereIsReply service pid) =
-    service == (show PeerController) && isJust pid
-
-onDiscover :: MonadProcessBase m => WhereIsReply -> NodeT m ()
-onDiscover (WhereIsReply _ Nothing) = return ()
-onDiscover (WhereIsReply _ (Just seedPid)) = do
-  Log.info $ "Peer discovered: " <> show seedPid
-  selfPid <- liftP getSelfPid
-  when (selfPid /= seedPid) $ do
+onDiscover :: MonadProcessBase m => WhereIsReplySigned -> NodeT m ()
+onDiscover (WhereIsReplySigned _ Nothing) = pure ()
+onDiscover (WhereIsReplySigned _ (Just peerPid)) = do
+  Log.info $ "Peer discovered: " <> show peerPid
+  selfPid <- getSelfPid
+  when (selfPid /= peerPid) $ do
     -- Checks whether peer is in test mode and
     -- if the hash of the genesis block matches
-    validPeerConfig <- isPeerConfigValid $ processNodeId seedPid
-    when validPeerConfig $ do
-      (sp, rp) <- liftP newChan
-      selfPeer <- Peer selfPid <$> NodeState.askSelfAddress
-      liftP $ send seedPid (selfPeer, sp :: SendPort Peers)
-      Log.info $ "Waiting for peers from " <> show seedPid
-      recPeers <- liftP $ receiveChanTimeout 3000000 rp
-      case recPeers of
-        Nothing -> Log.info "Failed to find peer."
-        Just peers -> do
-          known <- getPeers
-          let newPeers = Set.difference peers known
-          unless (Set.null newPeers) $ do
-            Log.info $ "Registering peers..."
-            mapM_ doRegister $ newPeers
-            let allPeers = Set.union newPeers known
-            cachePeers allPeers
+    let peerNodeId = processNodeId peerPid
+    validPeerConfig <- isPeerConfigValid peerNodeId
+    if validPeerConfig
+       then do
+         (sp, rp) <- newChan
+         selfPeer <- Peer selfPid <$> NodeState.askSelfAddress
+         sendSigned peerPid (selfPeer, sp :: SM.SendPortSigned Peers)
+         Log.info $ "Waiting for peers from " <> show peerPid
+         recPeers <- SM.receiveChanTimeoutSigned 3000000 rp
+         case recPeers of
+           Nothing            -> Log.info "Failed to find peer."
+           Just (Left err)    -> Log.warning $ show err <> " from " <> show peerPid
+           Just (Right peers) -> do
+             known <- getPeers
+             let newPeers = Set.difference peers known
+             unless (Set.null newPeers) $ do
+               Log.info $ "Registering peers..."
+               mapM_ doMonitor $ newPeers
+               let allPeers = Set.union newPeers known
+               cachePeers allPeers
+        else
+          Log.warning $ "Invalid peer config: " <> show peerNodeId
 
-onPeerRequest :: MonadProcessBase m => (Peer, SendPort Peers) -> NodeT m ()
+onPeerRequest :: MonadProcessBase m => (Peer, SM.SendPortSigned Peers) -> NodeT m ()
 onPeerRequest (peer, replyTo) = do
   Log.info $ "Peer exchange with " <> show (peerPid peer)
   isNewPeer <- modifyPeers $ \peers ->
@@ -196,34 +197,24 @@ onPeerRequest (peer, replyTo) = do
       then (peers, False)
       else (Set.insert peer peers, True)
   when isNewPeer $ void $
-    liftP $ monitor $ peerPid peer
-  liftP . sendChan replyTo =<< getPeers
+    monitor $ peerPid peer
+  SM.sendChanSigned replyTo =<< getPeers
 
-onPeerQuery :: MonadProcessBase m => SendPort Peers -> NodeT m ()
+onPeerQuery :: MonadProcessBase m => SendPortSigned Peers -> NodeT m ()
 onPeerQuery replyTo = do
   Log.info $ "Local peer query."
   p2pPeers <- getPeers
-  liftP $ sendChan replyTo p2pPeers
+  SM.sendChanSigned replyTo p2pPeers
 
 onPeerConfigQuery
   :: MonadProcessBase m
-  => SendPort (Bool, ByteString)
+  => SendPortSigned (Bool, Hash.Hash Encoding.Base16ByteString)
   -> NodeT m ()
 onPeerConfigQuery replyTo = do
   Log.info $ "Peer config query received."
   testMode <- NodeState.isTestNode
   genesisBlock <- NodeState.askGenesisBlock
-  sendChan replyTo (testMode, Block.hashBlock genesisBlock)
-
-onPeerCapable :: ([Char], SendPort ProcessId) -> Process ()
-onPeerCapable (service, replyTo) = do
-  Log.info $ "Capability request: " <> show service
-  res <- whereis service
-  case res of
-      Nothing -> Log.info "I can't."
-      Just pid -> do
-        Log.info "I can!"
-        sendChan replyTo pid
+  SM.sendChanSigned replyTo (testMode, Block.hashBlock genesisBlock)
 
 onMonitor
   :: MonadProcessBase m
@@ -231,105 +222,53 @@ onMonitor
   -> NodeT m ()
 onMonitor (ProcessMonitorNotification mref pid DiedDisconnect) = do
   Log.info $ "Dead node:" <> (show pid)
-  doUnregister (Just mref) pid
+  doUnmonitor (Just mref) pid
 onMonitor (ProcessMonitorNotification mref pid DiedUnknownId) = do
   Log.info $ "Unknown Id:" <> (show pid)
 onMonitor (ProcessMonitorNotification mref pid reason) = do
   Log.info $ "Monitor event: " <> show (pid, reason)
-  doUnregister (Just mref) pid
-
--------------------------------------------------------------------------------
--- P2P Messaging Utils
--------------------------------------------------------------------------------
-
--- | Send a message to a specific peer process
-nsendPeer
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> NodeId
-  -> a
-  -> NodeT m ()
-nsendPeer service peer =
-  nsendRemote peer (show service)
-
--- | Broadcast a message to a specific service on all peers.
-nsendPeers
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> a
-  -> NodeT m ()
-nsendPeers service msg = do
-  peers <- getPeerNodeIds
-  Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
-  forM_ peers $ \peer -> do
-    Log.info $ "Sending msg to " <> (show peer :: Text)
-    nsendPeer service peer msg
-
--- | Broadcast multiple messages to a specific service on all peers.
-nsendPeersMany
-  :: (MonadProcessBase m, Serializable a)
-  => Service
-  -> [a]
-  -> NodeT m ()
-nsendPeersMany service msgs = do
-  peers <- getPeerNodeIds
-  Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
-  Log.info $ "Sending msg to " <> (show peers :: Text)
-  forM_ peers $ \peer -> do
-    mapM_ (nsendPeer service peer) msgs
-
--------------------------------------------------------------------------------
-
--- | Like nsendPeer but serialize with Data.Serialize instead of Data.Binary
-nsendPeer'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> NodeId
-  -> a
-  -> NodeT m ()
-nsendPeer' s p =
-  nsendPeer s p . S.encode
-
--- | Like nsendPeers but serialize with Data.Serialize instead of Data.Binary
-nsendPeers'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> a
-  -> NodeT m ()
-nsendPeers' s =
-  nsendPeers s . S.encode
-
--- | Like nsendPeersMany but serialize with Data.Serialize instead of Data.Binary
-nsendPeersMany'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> [a]
-  -> NodeT m ()
-nsendPeersMany' s msgs =
-  nsendPeersMany s $ (map S.encode msgs)
+  doUnmonitor (Just mref) pid
 
 -------------------------------------------------------------------------------
 -- P2P Discovery Utils
 -------------------------------------------------------------------------------
 
--- | Get a list of currently available peer
--- nodes from local P2P:Controller Process
-queryAllPeers :: MonadProcessBase m => m [NodeId]
-queryAllPeers = do
-  Log.info "Requesting peer list from local controller..."
-  (sp, rp) <- newChan
-  nsend (show PeerController) (sp :: SendPort Peers)
-  peersToNodeIds <$> receiveChan rp
+data WhereIsSigned = WhereIsSigned ProcessId Service
+  deriving (Show, Generic, Typeable, B.Binary)
+
+data WhereIsReplySigned = WhereIsReplySigned Service (Maybe ProcessId)
+  deriving (Generic, Typeable, B.Binary)
+
+-- | Implements a signed version of `whereisRemoteAsync`
+-- Note: If you use this function to send a `WhereIs` message, the node you are
+-- sending it to must be listening for a message of type `WhereIsSigned`. This
+-- can be accomplished with `expect >>= onWhereIsSigned`.
+whereisRemoteAsyncSigned :: MonadProcessBase m => NodeId -> Service -> NodeT m ()
+whereisRemoteAsyncSigned to service = do
+  from <- getSelfPid
+  nsendPeerSigned PeerController to (WhereIsSigned from service)
+
+onWhereIsSigned :: MonadProcessBase m => WhereIsSigned -> NodeT m ()
+onWhereIsSigned (WhereIsSigned from service) = do
+  mPid <- whereis (show service)
+  let reply = WhereIsReplySigned service mPid
+  sendSigned from reply
 
 -- | Check if peer has valid config
 queryValidPeerConfig
   :: MonadProcessBase m
   => NodeId
-  -> NodeT m (Maybe (Bool, ByteString))
+  -> NodeT m (Maybe (Bool, Hash.Hash Encoding.Base16ByteString))
 queryValidPeerConfig nodeId = do
   (sp, rp) <- newChan
-  nsendPeer PeerController nodeId sp
-  receiveChanTimeout 3000000 rp
+  nsendPeerSigned PeerController nodeId sp
+  mResp <- receiveChanTimeoutSigned 3000000 rp
+  case mResp of
+    Nothing -> pure Nothing
+    Just (Left err) -> do
+      Log.warning $ show err <> " from " <> show nodeId
+      pure Nothing
+    Just (Right resp) -> pure (Just resp)
 
 -- | Check to see if peer should join network based on genesis block and test mode
 isPeerConfigValid :: MonadProcessBase m => NodeId -> NodeT m Bool

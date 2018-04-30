@@ -9,6 +9,9 @@ Asset data types.
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Asset (
   -- ** Assets
@@ -31,11 +34,13 @@ module Asset (
   preallocate,
 
   -- ** Holdings
-  Holder,
+  Holder(..),
   Holdings(..),
   emptyHoldings,
   transferHoldings,
   circulateSupply,
+  holderToAccount,
+  holderToContract,
 
   -- ** Serialization
   encodeAsset,
@@ -53,32 +58,29 @@ module Asset (
 
 import Protolude hiding (put, get, putByteString)
 
+import qualified Data.Coerce
+import qualified GHC.Show
 import Time (Timestamp)
-import Address (Address, rawAddr, fromRaw)
-import qualified Key
+import Address (Address(..), AAsset, EitherAccountContract, AAccount, AContract, AUnknown, addressFromField)
 import qualified Metadata
 import qualified Hash
-import qualified Time
 import qualified Fixed
 import qualified Utils
-import qualified Address
 
 import Control.Monad (fail)
-import Data.Aeson (ToJSON(..), FromJSON, (.=), (.:), (.:?) , object)
-import qualified Data.Aeson as Aeson
-import Data.Aeson.Types (typeMismatch, Parser)
+
+import Data.Aeson (ToJSONKey(..), FromJSONKey(..), ToJSON(..), FromJSON(..), (.=), (.:) , object)
+import Data.Aeson.Types (typeMismatch, contramapToJSONKeyFunction)
 import Data.Serialize
 
 import qualified Data.Map as Map
 import qualified Data.Aeson as A
-import qualified Data.ByteArray as B
-import qualified Data.Binary as Binary
+import qualified Data.Binary as B
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Encode.Pretty as A
 
-import Database.PostgreSQL.Simple.ToRow     (ToRow(..))
-import Database.PostgreSQL.Simple.FromRow   (FromRow(..), field)
+import Script.Pretty (Pretty(..))
 import Database.PostgreSQL.Simple.ToField   (ToField(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
 
@@ -89,7 +91,64 @@ import Numeric (showFFloat)
 -------------------------------------------------------------------------------
 
 -- | A holder of a balance in an asset.
-type Holder = Address
+data Holder = forall a. (Show a, Eq a, Typeable a, EitherAccountContract a) => Holder (Address a)
+
+instance Eq Holder where
+  Holder a == Holder b = maybe False (== b) (cast a)
+
+instance GHC.Show.Show Holder where
+  show (Holder a) = show a
+
+instance Ord Holder where
+  Holder a `compare` Holder b = maybe LT (compare b) (cast a)
+
+instance NFData Holder where
+  rnf (Holder a) = rnf a
+
+instance Serialize Holder where
+  put (Holder a) = put a
+  get = do
+    a :: Address AAccount <- get
+    pure $ Holder a
+
+instance B.Binary Holder where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
+
+instance Hash.Hashable Holder where
+  toHash (Holder a) = Hash.toHash a
+
+instance Pretty Holder where
+  ppr (Holder a) = ppr a
+
+instance ToJSON Holder where
+  toJSON (Holder holder) = toJSON holder
+
+instance FromJSON Holder where
+  -- The address tag is arbitrary, to make the type checker happy
+  parseJSON s = fmap (\addr -> Holder (addr :: Address AAccount)) (parseJSON s)
+
+instance ToJSONKey Holder where
+  toJSONKey = contramapToJSONKeyFunction getAddr toJSONKey
+    where
+      getAddr :: Holder -> Address AUnknown
+      getAddr (Holder a) = Data.Coerce.coerce a
+
+instance FromJSONKey Holder where
+  fromJSONKey = fmap (Holder :: Address AAccount -> Holder) fromJSONKey
+
+instance ToField Holder where
+  toField (Holder a)= toField a
+
+instance FromField Holder where
+  -- The address tag is arbitrary, to make the type checker happy
+  fromField f s = fmap (\addr -> Holder (addr :: Address AAccount)) (addressFromField f s)
+
+holderToAccount :: Holder -> Address AAccount
+holderToAccount (Holder a) = Data.Coerce.coerce a
+
+holderToContract :: Holder -> Address AContract
+holderToContract (Holder a) = Data.Coerce.coerce a
 
 -- | A quantity of units of value in an asset.  The smallest non-zero amount
 -- unit is 0.0000001 represented as an integer value of one. The largest amount
@@ -99,7 +158,7 @@ type Balance = Int64
 
 -- | A map of holdings to balances. i.e. a ledger
 newtype Holdings = Holdings { unHoldings :: Map.Map Holder Balance }
-  deriving (Eq, Ord, Show, Generic, NFData, Serialize)
+  deriving (Eq, Ord, Show, Generic, NFData, B.Binary, Serialize)
 
 instance ToJSON Holdings where
   toJSON (Holdings holdings) = toJSON holdings
@@ -115,16 +174,16 @@ instance Monoid Holdings where
 -- | An asset is a named quantity that once issued is a fixed supply of
 -- immutably issued "units" of value. Units can be held by other addresses.
 data Asset = Asset
-  { name      :: ByteString -- ^ Name of asset
-  , issuer    :: Holder     -- ^ Issuer
-  , issuedOn  :: Timestamp  -- ^ Timestamp
-  , supply    :: Balance    -- ^ Total supply
-  , holdings  :: Holdings   -- ^ Holdings map
-  , reference :: Maybe Ref  -- ^ Reference unit
-  , assetType :: AssetType  -- ^ Asset type
-  , address   :: Address    -- ^ Asset address
-  , metadata  :: Metadata.Metadata   -- ^ Asset address
-  } deriving (Eq, Show, Generic, NFData, Serialize)
+  { name      :: Text              -- ^ Name of asset
+  , issuer    :: Address AAccount  -- ^ Issuer
+  , issuedOn  :: Timestamp         -- ^ Timestamp
+  , supply    :: Balance           -- ^ Total supply
+  , holdings  :: Holdings          -- ^ Holdings map
+  , reference :: Maybe Ref         -- ^ Reference unit
+  , assetType :: AssetType         -- ^ Asset type
+  , address   :: (Address AAsset)  -- ^ Asset address
+  , metadata  :: Metadata.Metadata -- ^ Asset address
+  } deriving (Eq, Show, Generic, NFData, B.Binary, Serialize)
 
 -- | An asset reference is metadata assigning a off-chain reference quantity to
 -- a single unit of an on-chain asset.
@@ -184,7 +243,7 @@ validateAsset Asset{..} = do
 
 instance ToJSON Asset where
   toJSON asset = object
-    [ "name"      .= decodeUtf8 (name asset)
+    [ "name"      .= name asset
     , "issuer"    .= issuer asset
     , "issuedOn"  .= issuedOn asset
     , "supply"    .= supply asset
@@ -197,7 +256,7 @@ instance ToJSON Asset where
 
 instance FromJSON Asset where
   parseJSON (A.Object v) = do
-    name      <- encodeUtf8 <$> v .: "name"
+    name      <- v .: "name"
     issuer    <- v .: "issuer"
     issuedOn  <- v .: "issuedOn"
     supply    <- v .: "supply"
@@ -210,19 +269,15 @@ instance FromJSON Asset where
 
   parseJSON invalid = typeMismatch "Asset" invalid
 
-instance Binary.Binary Asset where
-  put tx = Binary.put $ encode tx
-  get = do
-    bs <- Binary.get
-    case decode bs of
-      (Right tx) -> return tx
-      (Left err) -> fail err
-
 -------------------------------------------------------------------------------
 
 instance Serialize Ref where
   put = putRef
   get = getRef
+
+instance B.Binary Ref where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
 
 putRef :: Ref -> PutM ()
 putRef USD = putWord16be 3 >> putByteString "USD"
@@ -271,6 +326,10 @@ instance Serialize AssetType where
   put = putAssetType
   get = getAssetType
 
+instance B.Binary AssetType where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize
+
 getAssetType :: Get AssetType
 getAssetType = do
   len <- getWord16be
@@ -317,10 +376,10 @@ displayType ty bal = case ty of
 
 data AssetError
   = InsufficientHoldings Holder Balance
-  | InsufficientSupply Address Balance     -- [Char] for serialize instance
-  | CirculatorIsNotIssuer Address Address
-  | SelfTransfer Address
-  | HolderDoesNotExist Address
+  | InsufficientSupply (Address AAsset) Balance     -- [Char] for serialize instance
+  | CirculatorIsNotIssuer Holder (Address AAsset)
+  | SelfTransfer Holder
+  | HolderDoesNotExist Holder
   deriving (Show, Eq, Generic, Serialize)
 
 -- | Binary serialize an asset.
@@ -348,7 +407,7 @@ preallocate balances asset = asset { holdings = holdings' }
     holdings' = Holdings $ Map.fromList balances
 
 -- | Transfer an amount of the asset supply to an account's holdings
-circulateSupply :: Address -> Balance -> Asset -> Either AssetError Asset
+circulateSupply :: Holder -> Balance -> Asset -> Either AssetError Asset
 circulateSupply addr bal asset
   | integrity = Right $ asset { holdings = holdings', supply = supply' }
   | otherwise = Left $ InsufficientSupply (address asset) (supply asset)
@@ -362,7 +421,7 @@ circulateSupply addr bal asset
     clearZeroes = Map.filter (/= 0)
 
 -- | Atomically transfer holdings 'from' one account 'to' another
-transferHoldings :: Address -> Address -> Balance -> Asset -> Either AssetError Asset
+transferHoldings :: Holder -> Holder -> Balance -> Asset -> Either AssetError Asset
 transferHoldings from to amount asset
   | from == to = Left $ SelfTransfer from
   | otherwise  =
@@ -380,17 +439,17 @@ transferHoldings from to amount asset
 
 -- | Smart constructor for asset
 createAsset
-  :: ByteString
-  -> Holder
+  :: Text
+  -> Address AAccount
   -> Balance
   -> Maybe Ref
   -> AssetType
   -> Time.Timestamp
-  -> Address
+  -> (Address AAsset)
   -> Metadata.Metadata
   -> Asset
-createAsset name holder supply mRef assetType ts addr metadata =
-  Asset name holder ts supply mempty mRef assetType addr metadata
+createAsset name issuer supply mRef assetType ts addr metadata =
+  Asset name issuer ts supply mempty mRef assetType addr metadata
 
 -------------------------------------------------------------------------------
 -- Export / Import
@@ -398,7 +457,7 @@ createAsset name holder supply mRef assetType ts addr metadata =
 
 -- | Load asset from JSON
 loadAsset :: FilePath -> IO (Either [Char] Asset)
-loadAsset fp = fmap Aeson.eitherDecodeStrict (BS.readFile fp)
+loadAsset fp = fmap A.eitherDecodeStrict (BS.readFile fp)
 
 -- | Save asset as JSON
 saveAsset :: Asset -> FilePath -> IO ()

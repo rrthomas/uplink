@@ -26,9 +26,6 @@ import DB.Class
 import DB.Query.Lang
 import DB.Query.Parser
 
-import qualified DB.PostgreSQL
-import qualified DB.LevelDB
-
 import Block
 import Time
 import qualified Account
@@ -132,4 +129,4 @@ initGenesisBlock genesisHash genesisTimestamp genPoa runDB = do
 isTransactionUnique :: MonadReadDB m => Tx.Transaction -> m Bool
 isTransactionUnique tx =
   either (const True) (const False) <$>
-    readTransaction (Tx.base16HashTransaction tx)
+    readTransaction (Tx.hashTransaction tx)

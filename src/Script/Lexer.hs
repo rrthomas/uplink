@@ -45,7 +45,6 @@ import qualified Text.Parsec.Language as Lang
 
 import Data.Functor.Identity (Identity)
 import qualified Data.Text as T
-import Data.Aeson (ToJSON(..), FromJSON, Value(..), (.=), (.:), (.:?), object)
 
 import Script (Name(..), Loc(..), Located(..), LName, Label(..), BinOp(..), UnOp(..), EnumConstr(..), LEnumConstr)
 import qualified Script.Token as Token

@@ -45,22 +45,18 @@ module Block (
 ) where
 
 import Protolude
-import Unsafe (unsafeFromJust)
+
 import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:))
 import Data.Aeson.Types (Value(..), typeMismatch)
-import Data.Serialize (Serialize, encode)
-import Data.Hashable (Hashable(..))
+import Data.Serialize (Serialize)
 import qualified Data.Serialize as Serialize
+import qualified Data.Binary as B
 import qualified Data.Set as Set
-import qualified Data.ByteArray as BA
-import qualified Data.Serialize as Serialize
-import Text.XML.Expat.Pickle
-import Text.XML.Expat.Tree
 
 import qualified Crypto.Hash.MerkleTree as Merkle
 
 import Hash (Hash)
-import Address (Address)
+import Address (Address, AAccount)
 import Transaction (Transaction)
 import qualified Key
 import qualified Hash
@@ -82,23 +78,23 @@ data Block = Block
   , header       :: BlockHeader     -- ^ Block header
   , signatures   :: BlockSignatures -- ^ Set of Block signatures
   , transactions :: [Transaction]   -- ^ Block transactions,
-  } deriving (Show, Eq, Generic, NFData, Serialize)
+  } deriving (Show, Eq, Generic, NFData, B.Binary, Serialize)
 
 data BlockHeader = BlockHeader
-  { origin     :: Address         -- ^ Validator of the block
-  , prevHash   :: ByteString      -- ^ The hash value of the previous block
-  , merkleRoot :: ByteString      -- ^ Merkle tree collection which is a hash of all transactions related to this block
-  , timestamp  :: Time.Timestamp  -- ^ A Unix timestamp recording when this block was created
-  , consensus  :: CAP.PoA         -- ^ Consensus algorithm to verify next block
-  } deriving (Show, Eq, Generic, NFData, Serialize)
+  { origin     :: Address AAccount                -- ^ Validator of the block
+  , prevHash   :: Hash Encoding.Base16ByteString  -- ^ The hash value of the previous block
+  , merkleRoot :: ByteString                      -- ^ Merkle tree collection which is a hash of all transactions related to this block
+  , timestamp  :: Time.Timestamp                  -- ^ A Unix timestamp recording when this block was created
+  , consensus  :: CAP.PoA                         -- ^ Consensus algorithm to verify next block
+  } deriving (Show, Eq, Generic, NFData, B.Binary, Serialize)
 
 instance Ord Block where
   compare = compare `on` index
 
 data BlockSignature = BlockSignature
   { signature  :: Key.Signature
-  , signerAddr :: Address
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  , signerAddr :: Address AAccount
+  } deriving (Show, Eq, Ord, Generic, B.Binary, NFData)
 
 type BlockSignatures = Set BlockSignature
 
@@ -128,14 +124,18 @@ medianTimestamp blks
 
 instance Hash.Hashable Block where
 instance Hash.Hashable BlockHeader where
-instance Hash.Hashable BlockSignature where
+  -- TODO: Shouldn't we use this type sig instead?
+  -- toHash = Hash.toHash . Encoding.encodeBase16 . (toS :: [Char] -> ByteString) . show
   toHash = Hash.toHash . (toS :: [Char] -> ByteString) . show
 
-hashBlockHeader :: BlockHeader -> ByteString
-hashBlockHeader = Encoding.base16 . Hash.getHash . Hash.toHash
+instance Hash.Hashable BlockSignature where
+  toHash = Hash.toHash . Encoding.encodeBase64P . (toS :: [Char] -> ByteString) . show
+
+hashBlockHeader :: BlockHeader -> Hash Encoding.Base16ByteString
+hashBlockHeader = Hash.toHash
 
 -- | Hash block header
-hashBlock :: Block -> ByteString
+hashBlock :: Block -> Hash Encoding.Base16ByteString
 hashBlock = hashBlockHeader . header
 
 -------------------------------------------------------------------------------
@@ -143,16 +143,16 @@ hashBlock = hashBlockHeader . header
 -------------------------------------------------------------------------------
 
 newBlock
-  :: Address           -- ^ origin
-  -> ByteString        -- ^ prevBlock hash
-  -> [Transaction]     -- ^ transaction list
-  -> Int               -- ^ block index
-  -> Key.PrivateKey    -- ^ signature
-  -> CAP.PoA           -- ^ Consensus alg
+  :: Address AAccount                 -- ^ origin
+  -> Hash Encoding.Base16ByteString   -- ^ prevBlock hash
+  -> [Transaction]                    -- ^ transaction list
+  -> Int                              -- ^ block index
+  -> Key.PrivateKey                   -- ^ signature
+  -> CAP.PoA                          -- ^ Consensus alg
   -> IO Block
 newBlock origin prevBlockHash txs n priv poa = do
   ts <- Time.now
-  let htxs = fmap Tx.base16HashTransaction txs
+  let htxs = fmap (Hash.getRawHash . Tx.hashTransaction) txs
       header = BlockHeader {
         origin     = origin
       , prevHash   = prevBlockHash
@@ -162,9 +162,9 @@ newBlock origin prevBlockHash txs n priv poa = do
       }
   let headerHash = hashBlockHeader header
   let accAddr = Address.deriveAddress $ Key.toPublic priv
-  sig <- Key.sign priv headerHash
+  sig <- Key.sign priv (Hash.getRawHash headerHash)
   let blockSig = BlockSignature sig accAddr
-  return $ Block {
+  return Block {
     header       = header
   , index        = n
   , signatures   = Set.singleton blockSig
@@ -176,7 +176,7 @@ genesisBlock
   -> Time.Timestamp -- ^ timestamp of initial block
   -> CAP.PoA        -- ^ base consensus algorithm
   -> IO Block
-genesisBlock seed ts genPoa = do
+genesisBlock seed ts genPoa =
     return Block
       { header       = genesisHeader
       , signatures   = Set.empty
@@ -186,7 +186,7 @@ genesisBlock seed ts genPoa = do
   where
     genesisHeader = BlockHeader
       { origin     = Address.emptyAddr
-      , prevHash   = seed -- XXX should this be hashed?
+      , prevHash   = Hash.toHash seed
       , merkleRoot = Merkle.getMerkleRoot Merkle.emptyHash
       , timestamp  = ts
       , consensus  = genPoa
@@ -205,9 +205,9 @@ data InvalidBlock = InvalidBlock Int InvalidBlockReason
 
 data InvalidBlockReason
   = InvalidBlockSignature Key.InvalidSignature
-  | InvalidBlockSigner Address
-  | InvalidBlockOrigin Address
-  | InvalidPrevBlockHash ByteString ByteString
+  | InvalidBlockSigner (Address AAccount)
+  | InvalidBlockOrigin (Address AAccount)
+  | InvalidPrevBlockHash (Hash Encoding.Base16ByteString) (Hash Encoding.Base16ByteString)
   | InvalidBlockTimestamp Time.Timestamp
   | InvalidMedianTimestamp Text -- This shouldn't happen
   | InvalidBlockMerkleRoot Int ByteString ByteString
@@ -231,7 +231,7 @@ validateBlock medianTs prevBlock Block{..} =
       validatePrevHash
       validateTransactions
   where
-    txHashes = map Tx.base16HashTransaction transactions
+    txHashes = map (Hash.getRawHash . Tx.hashTransaction) transactions
     mRoot    = Merkle.mtHash $ Merkle.mkMerkleTree txHashes
     blockTs  = timestamp header
 
@@ -290,10 +290,10 @@ verifyBlockSig
   -> Block
   -> Either Key.InvalidSignature ()
 verifyBlockSig pubKey sig block
-  | Key.verify pubKey sig blockHash = pure ()
-  | otherwise = Left $ Key.InvalidSignature sig blockHash
+  | Key.verify pubKey sig encodedBlockHash = pure ()
+  | otherwise = Left $ Key.InvalidSignature sig encodedBlockHash
   where
-    blockHash = hashBlock block
+    encodedBlockHash = Hash.getRawHash $ hashBlock block
 
 -------------------------------------------------------------------------------
 -- Querying nested fields
@@ -334,13 +334,13 @@ instance FromJSON Block where
         signatures   <- Set.fromList <$>  o .: "signatures"
         index        <- o .: "index"
         transactions <- o .: "transactions"
-        pure $ Block {..}
+        pure Block {..}
       invalid -> typeMismatch "Block" v
 
 instance ToJSON BlockHeader where
   toJSON bh = object
     [ "origin"     .= origin bh
-    , "prevHash"   .= decodeUtf8 (prevHash bh)
+    , "prevHash"   .= prevHash bh
     , "merkleRoot" .= decodeUtf8 (merkleRoot bh)
     , "timestamp"  .= timestamp bh
     , "consensus"  .= consensus bh
@@ -351,16 +351,16 @@ instance FromJSON BlockHeader where
     case v of
       Object o -> do
         origin     <- o .: "origin"
-        prevHash   <- encodeUtf8 <$> o .: "prevHash"
+        prevHash   <- o .: "prevHash"
         merkleRoot <- encodeUtf8 <$> o .: "merkleRoot"
         timestamp  <- o .: "timestamp"
         consensus  <- o .: "consensus"
-        pure $ BlockHeader {..}
+        pure BlockHeader {..}
       invalid -> typeMismatch "BlockHeader" v
 
 instance ToJSON BlockSignature where
   toJSON (BlockSignature sig addr) = object
-    [ "signature"  .= decodeUtf8 (Key.encodeSig sig)
+    [ "signature"  .= toJSON (Key.encodeSig sig)
     , "signerAddr" .= addr
     ]
 
@@ -368,11 +368,13 @@ instance FromJSON BlockSignature where
   parseJSON = \case
     Object v -> do
       signatureTxt <- v .: "signature"
-      case Key.decodeSig (encodeUtf8 signatureTxt) of
-        Left err -> typeMismatch "Signature" (String signatureTxt)
-        Right sig -> do
-          signerAddr <- v .: "signerAddr"
-          pure $ BlockSignature sig signerAddr
+      case Encoding.parseEncodedBS (encodeUtf8 signatureTxt) of
+        Left _ -> typeMismatch "Signature" (String signatureTxt)
+        Right b -> case Key.decodeSig b of
+          Left err -> typeMismatch "Signature" (String signatureTxt)
+          Right sig -> do
+            signerAddr <- v .: "signerAddr"
+            pure $ BlockSignature sig signerAddr
     invalid -> typeMismatch "BlockSignature" invalid
 
 instance Serialize BlockSignature where

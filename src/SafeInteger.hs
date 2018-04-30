@@ -29,16 +29,15 @@ module SafeInteger (
 import qualified Prelude (show)
 import Protolude hiding (put, get)
 
-import Control.Monad (fail)
 import Control.Exception (Exception, throw)
 
-import Crypto.Number.Basic (numBits, numBytes)
+import Crypto.Number.Basic (numBits)
 
 import Data.Aeson as A
 import Data.Aeson.Types as A
 import Data.Hashable (Hashable)
 import Data.Serialize as S
-  (Serialize(..), runPut, Get
+  (Serialize(..), runPut
   , getWord8, putWord8
   , getWord16be, putWord16be
   , encode, decode

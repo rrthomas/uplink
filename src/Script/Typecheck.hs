@@ -35,19 +35,15 @@ module Script.Typecheck (
 
 import Protolude hiding (Type, TypeError, Constraint)
 import Unsafe (unsafeIndex)
-
 import Fixed
 import Script
 import Script.Prim
 import Script.Pretty hiding ((<>))
-import Address (Address, validateAddress)
+import Address (Address, addrFromUnknown, AUnknown)
 import Utils (duplicates)
-import Asset (AssetType(..))
 
-import Control.Monad.Writer
 import Control.Monad.State.Strict (modify')
 
-import Data.Hashable
 import Data.List (lookup)
 import qualified Data.List as List
 import Data.Serialize (Serialize)
@@ -71,9 +67,9 @@ data TypeErrInfo
   | InvalidBinOp BinOp Type Type        -- ^ Invalid binary op
   | InvalidPrimOp Name                  -- ^ Invocation of non-primop function
   | InvalidReturnType                   -- ^ Invalid return value (cannot return locals)
-  | InvalidAddress Address              -- ^ Invalid address
+  | InvalidAddress (Address AUnknown)   -- ^ Invalid address
   | InvalidArgType Name Type Type       -- ^ Invalid argument to Method call
-  | InvalidLocalVarAssign ByteString TypeInfo -- ^ Invalid local variable assignment
+  | InvalidLocalVarAssign Text TypeInfo -- ^ Invalid local variable assignment
   | ArityFail Name Int Int              -- ^ Incorrect # args supplied to function
   | UnificationFail TypeInfo TypeInfo   -- ^ Unification fail
   | CaseOnNotEnum TypeInfo              -- ^ Case analysis on non-enum type
@@ -84,7 +80,7 @@ data TypeErrInfo
     { patMatchErrorMissing :: [EnumConstr]
     , patMatchErrorDuplicate :: [EnumConstr]
     }                                   -- ^ Pattern match failures
-  | Impossible ByteString               -- ^ Malformed syntax, impossible
+  | Impossible Text -- ^ Malformed syntax, impossible
   deriving (Eq, Show, Generic, Serialize)
 
 -- | Type error
@@ -244,9 +240,9 @@ substAddrMatch :: Type -> Match -> Match
 substAddrMatch t (Match pat b) = Match pat (substAddrExpr t <$> b)
 
 substAddrLit :: Type -> Lit -> Lit
-substAddrLit TAccount  (LAddress addr) = LAccount addr
-substAddrLit (TAsset _) (LAddress addr) = LAsset addr
-substAddrLit TContract (LAddress addr) = LContract addr
+substAddrLit TAccount  (LAddress addr) = LAccount (addrFromUnknown addr)
+substAddrLit (TAsset _) (LAddress addr) = LAsset (addrFromUnknown addr)
+substAddrLit TContract (LAddress addr) = LContract (addrFromUnknown addr)
 substAddrLit _         lit             = lit
 
 -------------------------------------------------------------------------------
@@ -540,9 +536,9 @@ tcLit enumConstrs lit =
     LVoid          -> Right TVoid
     LMsg _         -> Right TMsg
     LSig _         -> Right TSig
-    LAccount addr  -> tcAddr addr TAccount
-    LAsset addr    -> tcAddr addr TAssetAny
-    LContract addr -> tcAddr addr TContract
+    LAccount addr  -> Right TAccount
+    LAsset addr    -> Right TAssetAny
+    LContract addr -> Right TContract
     LState label   -> Right TState
     LAddress addr  -> Left (Impossible "Address literals should not happen.")
     LUndefined     -> Left (Impossible "Undefiend literals should not happen.")
@@ -551,10 +547,6 @@ tcLit enumConstrs lit =
     LConstr c  -> case Map.lookup c enumConstrs of
                     Nothing -> Left (Impossible "Reference to unknown enum constructor")
                     Just enum -> Right (TEnum enum)
-  where
-    tcAddr addr typ
-      | validateAddress addr = Right typ
-      | otherwise = Left $ InvalidAddress addr
 
 tcFixedN :: FixedN -> Type
 tcFixedN = TFixed . \case
@@ -621,7 +613,7 @@ tcPrim loc prim (nm,argExprs) = do
             addConstr tacc1Info tacc1Info'
             -- add constraint for 2nd arg to be an asset
             addConstr tassetAnyInfo tassetInfo
-            -- * add constraint for 3rd arg depending on asset type
+            -- add constraint for 3rd arg depending on asset type
             tcHoldingsType (tassetInfo,tassetAnyInfo) (tbalInfo,tvarInfo)
             -- add constraint for 4th arg to be an account
             addConstr tacc2Info tacc2Info'
@@ -631,7 +623,7 @@ tcPrim loc prim (nm,argExprs) = do
                 [tassetInfo, tbalInfo]    = argExprTypeInfos
             -- add constraint for 1st arg to be an asset
             addConstr tassetAnyInfo tassetInfo
-            -- * add constraint for 2nd arg depending on asset type
+            -- add constraint for 2nd arg depending on asset type
             tcHoldingsType (tassetInfo,tassetAnyInfo) (tbalInfo,tvarInfo)
 
           TransferFrom     -> do
@@ -639,7 +631,7 @@ tcPrim loc prim (nm,argExprs) = do
                 [tassetInfo, tbalInfo, taccInfo']   = argExprTypeInfos
             -- add constraint for 1st arg to be an asset
             addConstr tassetAnyInfo tassetInfo
-            -- * add constraint for 2nd arg depending on asset type
+            -- add constraint for 2nd arg depending on asset type
             tcHoldingsType (tassetInfo,tassetAnyInfo) (tbalInfo, tvarInfo)
             -- add constraint for 3rd arg to be an account
             addConstr taccInfo taccInfo'
@@ -649,7 +641,7 @@ tcPrim loc prim (nm,argExprs) = do
                 [tassetInfo, tbalInfo]    = argExprTypeInfos
             -- add constraint for 1st arg to be an asset
             addConstr tassetAnyInfo tassetInfo
-            -- * add constraint for 2nd arg depending on asset type
+            -- add constraint for 2nd arg depending on asset type
             tcHoldingsType (tassetInfo,tassetAnyInfo) (tbalInfo, tvarInfo)
 
       -- Normal primops are typechecked simply-- The expressions supplied as
@@ -692,7 +684,7 @@ primSig = \case
   Deployer            -> pure $ Sig [] TAccount
   Sender              -> pure $ Sig [] TAccount
   Bound               -> pure $ Sig [TAssetAny, TAccount] TBool
-  Created             -> pure $ Sig [] TInt
+  Created             -> pure $ Sig [] TDateTime
   Address             -> pure $ Sig [] TContract
   Validator           -> pure $ Sig [] TAccount
   Sha256              -> pure $ Sig [TAny] TMsg

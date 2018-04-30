@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.5
+version: 0.1.6
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
@@ -51,6 +51,7 @@ dependencies:
   - monad-control
   - lifted-base
   - distributed-process-lifted
+  - lifted-async
 
   # Data Structures
   - containers
@@ -91,6 +92,7 @@ dependencies:
 
   # Serialization
   - cereal
+  - cereal-text
   - binary
   - configurator
   - aeson >= 0.11
@@ -153,6 +155,7 @@ library:
     -fwarn-missing-methods
     -fwarn-missing-signatures
     -fwarn-noncanonical-monad-instances
+    -fwarn-unused-imports
     -fwarn-unused-pattern-binds
     -fwarn-unused-type-patterns
     -fwarn-unrecognised-pragmas
@@ -257,7 +260,9 @@ library:
     - Network.P2P.Controller
     - Network.P2P.Consensus
     - Network.P2P.Message
+    - Network.P2P.SignedMsg
     - Network.P2P.Service
+    - Network.P2P.Send
     - Network.P2P.Simulate
     - Network.P2P.Logging
 

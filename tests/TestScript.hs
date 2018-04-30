@@ -42,6 +42,7 @@ import qualified Script.Typecheck as Typecheck
 import qualified Script.Init as Init
 
 import qualified Reference as Ref
+import qualified Hash
 
 -------------------------------------------------------------------------------
 -- Generators
@@ -54,8 +55,8 @@ instance Arbitrary BS.ByteString where
   arbitrary = encodeUtf8 . T.pack . ("addr"++)
            <$> (arbitrary :: Gen [Char])
 
-instance Arbitrary Address.Address where
-  arbitrary = Address.fromRaw . Encoding.b58 . Hash.sha256Raw <$> arbitrary
+instance Arbitrary (Address.Address a) where
+  arbitrary = Address.Address . Hash.sha256 <$> arbitrary
 
 instance Arbitrary Loc where
   arbitrary = Loc <$> arbitrary <*> arbitrary
@@ -283,7 +284,7 @@ scriptGoldenTests = testGroup "Script Compiler Golden Tests"
                 0
                 now
                 Ref.testAddr
-                (Transaction.signature $ Ref.testTx Ref.testCall)
+                (Hash.toHash $ Ref.testTx Ref.testCall)
                 Ref.testAddr
                 Ref.testPriv
                 now
@@ -380,7 +381,7 @@ evalTest testName inputFp outputFp testMethodName =
             0
             now
             Ref.testAddr
-            (Transaction.signature $ Ref.testTx Ref.testCall)
+            (Hash.toHash $ Ref.testTx Ref.testCall)
             Ref.testAddr
             Ref.testPriv
             now
@@ -559,7 +560,7 @@ initTestEvalCtx pub = do
   pure Eval.EvalCtx
     { Eval.currentBlock = 0
     , Eval.currentValidator = Ref.testAddr
-    , Eval.currentTransaction = Transaction.signature $ Ref.testTx Ref.testCall
+    , Eval.currentTransaction = Hash.toHash $ Ref.testTx Ref.testCall
     , Eval.currentCreated = now
     , Eval.currentTimestamp = now
     , Eval.currentDeployer = Ref.testAddr

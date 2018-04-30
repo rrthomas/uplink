@@ -2,10 +2,10 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 47c2c1ad97dd1b79ec8ac310aace9af090f99b4cd6890aa6e9c0680d9f8d6790
+-- hash: ffb064c9b98f23985e1a35eb6cd43be04f622199e28c6a7959f47a669f1ee419
 
 name:           uplink
-version:        0.1.5
+version:        0.1.6
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
@@ -37,7 +37,7 @@ library
   hs-source-dirs:
       src
   default-extensions: LambdaCase RecordWildCards OverloadedStrings NoImplicitPrelude FlexibleInstances FlexibleContexts Rank2Types
-  ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
+  ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-imports -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
   build-depends:
       aeson >=0.11
     , aeson-pretty
@@ -54,6 +54,7 @@ library
     , binary
     , bytestring
     , cereal
+    , cereal-text
     , configurator
     , containers
     , cryptonite >=0.21
@@ -80,6 +81,7 @@ library
     , http-types
     , iproute
     , leveldb-haskell
+    , lifted-async
     , lifted-base
     , memory
     , merkle-tree
@@ -181,7 +183,9 @@ library
       Network.P2P.Controller
       Network.P2P.Consensus
       Network.P2P.Message
+      Network.P2P.SignedMsg
       Network.P2P.Service
+      Network.P2P.Send
       Network.P2P.Simulate
       Network.P2P.Logging
       Consensus
@@ -236,6 +240,7 @@ executable uplink
     , binary
     , bytestring
     , cereal
+    , cereal-text
     , configurator
     , containers
     , cryptonite >=0.21
@@ -262,6 +267,7 @@ executable uplink
     , http-types
     , iproute
     , leveldb-haskell
+    , lifted-async
     , lifted-base
     , memory
     , merkle-tree
@@ -332,6 +338,7 @@ test-suite uplink-test
     , binary
     , bytestring
     , cereal
+    , cereal-text
     , configurator
     , containers
     , cryptonite >=0.21
@@ -358,6 +365,7 @@ test-suite uplink-test
     , http-types
     , iproute
     , leveldb-haskell
+    , lifted-async
     , lifted-base
     , memory
     , merkle-tree
@@ -440,6 +448,7 @@ benchmark uplink-benchmarks
     , binary
     , bytestring
     , cereal
+    , cereal-text
     , configurator
     , containers
     , criterion
@@ -467,6 +476,7 @@ benchmark uplink-benchmarks
     , http-types
     , iproute
     , leveldb-haskell
+    , lifted-async
     , lifted-base
     , memory
     , merkle-tree

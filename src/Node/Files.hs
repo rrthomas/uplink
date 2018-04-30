@@ -21,12 +21,11 @@ module Node.Files (
 import Protolude
 
 import Node.Peer (Peers, peersFile, readPeers')
-import Key       (ECDSAKeyPair)
+import Key       (ECDSAKeyPair, readKeys, safeWritePubKey', safeWritePrivKey')
 import TxLog     (txLogFile)
 import Utils
 
 import Account   ( Account, readAccount, writeAccount_
-                 , readKeys', writePubKey_, writePrivKey_
                  , accountFile, privKeyFile, pubKeyFile)
 
 import System.Directory
@@ -110,8 +109,8 @@ initNodeDataFiles NodeDataFilePaths{..} account keys = do
     writeEmptyFile   = flip Utils.safeWrite mempty
 
     writeAccFile     = flip writeAccount_ account
-    writePrivKeyFile = flip writePrivKey_ (snd keys)
-    writePubKeyFile  = flip writePubKey_ (fst keys)
+    writePrivKeyFile = flip Key.safeWritePrivKey' (snd keys)
+    writePubKeyFile  = flip Key.safeWritePubKey' (fst keys)
 
     -- Write node file data, failing if file exists
     writeFileE writeFile' filename = do
@@ -149,7 +148,7 @@ readNodeDataFiles NodeDataFilePaths{..} = do
   case eAccount of
     Left err  -> pure $ Left err
     Right acc -> do
-      eKeys <- Account.readKeys' privKeyFile
+      eKeys <- Key.readKeys privKeyFile
       case eKeys of
         Left err   -> pure $ Left err
         Right keys -> do

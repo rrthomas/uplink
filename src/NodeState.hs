@@ -10,21 +10,26 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module NodeState
-  ( NodeAccType(..)
+  (
+
+  -- ** Node Data Structures
+
+    NodeState(..)
+  , initNodeState
+  , resetNodeState
+
+  , NodeAccType(..)
+
   , NodeConfig(..)
-  , NodeState(..)
+  , initNodeConfig
+
   , NodeEnv(..)
+  , initNodeEnv
 
   , NodeT
   , runNodeT
 
-  , initNodeState
-  , resetNodeState
-
   -- ** Getters & Setters
-  , askConfig
-  , askStorageBackend
-
   , askAccount
   , askPrivateKey
   , askKeyPair
@@ -33,6 +38,7 @@ module NodeState
   , askGenesisBlock
   , askNodeDataFilePaths
   , askPeersFilePath
+  , askNetworkAccessToken
 
   -- ** World State
   , getLedger
@@ -66,7 +72,7 @@ module NodeState
   , withLedgerState
 
   -- ** World State
-  , applyBlock
+  , verifyValidateAndApplyBlock
   , syncNodeStateWithDBs
 
   -- ** Consensus
@@ -88,7 +94,6 @@ module NodeState
 
 import Protolude hiding (try)
 
-import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Concurrent.MVar.Lifted as MVarL
 
 import Control.Arrow ((&&&))
@@ -99,47 +104,29 @@ import Control.Monad.Trans.Control
 
 import Control.Distributed.Process.Lifted
 import Control.Distributed.Process.Lifted.Class
-import qualified Control.Distributed.Process as DP
-import qualified Control.Distributed.Process.Node as DPN
 
-import Data.Aeson (ToJSON(..), object, (.=))
-import Data.List ((\\))
-import qualified Data.Binary as Binary
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Lazy as BSL
 import qualified Data.DList as DL
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Serialize as Serialize
-
-import Network.Transport
-
-import System.Directory (doesFileExist, doesDirectoryExist, listDirectory)
-import System.FilePath ((</>))
-import System.Posix.Files (ownerReadMode, ownerWriteMode, setFileMode, unionFileModes)
 
 import DB
-import DB.PostgreSQL
 
-import Address (Address)
+import Address (Address, AAccount)
 import Block (Block)
 import qualified Account
-import qualified Address
 import qualified Block
-import qualified Config
 import qualified Key
 import qualified Network.P2P.Logging as Log
-import qualified DB
 import qualified Ledger
 import qualified Transaction as Tx
 import qualified TxLog
 import qualified MemPool
-import qualified Hash
+import qualified Encoding as E
+import qualified Hash as H
 import qualified Validate as V
 
 import Node.Peer
-import Node.Files
+import Node.Files (NodeData(..), NodeDataFilePaths(..))
 
 import qualified Consensus.Authority.Params as CAP
 import qualified Consensus.Authority.State as CAS
@@ -164,9 +151,11 @@ data NodeConfig = NodeConfig
   { account      :: Account.Account    -- ^ Active account
   , privKey      :: Key.PrivateKey     -- ^ Active account's private key
   , accountType  :: NodeAccType        -- ^ Is account new or existing
-  , config       :: Config.Config      -- ^ Node configuration
+  , preallocated :: FilePath           -- ^ Directory for preallocated accounts
+  , testMode     :: Bool               -- ^ If the node is in "test" mode or not
   , dataFilePaths :: NodeDataFilePaths -- ^ File paths to node data store on disk
   , genesisBlock :: Block.Block        -- ^ Network genesis block
+  , accessToken  :: Key.ECDSAKeyPair   -- ^ Network access token
   }
 
 initNodeState
@@ -198,10 +187,62 @@ resetNodeState = do
   resetPoAState
   resetLastBlock
 
+initNodeConfig
+  :: NodeData          -- ^ Data structure containing most node config info
+  -> NodeDataFilePaths -- ^ File paths to data a node stores outside of the DB
+  -> NodeAccType       -- ^ Is the node account new or existing
+  -> Block             -- ^ The genesis block
+  -> FilePath          -- ^ Filepath to the preallocated network accounts
+  -> Bool              -- ^ Is the node in test mode
+  -> Key.ECDSAKeyPair  -- ^ Network Access Token
+  -> NodeConfig
+initNodeConfig nd ndfps nacctyp gblk preall test atok =
+  NodeConfig
+    { account       = nodeAccount nd
+    , privKey       = snd (nodeKeys nd)
+    , accountType   = nacctyp
+    , preallocated  = preall
+    , testMode      = test
+    , dataFilePaths = ndfps
+    , genesisBlock  = gblk
+    , accessToken   = atok
+    }
+
 data NodeEnv = NodeEnv
   { nodeConfig :: NodeConfig
   , nodeState  :: NodeState
   }
+
+data NodeEnvInitError
+  = InvalidItxPoolSize Int
+  deriving (Show)
+
+initNodeEnv
+  :: MonadBase IO m
+  => NodeData          -- ^ Data structure containing most node config info
+  -> NodeDataFilePaths -- ^ File paths to data a node stores outside of the DB
+  -> NodeAccType       -- ^ Is the node account new or existing
+  -> Block             -- ^ The genesis block
+  -> FilePath          -- ^ Filepath to the preallocated network accounts
+  -> Bool              -- ^ Is the node in test mode
+  -> Key.ECDSAKeyPair  -- ^ Is the node in test mode
+  -> Ledger.World      -- ^ Initial World State
+  -> Peers             -- ^ Node Peers
+  -> MemPool.MemPool   -- ^ Initial MemPool
+  -> Int               -- ^ Number of latest invalid transactions to cache
+  -> CAS.PoAState      -- ^ Initial PoA State
+  -> Block.Block       -- ^ Last Block in Chain
+  -> m (Either NodeEnvInitError NodeEnv)
+initNodeEnv nd ndfps nacctyp gblk preall test atok w ps mp nitxs poas lblk = do
+  let eInvalidTxPool = MemPool.mkInvalidTxPool nitxs
+  case eInvalidTxPool of
+    Left _ -> pure $ Left $ InvalidItxPoolSize nitxs
+    Right itxmp -> do
+      nodeState <- initNodeState w ps mp itxmp poas lblk
+      pure $ Right $ NodeEnv nodeConfig nodeState
+  where
+    nodeConfig =
+      initNodeConfig nd ndfps nacctyp gblk preall test atok
 
 --------------------------------------------------------------------------------
 -- NodeT Monad Transformer
@@ -286,12 +327,6 @@ askNodeConfig = asks nodeConfig
 getNodeState :: Monad m => (NodeState -> MVar a) -> NodeT m (MVar a)
 getNodeState f = f <$> asks nodeState
 
-askConfig :: Monad m => NodeT m Config.Config
-askConfig = config <$> askNodeConfig
-
-askStorageBackend :: Monad m => NodeT m Config.StorageBackend
-askStorageBackend = Config.storageBackend <$> askConfig
-
 askAccount :: Monad m => NodeT m Account.Account
 askAccount = account <$> askNodeConfig
 
@@ -304,7 +339,7 @@ askKeyPair = (Key.toPublic &&& identity) <$> NodeState.askPrivateKey
 askAccountType :: Monad m => NodeT m NodeAccType
 askAccountType = accountType <$> askNodeConfig
 
-askSelfAddress :: Monad m => NodeT m Address.Address
+askSelfAddress :: Monad m => NodeT m (Address AAccount)
 askSelfAddress = Account.address <$> askAccount
 
 askGenesisBlock :: Monad m => NodeT m Block.Block
@@ -318,6 +353,9 @@ askPeersFilePath = Node.Files.peersFile <$> askNodeDataFilePaths
 
 askTxLogFilePath :: Monad m => NodeT m FilePath
 askTxLogFilePath = Node.Files.txLogFile <$> askNodeDataFilePaths
+
+askNetworkAccessToken :: Monad m => NodeT m Key.ECDSAKeyPair
+askNetworkAccessToken = accessToken <$> askNodeConfig
 
 -------------------------------------------------------------------------------
 
@@ -418,16 +456,20 @@ appendInvalidTxsDB
 appendInvalidTxsDB =
   lift . DB.writeInvalidTxs
 
-elemInvalidTxPool :: MonadBase IO m => ByteString -> NodeT m Bool
+elemInvalidTxPool :: MonadBase IO m => H.Hash E.Base16ByteString -> NodeT m Bool
 elemInvalidTxPool txHash = pure . MemPool.elemInvalidTxPool txHash =<< getInvalidTxPool
 
 -- | Purge the contents of InvalidTxpool
 resetInvalidTxPool :: MonadBase IO m => NodeT m ()
 resetInvalidTxPool = modifyNodeState_ invalidTxPool $ pure . MemPool.resetInvalidTxPool
 
--- | Insert transaction into transaction pool
-appendTxMemPool :: MonadBase IO m => Tx.Transaction -> NodeT m ()
-appendTxMemPool tx = modifyNodeState_ txPool $ pure . MemPool.appendTx tx
+-- | Insert transaction into transaction pool. Returns True if successful.
+appendTxMemPool :: MonadBase IO m => Tx.Transaction -> NodeT m Bool
+appendTxMemPool tx =
+  modifyNodeState txPool $ \memPool ->
+    case MemPool.appendTx tx memPool of
+      Nothing         -> pure (memPool, False)
+      Just newMemPool -> pure (newMemPool, True)
 
 getTxMemPool :: MonadBase IO m => NodeT m MemPool.MemPool
 getTxMemPool = liftBase . readMVar =<< getNodeState txPool
@@ -471,11 +513,11 @@ removeTxsFromMemPool txs  =
 elemTxMemPool :: Tx.Transaction -> MonadBase IO m => NodeT m Bool
 elemTxMemPool tx = pure . flip MemPool.elemMemPool tx =<< getTxMemPool
 
-elemTxMemPool' :: ByteString -> MonadBase IO m => NodeT m Bool
+elemTxMemPool' :: MonadBase IO m => H.Hash E.Base16ByteString -> NodeT m Bool
 elemTxMemPool' txHash = pure . flip MemPool.elemMemPool' txHash =<< getTxMemPool
 
 isTestNode :: Monad m => NodeT m Bool
-isTestNode = Config.testMode <$> askConfig
+isTestNode = testMode <$> askNodeConfig
 
 isValidatingNode :: MonadBase IO m => NodeT m Bool
 isValidatingNode = do
@@ -508,18 +550,30 @@ withApplyCtx f = do
     , applyNodePrivKey = nodePrivKey
     }
 
--- | Query transaction status by hash
-getTxStatus :: MonadBase IO m => ByteString -> NodeT m Tx.Status
+-- | Query transaction status by hash:
+--   > if in the mempool            - Pending
+--   > if in the invalid tx mempool - Rejected
+--   > if in the tx database        - Accepted
+--   > if in the invalid tx db      - Rejected
+--   > else                         - NonExistent
+getTxStatus :: MonadReadDB m => H.Hash E.Base16ByteString -> NodeT m Tx.Status
 getTxStatus txHash = do
-  notInMemPool <- elemTxMemPool' txHash
-  if not notInMemPool
+  inMempool <- elemTxMemPool' txHash
+  if inMempool
     then pure Tx.Pending
     else do
       elemInvalidTxPool <- elemInvalidTxPool txHash
       if elemInvalidTxPool
         then pure Tx.Rejected
-        else pure Tx.Accepted
-
+        else do
+          eTx <- lift $ DB.readTransaction txHash
+          case eTx of
+            Right _  -> pure Tx.Accepted
+            Left err -> do
+              eItx <- lift $ DB.readInvalidTx txHash
+              case eItx of
+                Right _  -> pure Tx.Rejected
+                Left err -> pure Tx.NonExistent
 -------------------------------------------------------------------------------
 -- Query Ledger (World) state
 -------------------------------------------------------------------------------
@@ -529,7 +583,7 @@ lookupInLedger f = withLedgerState $ return . f
 
 lookupAccount
   :: MonadBase IO m
-  => Address.Address
+  => Address AAccount
   -> NodeT m (Either Ledger.AccountError Account.Account)
 lookupAccount = lookupInLedger . Ledger.lookupAccount
 
@@ -544,32 +598,35 @@ data ApplyBlockError
   | ErrorSyncingDatabase Text
   deriving Show
 
-applyBlock
+verifyValidateAndApplyBlock
   :: (MonadBaseControl IO m, MonadReadWriteDB m)
   => Block.Block
   -> NodeT m (Either ApplyBlockError ())
-applyBlock block = do
-  eRes <-
-    withLedgerState $ \ledgerState ->
-      withApplyCtx $ \applyCtx -> do
-        let applyState = V.initApplyState ledgerState
-        lift $ V.verifyValidateAndApplyBlock applyState applyCtx block
+verifyValidateAndApplyBlock block = do
+  currLedgerState <- getLedger
+  prevBlock       <- getLastBlock
+  -- Verify, validate, and apply with respect to ledger state
+  eRes <- withApplyCtx $ \applyCtx -> do
+    let applyState = V.initApplyState currLedgerState
+    lift $ V.verifyValidateAndApplyBlock applyState applyCtx block
   -- New block should only be applied if 0 errors in block
   case eRes of
     Left err -> pure $ Left $ InvalidBlock err
     Right (newLedgerState, deltasMap) -> do
-      -- Sync World with DB
+      -- Update node state with new values
+      setLastBlock block
+      setLedger newLedgerState
+      -- Attempt to sync ledger state with DB
       eSyncRes <- NodeState.syncNodeStateWithDBs
       case eSyncRes of
-        Left err -> pure $ Left $ ErrorSyncingDatabase $ show err
+        Left err -> do
+          -- Reset previous block and ledger state on sync db failure
+          setLastBlock prevBlock
+          setLedger currLedgerState
+          pure $ Left $ ErrorSyncingDatabase $ show err
         Right _  -> do
-
           -- Atomically remove transactions in this block from NodeState mempool
           removeTxsFromMemPool $ Block.transactions block
-          -- Update Latest block in NodeState
-          setLastBlock block
-          -- Update New World state in NodeState
-          setLedger newLedgerState
 
           let blockIdx = Block.index block
           txLogFile <- askTxLogFilePath
@@ -622,5 +679,5 @@ syncLastBlockWithDBs = do
 
 loadPreallocatedAccs :: MonadBase IO m => NodeT m (Either Text [Account.Account])
 loadPreallocatedAccs = do
-  dir <- Config.preallocated <$> askConfig
+  dir <- preallocated <$> askNodeConfig
   liftBase $ Account.readAccountsFromDir dir

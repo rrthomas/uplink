@@ -22,6 +22,7 @@ import Protolude hiding (put, get, putByteString)
 import Data.Aeson
 import Data.Fixed
 import Data.Serialize
+import Data.Binary
 
 import SafeInteger
 import Script.Pretty
@@ -49,6 +50,7 @@ instance FromJSON PrecN where
   parseJSON = fmap (toEnum . (\x -> x - 1)) . parseJSON
 
 instance Serialize PrecN
+instance Binary PrecN
 instance Hashable PrecN
 instance Hash.Hashable PrecN
 instance NFData PrecN
@@ -85,10 +87,10 @@ newtype Fixed6 = F6 (Fixed E6)
   deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
 
 putFixed :: Fixed a -> Data.Serialize.Put
-putFixed (MkFixed n) = put (toSafeInteger' n)
+putFixed (MkFixed n) = Data.Serialize.put (toSafeInteger' n)
 
 getFixed :: Data.Serialize.Get (Fixed a)
-getFixed = MkFixed . fromSafeInteger <$> get
+getFixed = MkFixed . fromSafeInteger <$> Data.Serialize.get
 
 instance Serialize Fixed1 where
   put (F1 f) = putFixed f

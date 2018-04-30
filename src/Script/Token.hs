@@ -8,7 +8,7 @@ Tokens for FCL lexer.
 
 module Script.Token where
 
-import Data.Text (Text, words)
+import Data.Text (Text)
 
 default (Text)
 

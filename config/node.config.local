@@ -28,6 +28,9 @@ network
 
   # Preallocated accounts directory on the network (existing)
   preallocated = "config/validators"
+  
+  # Network access token
+  access-token = "config/access-token/key"
 }
 
 storage
