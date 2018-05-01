@@ -47,7 +47,7 @@ CREATE TABLE contracts (
 
 CREATE TABLE global_storage (
   contract varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
-  key      bytea   NOT NULL,
+  key      varchar NOT NULL,
   value    bytea   NOT NULL,
 
   CONSTRAINT PK_global_storage PRIMARY KEY (contract,key)
@@ -58,7 +58,7 @@ CREATE INDEX global_storage_var ON global_storage (contract, key);
 CREATE TABLE local_storage (
   contract varchar NOT NULL REFERENCES contracts(address) ON DELETE CASCADE,
   account  varchar NOT NULL, -- XXX REFERENCES accounts(address),
-  key      bytea   NOT NULL,
+  key      varchar NOT NULL,
   value    bytea   NOT NULL,
   
   CONSTRAINT PK_local_storage PRIMARY KEY (contract,account,key)
@@ -87,10 +87,8 @@ CREATE TABLE transactions (
   header     bytea   NOT NULL, -- binary encoding of header
   signature  bytea   NOT NULL,
   origin     varchar NOT NULL, -- REFERENCES accounts(address) ON DELETE RESTRICT,
-  timestamp  int8    NOT NULL,
 
   CONSTRAINT PK_transactions PRIMARY KEY (hash), -- may be very slow :(
-  CONSTRAINT transactions_positive_timestamp CHECK (timestamp > 0),
   CONSTRAINT transactions_positive_block_idx CHECK (block_idx > 0)
 );
 
@@ -99,9 +97,7 @@ CREATE TABLE invalidtxs (
   header     bytea   NOT NULL, -- binary encoding of header
   signature  bytea   NOT NULL,
   origin     varchar NOT NULL, -- REFERENCES accounts(address) ON DELETE RESTRICT,
-  timestamp  int8    NOT NULL,
   reason     bytea   NOT NULL,
 
-  CONSTRAINT PK_invalidtxs PRIMARY KEY (hash), -- may be very slow :(
-  CONSTRAINT invalidtxs_positive_timestamp CHECK (timestamp > 0)
+  CONSTRAINT PK_invalidtxs PRIMARY KEY (hash) -- may be very slow :(
 );
