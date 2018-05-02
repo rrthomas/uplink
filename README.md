@@ -6,6 +6,8 @@
 Uplink
 ======
 
+[![CircleCI](https://circleci.com/gh/adjoint-io/uplink.svg?style=svg)](https://circleci.com/gh/adjoint-io/uplink)
+
 **Uplink** is a distributed database built for orchestrating secure multiparty
 workflows found in financial markets. 
 
