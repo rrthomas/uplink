@@ -26,7 +26,6 @@ module Config (
   getStorageBackend,
 
   -- ** Errors
-  KeyError(..),
   errorHandler,
 
   -- ** Chain Settings
@@ -38,6 +37,10 @@ module Config (
   -- * Logging settings
   toggleVerbosity,
 
+  -- * Transport Settings
+  Transport(..),
+  TLSConfig(..),
+
   -- ** Testing
   testChain,
   testConfig,
@@ -46,7 +49,7 @@ module Config (
 import Protolude
 
 import Data.List (elemIndex)
-import Data.Configurator.Types (KeyError(..))
+import qualified Data.Configurator.Types as C
 
 import qualified Utils
 import qualified Network.Utils as NU
@@ -87,6 +90,8 @@ data Config = Config
   , preallocated :: FilePath      -- ^ Pre-allocated accounts directory
   , testMode     :: Bool          -- ^ Is node in "test" mode
   , accessToken  :: FilePath      -- ^ Filepath to network-access-token
+  , transport    :: Transport     -- ^ Transport used for intra-node communication
+  , monitorPort  :: Int           -- ^ Port to run monitoring server on
   } deriving (Show)
 
 data ChainSettings = ChainSettings
@@ -173,6 +178,11 @@ readConfig silent cfgFile = errorHandler $ do
   preallocated <- C.require cfg "network.preallocated"
   accessToken  <- C.require cfg "network.access-token"
 
+  -- Parse the mode of transport (InMemory, TCP, TLS)
+  transport    <- parseTransport cfg
+
+  monitorPort  <- C.lookup cfg "network.monitor-port"
+
   case Log.verifyRules loggingRules of
     Left err
       -> pure $ Left err
@@ -198,6 +208,8 @@ readConfig silent cfgFile = errorHandler $ do
          , preallocated = preallocated
          , testMode     = False
          , accessToken  = accessToken
+         , transport    = transport
+         , monitorPort  = fromMaybe 0 monitorPort
          }
 
 getHostname :: Int -> Maybe [Char] -> IO [Char]
@@ -348,7 +360,7 @@ errorHandler :: IO (Either Text a) -> IO a
 errorHandler m = do
   res <- try m
   case res of
-    Left (KeyError nm) -> Utils.dieRed $ "Configuration is missing value: " <> nm
+    Left (C.KeyError nm) -> Utils.dieRed $ "Configuration is missing value: " <> nm
     Right (Left err)   -> Utils.dieRed $ "Configuration is invalid: " <> err
     Right (Right val)  -> pure val
 
@@ -361,6 +373,45 @@ toggleVerbosity maybeVerbosity c
   = c { loggingRules = Log.toggleVerbosity wantVerbosity (loggingRules c) }
     where
       wantVerbosity = fromMaybe False maybeVerbosity
+
+-------------------------------------------------------------------------------
+-- TLS settings
+-------------------------------------------------------------------------------
+
+-- | Datatype specifying which mode the network operates in
+data Transport
+  = InMemory          -- ^ Used for testing a single node (cannot use intra-transport communication)
+  | TCP               -- ^ Reliable TCP connections between uplink nodes
+  | TLS TLSConfig -- ^ Reliable TLS connections (using TCP) between uplink nodes
+  deriving (Show)
+
+data TLSConfig = TLSConfig
+  { serverCertFp :: FilePath       -- ^ Filepath of Server TLS Certificate
+  , serverKeyFp  :: FilePath       -- ^ Filepath of Server Private Key
+  , mCertStoreFp :: Maybe FilePath -- ^ Filepath to certificate store
+  } deriving (Show)
+
+parseTransport :: C.Config -> IO Transport
+parseTransport c = do
+  mtransport <- C.lookup c "network.transport"
+  case mtransport of
+    Nothing -> pure TCP
+    Just t -> case t of
+      "in-memory" -> pure InMemory
+      "tcp"       -> pure TCP
+      "tls"       -> TLS <$> parseTLSConfig c
+      other       -> throwIO $ C.KeyError ("Unsupported network.transport specified: " <> other)
+
+-- | Parses the TLS config and then makes a valid TLSConfig value from the TLS
+-- transport library. *A certificate store could potentially be supplied when
+-- implementing the network-access-token on the transport layer.
+parseTLSConfig :: C.Config -> IO TLSConfig
+parseTLSConfig c = do
+  serverCertFp  <- C.require c "network.tls.server-certificate"
+  serverKeyFp   <- C.require c "network.tls.server-key"
+  mCertStoreFp  <- C.lookup c "network.tls.certificate-store"
+  pure $ TLSConfig serverCertFp serverKeyFp mCertStoreFp
+
 -------------------------------------------------------------------------------
 -- Testing
 -------------------------------------------------------------------------------

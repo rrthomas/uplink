@@ -1,0 +1,33 @@
+[ ModifyGlobal Name { unName = "totalMap" } (VInt 6)
+, ModifyGlobal Name { unName = "numMembers" } (VInt 3)
+, ModifyState (GraphLabel Label { unLabel = "terminal" })
+]
+fromList
+  [ ( Key { unKey = "balances" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+             , VInt 2
+             )
+           , ( VAccount
+                 (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+             , VInt 3
+             )
+           , ( VAccount
+                 (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+             , VInt 1
+             )
+           ])
+    )
+  , ( Key { unKey = "members" }
+    , VSet
+        (fromList
+           [ VAccount (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+           , VAccount (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+           , VAccount (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+           ])
+    )
+  , ( Key { unKey = "numMembers" } , VInt 3 )
+  , ( Key { unKey = "totalMap" } , VInt 6 )
+  ]

@@ -1,3 +1,10 @@
-[ ( Name { unName = "end" } , Sig [] TAny , Write )
-, ( Name { unName = "setX" } , Sig [] TVoid , Write )
+[ ( Name { unName = "end" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "setX" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "x" } ] }
+  )
 ]

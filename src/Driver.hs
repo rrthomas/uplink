@@ -6,10 +6,12 @@ Driver for command line option handling.
 
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE CPP #-}
 
 module Driver (
   Command(..),
   driver,
+  driverChain,
 ) where
 
 import Protolude hiding (link, newChan)
@@ -29,7 +31,6 @@ import qualified Data.Coerce as Coerce
 import Opts
 import Config (Config(..), ChainSettings(..), handleChain)
 import qualified RPC
-import qualified Block
 import qualified Key
 import qualified Utils
 import qualified Ledger
@@ -58,24 +59,31 @@ import qualified DB.LevelDB
 
 import Network.Utils
 import qualified Network.P2P as P2P
-import qualified Network.P2P.Service as Service
+import qualified Network.P2P.Service as S
+import qualified Network.P2P.Cmd as Cmd
+import qualified Network.P2P.Simulate as Sim
+import qualified Network.Transport as NT
 
 import qualified XML
 import qualified REPL
 
 import SafeString
 
+#ifdef EKG
+import System.Remote.Monitoring (forkServer)
+#endif
+
 --------------------------------------------------------------------------------
 -- Uplink
 --------------------------------------------------------------------------------
 
 -- | Main node entry
-driver
-  :: Command -- ^ Node configuration or file to compile
-  -> Opts
-  -> Config
+driverChain
+  :: ChainCommand                               -- ^ New or Existing
+  -> Config                                     -- ^ Node Configuration
+  -> Maybe (MVar (DPN.LocalNode, NT.Transport)) -- ^ Testing purposes; Should most often be 'Nothing'
   -> IO ()
-driver (Chain cmd) opts (config @ Config {..}) = do
+driverChain cmd (config @ Config {..}) mNodeAndTpSink = do
 
   logInfo (toS (Utils.ppShow config))
 
@@ -110,22 +118,18 @@ driver (Chain cmd) opts (config @ Config {..}) = do
               Utils.dieRed "Please specify a different directory with the '-d' flag."
             Left err -> do
               (acc,keys) <-
-                Account.createAccPrompt'
-                  nodeDataDir
-                  (Opts._privKey opts)
-                  accPrompt
+                Account.createAccPrompt' accPrompt
               -- Initialize node data directory
               fmap (,NodeState.New) $
                 NF.initNodeDataDir nodeDataDir acc keys >>= \enfps ->
                   either (pure . Left) NF.readNodeDataFiles enfps
-        Run -> fmap (,NodeState.Existing) $ NF.readNodeDataDir nodeDataDir
+        Run -> (,NodeState.Existing) <$> NF.readNodeDataDir nodeDataDir
 
     case eNodeData of
       Left err       -> Utils.dieRed $ toS err
       Right nodeData -> pure (nodeData, accType)
 
   let nodeDataFps = NF.mkNodeDataFilePaths nodeDataDir
-
   let fingerprint = toS $ Key.fingerprint (fst $ NF.nodeKeys nodeData)
   Utils.putGreen $ "Found existing account with fingerprint:\n  " <> fingerprint
 
@@ -135,18 +139,31 @@ driver (Chain cmd) opts (config @ Config {..}) = do
         eNodeEnv <- do
           let testMode = Config.testMode config
               preallocated = Config.preallocated config
+              bootnodeBSs  = Config.bootnodes config
+              loggerRules = Config.loggingRules config
+          (errs, bootnodeIds) <- partitionEithers <$> mapM mkNodeId bootnodeBSs
+          -- Log invalid boot nodes
+          mapM_ Utils.putRed errs
           NodeState.initNodeEnv
-            nodeData nodeDataFps nodeAccType genesisBlock preallocated testMode accessToken -- NodeConfig args
+            nodeData nodeDataFps nodeAccType bootnodeIds genesisBlock preallocated testMode accessToken loggerRules -- NodeConfig args
             initWorld Set.empty MemPool.emptyMemPool 100 CAS.defPoAState lastBlock -- NodeState args
         case eNodeEnv of
           Left err -> Utils.dieRed $ "Failed to intialize Uplink node environment: " <> show err
           Right nodeEnv -> pure nodeEnv
 
+  -- Fork an HTTP monitoring server for an uplink node using the
+  -- build invocation: `stack build --flag uplink:-ekg`
+  -- ===========================================================
+#ifdef EKG
+  -- Fork a monitoring server to monitor uplink when building with stack
+  Utils.putGreen $ "Forking a monitoring server on port: " <> show monitorPort
+  forkServer "localhost" monitorPort
+#endif
+
   -- Run RPC Server & boot P2P processes:
   --   Dispatches on backend, using different MonadDB runner
   --   depending on the backend specified by the user in Config
   -- ==========================================================
-
   case storageBackend of
 
     -- PostgreSQL Backend
@@ -157,7 +174,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
       connPool <-
         case eConnPool of
-          Left err -> do
+          Left err ->
             case cmd of
 
               -- If initializing database and failed to connect to existing
@@ -171,7 +188,6 @@ driver (Chain cmd) opts (config @ Config {..}) = do
                   Left err -> Utils.dieRed $
                     "Failed to create Uplink database: " <> show err
                   Right connPool -> do
-
                     let runPostgresT' = DB.PostgreSQL.runPostgresT connPool
                     handleJSONDataImport chainSettings runPostgresT' mImport
                     pure connPool
@@ -196,22 +212,19 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       nodeEnv <- initNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
-      -- Create the cloud haskell local node
-      localNode <- P2P.createLocalNode config
+      -- Create the uplink local node to run the services on and reify the main
+      -- uplink process that spawns all services.
+      let runToProc = runPostgresT' . runNodeT'
+      (localNode, uplinkProc) <- createLocalNodeAndUplinkProc runToProc
 
       -- Launch RPC Server
       Utils.putGreen "Starting RPC server..."
-      forkIO $
-        RPC.rpcServer
-          config
-          (runPostgresT' . runNodeT')
-          localNode
-          (Just connPool)
+      forkIO $ RPC.rpcServer config runToProc localNode (Just connPool)
 
       -- Launch P2P Server
       Utils.putGreen "Starting P2P processes..."
-      runProcess localNode . runPostgresT' . runNodeT' $
-        P2P.p2p config
+      runProcess localNode . runToProc $
+        P2P.runUplink uplinkProc
 
     -- LevelDB Backend
     -----------------------
@@ -221,13 +234,13 @@ driver (Chain cmd) opts (config @ Config {..}) = do
         case cmd of
 
           Init _ mImport -> do
-
+            Utils.putGreen $ "Creating LevelDB on path: " <>  toS path
             eLevelDB <- DB.LevelDB.createDB path
             case eLevelDB of
               Left err -> Utils.dieRed $
                 "Couldn't create LevelDB at path '" <> toS path <> ":\n  " <> toS err
               Right db -> do
-
+                Utils.putGreen "Run levelDB"
                 let runLevelDBT' = DB.LevelDB.runLevelDBT db
                 handleJSONDataImport chainSettings runLevelDBT' mImport
                 pure db
@@ -251,25 +264,34 @@ driver (Chain cmd) opts (config @ Config {..}) = do
       nodeEnv <- initNodeEnv world genesisBlock lastBlock
       let runNodeT' = NodeState.runNodeT nodeEnv
 
-      -- Create the cloud haskell local node
-      localNode <- P2P.createLocalNode config
+      -- Create the uplink local node to run the services on and reify the main
+      -- uplink process that spawns all services.
+      let runToProc = runLevelDBT' . runNodeT'
+      (localNode, uplinkProc) <- createLocalNodeAndUplinkProc runToProc
 
       -- Launch RPC Server
       Utils.putGreen "Starting RPC server..."
-      forkIO $
-        RPC.rpcServer
-          config
-          (runLevelDBT' . runNodeT')
-          localNode
-          Nothing
+      forkIO $ RPC.rpcServer config runToProc localNode Nothing
 
       -- Launch P2P Server
       Utils.putGreen "Starting P2P processes..."
-      runProcess localNode . runLevelDBT' . runNodeT' $
-        P2P.p2p config
+      runProcess localNode . runToProc $
+        P2P.runUplink uplinkProc
 
   where
-    loadBlocksFromJSON :: FilePath -> IO [Block.Block]
+
+    createLocalNodeAndUplinkProc runToProc =
+      case mNodeAndTpSink of
+        Nothing -> P2P.createLocalNodeFromService config P2P.Uplink runToProc
+        Just sink -> do
+           -- This is for testing purposes only:
+           -- Tbe caller of the 'driver' function sometimes needs access to the
+           -- LocalNode created, as well as the Transport it was created with
+          (localNode, uplinkProc, transport) <-
+            P2P.createLocalNodeFromService' transport hostname (show port) P2P.Uplink runToProc
+          tryPutMVar sink (localNode, transport)
+          pure (localNode, uplinkProc)
+
     loadBlocksFromJSON fp = do
       eBlocksJSON <- Utils.safeReadLazy fp
       case eBlocksJSON of
@@ -288,7 +310,7 @@ driver (Chain cmd) opts (config @ Config {..}) = do
         logInfo "Intializing genesis block..."
         DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runDB
         DB.initWorld preallocated runDB
-        Utils.putGreen "Successfully intialized Uplink LevelDB Database."
+        Utils.putGreen "Successfully intialized Uplink Database."
 
       -- In the case that we're importing blocks
       Just (ImportBlocks fp) -> do
@@ -323,34 +345,20 @@ driver (Chain cmd) opts (config @ Config {..}) = do
                 logInfo "Intializing genesis block..."
                 DB.initGenesisBlock genesisHash genesisTimestamp genesisPoA runDB
 
+driver :: Command -> Config -> IO ()
+driver (Chain cmd) config =
+  driverChain cmd config Nothing
 
-driver (Script cmd) opts (config @ Config {..}) =
-  case storageBackend of
+driver (Script cmd) config =
+  driverScript cmd config
 
-    DB.PostgreSQL connInfo -> do
-      eConnPool <- DB.PostgreSQL.tryConnectDB connInfo
-      case eConnPool of
-        Left err -> Utils.dieRed $
-          "Failed to create Uplink database: " <> show err
-        Right connPool ->
-          DB.PostgreSQL.runPostgresT connPool $
-            driverScript cmd opts config
-
-    DB.LevelDB path -> do
-      eDatabase <- DB.LevelDB.loadExistingDB path
-      case eDatabase of
-        Left err -> Utils.dieRed $ toS err
-        Right database ->
-          DB.LevelDB.runLevelDBT database $
-            driverScript cmd opts config
-
-  -- Create authority accounts
-driver (Keys (Opts.CreateAuthorities nAuths)) opts config = do
+-- Create authority accounts
+driver (Keys (Opts.CreateAuthorities nAuths)) config =
   Authority.authorityDirs "auth" nAuths
 
-driver Version opts config = pass
+driver Version config = pass
 
-driver (Data cmd) opts (config @ Config {..}) = do
+driver (Data cmd) (config @ Config {..}) =
   case storageBackend of
 
     DB.PostgreSQL connInfo -> do
@@ -360,7 +368,7 @@ driver (Data cmd) opts (config @ Config {..}) = do
           "Failed to create Uplink database: " <> show err
         Right connPool ->
           DB.PostgreSQL.runPostgresT connPool $
-            driverData cmd opts config
+            driverData cmd config
 
     DB.LevelDB path -> do
       eDatabase <- DB.LevelDB.loadExistingDB path
@@ -368,16 +376,13 @@ driver (Data cmd) opts (config @ Config {..}) = do
         Left err -> Utils.dieRed $ toS err
         Right database ->
           DB.LevelDB.runLevelDBT database $
-            driverData cmd opts config
+            driverData cmd config
 
 
 -- XXX Refactor using MonadReadWriteDB and MonadProcessBase
-driver Console opts config = do
-    let host = Config.hostname config
-    let port = Config.port config
-    eRemote <- mkNodeId $ toS $ host <> ":" <> show port
-
-    localNode <- P2P.createLocalNode' "localhost" "" (Just DPN.initRemoteTable)
+driver Console config@Config{..} = do
+    eRemote <- mkNodeId $ toS $ hostname <> ":" <> show port
+    localNode <- P2P.createLocalNode' transport "localhost" "" (Just DPN.initRemoteTable)
     case eRemote of
       Left err -> Utils.dieRed err
       Right remote -> runConsoleProcs localNode remote
@@ -388,25 +393,26 @@ driver Console opts config = do
       -- Find the ProcessId for the tasks proc on the remote node
       cmdProcIdMVar <- newEmptyMVar
       runProcess localNode $ do
-        cmdProcId <- findRemoteService cmdProcNodeId Service.Tasks
-        link cmdProcId
-        liftIO $ putMVar cmdProcIdMVar cmdProcId
+        mCmdProcId <- S.findRemoteServiceTimeout cmdProcNodeId Cmd.ExternalCmd 1000000
+        case mCmdProcId of
+          Nothing -> liftIO $ Utils.dieRed "Failed to find process..."
+          Just cmdProcId -> do
+            link cmdProcId
+            liftIO $ putMVar cmdProcIdMVar cmdProcId
 
       -- Run the console process
       -- XXX Initialize console state with account & privKey, read from disk
       remoteCmdProcId <- takeMVar cmdProcIdMVar
-      Console.runConsole localNode remoteCmdProcId $
+      Console.runConsole localNode remoteCmdProcId
         Console.Config.ConsoleState
           { account = Nothing
           , privKey = Nothing
           , vars    = mempty
           }
 
-driver (Repl path verbose mWorldPath) opts config = do
-      let host = Config.hostname config
-      let port = Config.port config
-      eRemote <- mkNodeId $ toS $ host <> ":" <> show port
-      localNode <- P2P.createLocalNode' "localhost" "" (Just DPN.initRemoteTable)
+driver (Repl path verbose mWorldPath) config@Config{..} = do
+      eRemote <- mkNodeId $ toS $ hostname <> ":" <> show port
+      localNode <- P2P.createLocalNode' transport "localhost" "" (Just DPN.initRemoteTable)
       case eRemote of
         Left err -> Utils.dieRed err
         Right remote -> runReplProcs localNode remote
@@ -418,9 +424,12 @@ driver (Repl path verbose mWorldPath) opts config = do
         -- Find the ProcessId for the Simulation proc on the remote node
         simProcIdMVar <- newEmptyMVar
         runProcess localNode $ do
-          simProcId <- findRemoteService simProcNodeId Service.Simulation
-          link simProcId
-          liftIO $ putMVar simProcIdMVar simProcId
+          mSimProcId <- S.findRemoteServiceTimeout simProcNodeId Sim.Simulation 1000000
+          case mSimProcId of
+            Nothing -> liftIO $ Utils.dieRed "Failed to find simulation process..."
+            Just simProcId -> do
+              link simProcId
+              liftIO $ putMVar simProcIdMVar simProcId
 
         remoteSimProcId <- takeMVar simProcIdMVar
 
@@ -449,15 +458,13 @@ driver (Repl path verbose mWorldPath) opts config = do
 
 -- | CMD line driver for FCL repl
 driverScript
-  :: DB.MonadReadDB m
-  => ScriptCommand
-  -> Opts
+  :: ScriptCommand
   -> Config
-  -> m ()
-driverScript cmd opts (config @ Config {..}) =
+  -> IO ()
+driverScript cmd (config @ Config {..}) =
   case cmd of
     -- lint
-    Opts.Lint scriptFile -> liftBase $ do
+    Opts.Lint scriptFile -> do
       res <- Compile.lintFile scriptFile
       case res of
         [] -> System.Exit.exitSuccess
@@ -466,14 +473,14 @@ driverScript cmd opts (config @ Config {..}) =
           System.Exit.exitFailure
 
     -- format
-    Opts.Format scriptFile -> liftBase $ do
+    Opts.Format scriptFile -> do
       res <- Compile.formatScript scriptFile
       case res of
         Left err -> putStrLn err
         Right script -> putStrLn script
 
     -- graph
-    Opts.Graph scriptFile -> liftBase $ do
+    Opts.Graph scriptFile -> do
       res <- Compile.compileFile scriptFile
       case res of
         Left err -> putStrLn err
@@ -493,7 +500,7 @@ driverScript cmd opts (config @ Config {..}) =
           Anal.testVis script
 
     -- compile
-    Opts.CompileScript scriptFile localStorageFile -> liftBase $ do
+    Opts.CompileScript scriptFile localStorageFile -> do
       eSigs <- Compile.compileFile scriptFile
       case eSigs of
         Left err -> putText err
@@ -525,10 +532,9 @@ driverScript cmd opts (config @ Config {..}) =
 driverData
   :: DB.MonadReadWriteDB m
   => DataCommand
-  -> Opts
   -> Config
   -> m ()
-driverData cmd opts (config @ Config {..}) =
+driverData cmd (config @ Config {..}) =
   case cmd of
     Opts.Commit path contractAddr accountAddr -> do
         storage <- liftBase $ Compile.loadStorageFile path

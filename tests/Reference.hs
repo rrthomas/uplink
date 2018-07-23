@@ -18,6 +18,7 @@ module Reference (
   -- ** Address
   testAddr,
   testAddr2,
+  testAddr3,
   testAddrValid,
 
   -- ** Transaction Headers
@@ -81,8 +82,6 @@ module Reference (
   blockMsg,
   getBlockAtIdxMsg,
   versionMsg,
-  serviceRestartMsg,
-  resetMemPoolMsg,
 
   -- ** Network.P2P.Consensus
   testSignBlockMsg,
@@ -170,6 +169,7 @@ import qualified Network.P2P.Consensus as NPC
 import qualified Network.P2P.Message as NPM
 import qualified Network.P2P.Service as Service
 import qualified Script.Graph as Graph
+import qualified Script.Prim as Prim
 
 import Consensus.Authority.Params as CAP
 
@@ -195,6 +195,9 @@ testAddr = deriveAddress testPub
 
 testAddr2 :: Address a
 testAddr2 = deriveAddress testPub2
+
+testAddr3 :: Address a
+testAddr3 = deriveAddress testPub3
 
 testHolder :: Holder
 testHolder = Holder (testAddr :: Address AAccount)
@@ -225,7 +228,6 @@ testArgs = [
     (VInt 1)
   , (VFloat 3.5)
   , (VBool True)
-  , (VAddress testAddr)
   , (VContract testAddr)
   , (VMsg "Hello world")
   , VVoid
@@ -553,7 +555,7 @@ testContract now = Contract {
     timestamp     = now
   , script        = testScript
   , globalStorage = testGlobalStorage
-  , localStorage  = Map.singleton testAddr testLocalStorage
+  , localStorage  = mempty
   , localStorageVars = mempty
   , methods       = Script.methodNames testScript
   , state         = Graph.GraphInitial
@@ -565,26 +567,25 @@ testContract now = Contract {
 -- Storage
 -------------------------------------------------------------------------------
 
+-- TODO All the the Value types
 testStorage :: Storage
 testStorage = Map.fromList [
     ("a", VInt 3)
   , ("b", VFloat 3.14)
   , ("c", VBool True)
-  , ("d", VAddress testAddr)
+  , ("d", VAccount testAddr)
   , ("e", VVoid)
-  , ("f", VCrypto $ SI.toSafeInteger' 42)
   , ("g", VEnum (EnumConstr "Foo"))
+  , ("h", VAsset testAddr2)
+  , ("i", VContract testAddr)
   ]
 
 testGlobalStorage :: GlobalStorage
 testGlobalStorage = GlobalStorage testStorage
 
+-- XXX Local storage should be empty until we figure out what to do with it...
 testLocalStorage :: LocalStorage
-testLocalStorage = LocalStorage crypto
-  where
-    crypto = Map.filter f testStorage
-    f (VCrypto _) = True
-    f _           = False
+testLocalStorage = LocalStorage mempty
 
 -------------------------------------------------------------------------------
 -- Script
@@ -599,47 +600,57 @@ enumE = EnumDef (testLocated $ "E") [ testLocated $ EnumConstr "Foo"
                                     ]
 
 defX :: Def
-defX = GlobalDef TInt "x" . testLocated . ELit . testLocated $ LInt 0
+defX = GlobalDef TInt RoleAny "x" . testLocated . ELit . testLocated $ LInt 0
 
 defY :: Def
 defY = GlobalDef (TEnum "E")
+                 RoleAny
                  "y"
                  (testLocated . ELit . testLocated . LConstr . EnumConstr $ "Foo")
 
+defM :: Def
+defM = GlobalDef (TColl (TMap TAccount (TEnum "E"))) RoleAny "m" (testLocated . ELit . testLocated $ LMap mempty)
+
 setY :: Method
-setY = Method (Main "initial") "setY" [] $ eseq NoLoc $
+setY = Method (Main "initial") RoleAny "setY" [] $ eseq NoLoc $
   [ testLocated $ EAssign "y" (testLocated $ ELit $ testLocated (LConstr . EnumConstr $ "Bar"))
-  , testLocated $ ECall "transitionTo" [(testLocated $ ELit $ testLocated (LState "set"))]
+  , testLocated $ ECall (Left Prim.Transition) [(testLocated $ ELit $ testLocated (LState "set"))]
   ]
 
 setX :: Method
-setX = Method (Main "set") "setX" [] $ eseq NoLoc $
+setX = Method (Main "set") RoleAny "setX" [] $ eseq NoLoc $
   [ testLocated $ EAssign "x" (testLocated $ ELit $ testLocated (LInt 42))
-  , testLocated $ ECall "transitionTo" [(testLocated $ ELit $ testLocated (LState "get"))]
+  , testLocated $ ECall (Left Prim.Transition) [(testLocated $ ELit $ testLocated (LState "get"))]
   ]
 
 getX :: Method
-getX = Method (Main "get") "getX" [] $ eseq NoLoc $ []
+getX = Method (Main "get") RoleAny "getX" [] $ eseq NoLoc $
+  [ testLocated $ ECall (Left Prim.Transition) [(testLocated $ ELit $ testLocated (LState "terminal"))]]
 
 transX :: [Transition]
 transX = [
     Arrow Initial (Step "set")
   , Arrow (Step "set") (Step "get")
+  , Arrow (Step "get") Terminal
   ]
 
+helperInsert :: Helper
+helperInsert = Helper (testLocated "insertFoo") [Arg TAccount (testLocated "a")] $ eseq NoLoc $
+  [ testLocated $ ECall (Left (Prim.MapPrimOp Prim.MapInsert)) (map testLocated [EVar (testLocated "a"), ELit (testLocated (LConstr (EnumConstr "Foo"))), EVar (testLocated "m")]) ]
+
 testScript :: Script
-testScript = Script [enumE] [defX, defY] transX [setY, getX, setX]
+testScript = Script [enumE] [defX, defY, defM] transX [setY, getX, setX] [helperInsert]
 
 testCode :: Text
 testCode =
   " global float x = 0.0; \
-  \ global fixed3 f = 1.234f; \
+  \ global fixed3 f3 = 1.234f; \
   \ global fixed2 q; \
   \ local int y = 7; \
   \ local float v; \
-  \ assetFrac5 z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
-  \ contract c = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';  \
-  \ account a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
+  \ assetFrac5 z = a'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
+  \ contract c = c'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';  \
+  \ account a = u'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; \
   \  \
   \ datetime dt; \
   \  \
@@ -684,7 +695,7 @@ testCode =
   \ setX (int j, float k) { \
   \   x = k; \
   \   y = y * j; \
-  \   f = 2.516f + f; \
+  \   f3 = 2.516f + f3; \
   \   x = fixed3ToFloat(floatToFixed3(k)) + x; \
   \   transitionTo(:update); \
   \ } \
@@ -727,14 +738,14 @@ testCode =
   \ } \
   \  \
   \ @initial \
-  \ circulate(assetFrac2 a, fixed2 amount) { \
-  \   circulate(a,amount); \
+  \ circulate(assetFrac2 af2, fixed2 amount) { \
+  \   circulate(af2, amount); \
   \   transitionTo(:circulated); \
   \ } \
   \  \
   \ @circulated \
-  \ transfer(assetBin a, account from, account to, bool amount) { \
-  \   transferHoldings(from,a,amount,to); \
+  \ transfer(assetBin ab, account from, account to, bool amount) { \
+  \   transferHoldings(from,ab,amount,to); \
   \   terminate(\"finished transfer\"); \
   \ }"
 
@@ -768,15 +779,6 @@ blockMsg = do
   blk <- testGenesis
   let msg = NPM.BlockMsg blk "XXX"
   pure (NPM.Block msg)
-
--- Test Messages
-
-serviceRestartMsg :: NPM.TestMessage
-serviceRestartMsg = NPM.ServiceRestart $
-  NPM.ServiceRestartMsg Service.TestMessaging 42
-
-resetMemPoolMsg :: NPM.TestMessage
-resetMemPoolMsg = NPM.ResetMemPool NPM.ResetMemPoolMsg
 
 -------------------------------------------------------------------------------
 -- Network.P2P.Consensus Fixtures
@@ -913,6 +915,16 @@ testPub2 = Key.PubKey
         ECC.Point
           1214472788908201963423194854954899474972637934119143134374611198349064747631
           55018619338720117837520711191755301992479046934581364159114240410943276116468
+    }
+
+testPub3 :: Key.PubKey
+testPub3= Key.PubKey
+  ECDSA.PublicKey
+    { public_curve = Key.sec_p256k1
+    , public_q =
+        ECC.Point
+          33718916237022633221230485306632773657519572332333597686012127480807130421976
+          58146723934287926414800677754909247104297877689488401591859022271503476599055
     }
 
 testPriv2 :: ECDSA.PrivateKey

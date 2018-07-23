@@ -91,12 +91,15 @@ handleConsoleCmd cmdProc cmd = do
   -- Receive result from remote node
   res <- receiveChan rp
   case res of
-    (Cmd.CmdResult t) -> liftIO $ Utils.putGreen t
-    (Cmd.Accounts accs) -> putText $ toS $ encodePretty accs
-    (Cmd.Assets assets) -> putText $ toS $ encodePretty assets
-    (Cmd.Contracts contracts) -> putText $ toS $ encodePretty contracts
-    (Cmd.PeerList peers) -> putText $ show peers
-    (Cmd.CmdFail t) -> liftIO $ Utils.putRed t
+    Cmd.CmdSuccess -> liftIO $ Utils.putGreen (show Cmd.CmdSuccess)
+    Cmd.Accounts accs -> putText $ toS $ encodePretty accs
+    Cmd.Assets assets -> putText $ toS $ encodePretty assets
+    Cmd.Contracts contracts -> putText $ toS $ encodePretty contracts
+    Cmd.PeerList peers -> putText $ show peers
+    Cmd.CmdFail t -> liftIO $ Utils.putRed t
+    Cmd.GeneratedTransaction (Right _) -> putText "Successfully generated transaction"
+    Cmd.GeneratedTransaction (Left err) -> liftIO $ Utils.putRed $ show err
+    Cmd.TestData hashedblock ledger -> putText $ "Hashed block: " <> toS (encodePretty hashedblock) <> "\n Ledger: " <> toS (encodePretty ledger)
 
 getCmd :: ConsoleCmd -> ConsoleM (Maybe Cmd.Cmd)
 getCmd c = do
@@ -278,7 +281,7 @@ accountPrompt Nothing = do
       dir <- liftIO $ Account.createAccountDir path
       hoistErr dir
 
-      acc <- liftIO $ Account.createAccPrompt path Nothing Account.Prompt
+      acc <- liftIO $ Account.createAccPrompt Nothing
       accountPrompt (Just path)
 
 -------------------------------------------------------------------------------

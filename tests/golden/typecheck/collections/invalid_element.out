@@ -1,0 +1,9 @@
+Type error at Line 10, Column 21:
+   Could not match expected type 'int' with actual type 'assetBin':
+      Type int was inferred from the type signature of argument 1 of function 'element' on Line 10, Column 21
+      Type assetBin was inferred from the type signature of argument 1 of function 'elementTest' on Line 9, Column 22
+
+Type error at Line 11, Column 24:
+   Could not match expected type 'int' with actual type 'float':
+      Type int was inferred from the type signature of argument 1 of function 'element' on Line 11, Column 24
+      Type float was inferred from literal '7.89' on Line 11, Column 24

@@ -94,6 +94,11 @@ module Key (
   encodeDer,
   decodeDer,
 
+  compressPair,
+  uncompressPair,
+  compressPoint,
+  uncompressPoint,
+
   encodeSig,
   putSignature,
   decodeSig,
@@ -214,7 +219,7 @@ instance NFData ECDSA.Signature where rnf !_ = ()
 -- Returns a new elliptic curve key pair.
 --
 -- WARNING: Vulnerable to timing attacks.
-new :: IO (PubKey, ECDSA.PrivateKey)
+new :: MonadRandom m => m (PubKey, ECDSA.PrivateKey)
 new = do
   (pk, sk) <- generate sec_p256k1
   return (PubKey pk, sk)
@@ -230,7 +235,7 @@ new' d = (PubKey pk, sk)
 -- | pk <- new
 --
 -- WARNING: Vulnerable to timing attacks.
-newPub :: IO PubKey
+newPub :: MonadRandom m => m PubKey
 newPub = fst <$> new
 
 newPub' :: Integer -> PubKey
@@ -239,7 +244,7 @@ newPub' = fst . new'
 -- | sk <- new
 --
 -- WARNING: Vulnerable to timing attacks.
-newPriv :: IO ECDSA.PrivateKey
+newPriv :: MonadRandom m => m ECDSA.PrivateKey
 newPriv = snd <$> new
 
 -------------------------------------------------------------------------------
@@ -257,7 +262,7 @@ instance Ord ECDSA.Signature where
 -- Not deterministic, uses random nonce generation.
 -- WARNING: Vulnerable to timing attacks.
 sign
-  :: (MonadRandom m)
+  :: MonadRandom m
   => ECDSA.PrivateKey
   -> ByteString
   -> m ECDSA.Signature
@@ -318,10 +323,10 @@ verify (PubKey key) sig msg =
 -- Not deterministic, uses random nonce generation.
 -- WARNING: Vulnerable to timing attacks.
 signS
-  :: S.Serialize a
+  :: (S.Serialize a, MonadRandom m)
   => ECDSA.PrivateKey
   -> a
-  -> IO ECDSA.Signature
+  -> m ECDSA.Signature
 signS priv msg = sign priv (S.encode msg)
 
 -- | Sign a serializable instance encoding in binary with ECDSA.
@@ -928,7 +933,7 @@ recover_ sig@(ECDSA.Signature r s) msg =
 data ECDHParams = ECDHParams ECC.Curve ECC.CurveName
   deriving (Show,Eq)
 
-dhGenerateKeyPair :: IO (ECDSA.PrivateKey, PubKey)
+dhGenerateKeyPair :: MonadRandom m => m (ECDSA.PrivateKey, PubKey)
 dhGenerateKeyPair = do
   secret <- DH.generatePrivate sec_p256k1
   let point = DH.calculatePublic sec_p256k1 secret

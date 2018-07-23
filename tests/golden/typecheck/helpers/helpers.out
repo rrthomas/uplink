@@ -1,0 +1,23 @@
+[ ModifyGlobal
+    Name { unName = "m" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB")
+            , VFixed (Fixed2 (F2 225.48))
+            )
+          ]))
+, ModifyState GraphTerminal
+, Terminate ""
+]
+fromList
+  [ ( Key { unKey = "m" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "43WRxMNcnYgZFcE36iohqrXKQdajUdAxeSn9mzE1ZedB")
+             , VFixed (Fixed2 (F2 225.48))
+             )
+           ])
+    )
+  ]

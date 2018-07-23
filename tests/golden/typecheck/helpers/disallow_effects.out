@@ -1,0 +1,6 @@
+Helper effect violation: readWrite
+   Helper effects: {read b, read f}
+   location: Line 17, Column 3
+Helper effect violation: tryTransition
+   Helper effects: {write, write b}
+   location: Line 24, Column 3

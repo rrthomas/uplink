@@ -21,6 +21,7 @@ module Script.Pretty (
   (PP.<$$>),
   (PP.<//>),
   PP.line,
+  PP.sep,
   PP.hang,
   PP.indent,
   PP.text,
@@ -109,6 +110,10 @@ instance Pretty Bool where
 
 instance Pretty Doc where
   ppr = identity
+
+instance (Pretty a, Pretty b) => Pretty (Either a b) where
+  ppr (Left a)  = ppr a
+  ppr (Right b) = ppr b
 
 -------------------------------------------------------------------------------
 -- Utils

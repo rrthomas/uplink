@@ -1,0 +1,4 @@
+Duplicate variables found:
+ > Duplicate role in method access control: u'6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc'
+ > Duplicate role in method access control: deployer()
+ > Duplicate role in method access control: admin

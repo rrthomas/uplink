@@ -1,0 +1,6 @@
+[ ( Name { unName = "go" }
+  , Sig [] TAny
+  , Effects
+      { effectSet = fromList [ Write , ReadVar Name { unName = "g" } ] }
+  )
+]

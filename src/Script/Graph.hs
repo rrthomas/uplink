@@ -45,7 +45,7 @@ import qualified Hash
 -------------------------------------------------------------------------------
 
 newtype Label = Label { unLabel :: Text }
-  deriving (Eq, Show, Ord, Generic, NFData, Hashable, Hash.Hashable, ToJSON)
+  deriving (Eq, Show, Ord, Generic, NFData, Hash.Hashable, ToJSON)
 
 -- | Represents valid state flows
 data Transition

@@ -8,7 +8,7 @@
         "contents": 3
     },
     "d": {
-        "tag": "VAddress",
+        "tag": "VAccount",
         "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
     },
     "b": {
@@ -19,12 +19,16 @@
         "tag": "VVoid",
         "contents": null
     },
+    "h": {
+        "tag": "VAsset",
+        "contents": "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh"
+    },
     "c": {
         "tag": "VBool",
         "contents": true
     },
-    "f": {
-        "tag": "VCrypto",
-        "contents": 42
+    "i": {
+        "tag": "VContract",
+        "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
     }
 }

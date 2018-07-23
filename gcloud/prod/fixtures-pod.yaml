@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: fixtures
+  name: fixtures
+spec:
+  containers:
+  - command:
+    - sh
+    - -c
+    - sleep 20 && pytest -s -vv /usr/src/app/src/uplink-sdk-py/integration_tests
+    env:
+    - name: RPC_HOST
+      value: bootnode
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:latest
+    name: fixtures
+    resources: {}
+  restartPolicy: Never
+status: {}

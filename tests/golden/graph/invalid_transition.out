@@ -1,2 +1,2 @@
 We have the following graph errors:
-Cannot transition from state: 'initial' to 'bad' in method 'init'.
+Disallowed transition: 'transition initial -> bad' occurs in method 'init' but has not been declared as an allowed transition.

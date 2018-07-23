@@ -43,6 +43,7 @@ import qualified Script.Prim as Prim
 
 import Data.Bifunctor (bimap)
 import qualified Data.Graph.Inductive as FGL
+import Data.List ((\\))
 import qualified Data.List as List
 import qualified Data.Tuple as Tuple
 import qualified Data.Text as Text
@@ -62,7 +63,6 @@ data GraphError
   | UnreachableFromInitial Label
   | TransitionToInitial Label
   | TransitionFromTerminal Label
-  | NoEntry
   deriving (Eq, Ord, Show)
 
 instance Pretty [GraphError] where
@@ -72,53 +72,67 @@ instance Pretty [GraphError] where
 instance Pretty GraphError where
   ppr = \case
     MissingTransition from to
-      -> "Missing transition from state: "
-         <> squotes (ppr from)
-         <> " to "
-         <> squotes (ppr to)
-    IllegalTransition methodName from to
-      -> "Cannot transition from state: "
-         <> squotes (ppr from)
-         <> " to "
-         <> squotes (ppr to)
-         <> " in method "
-         <> squotes (ppr methodName)
+      -> "Missing transition from state:"
+         <+> squotes (ppr from)
+         <+> "to"
+         <+> squotes (ppr to)
          <> "."
+    IllegalTransition methodName from to
+      -> "Disallowed transition:"
+         <+> squotes (ppr (Arrow (Step from) (Step to)))
+         <+> "occurs in method" <+> squotes (ppr methodName)
+         <+> "but has not been declared as an allowed transition."
     TerminalUnreachable label
-      -> "Cannot reach terminal state from "
-         <> squotes (ppr label)
+      -> "Cannot reach terminal state from"
+         <+> squotes (ppr label)
          <> "."
     UnreachableFromInitial label
       -> "Cannot reach state "
          <> squotes (ppr label)
-         <> " from initial state in graph."
+         <+> "from initial state in graph."
     TransitionToInitial from
-      -> "Illegal transition declaration: transition from "
-         <> squotes (ppr from)
-         <> " to initial state is not allowed."
+      -> "Illegal transition declaration: transition from"
+         <+> squotes (ppr from)
+         <+> "to initial state is not allowed."
     TransitionFromTerminal to
-      -> "Illegal transition declaration: transition from terminal state to: "
-         <> squotes (ppr to)
-         <> " is not allowed."
-    NoEntry
-      -> "Cannot enter graph state, no valid entry points from 'initial'"
+      -> "Illegal transition declaration: transition from terminal state to:"
+         <+> squotes (ppr to)
+         <+> "is not allowed."
 
--- | Perform all analyses on the state graph and report all errors
--- found. If we do not encounter anything, we return the graph
+-- | Perform all analyses on the state graph and report all errors found modulo
+-- any unnecessary (equivalent) errors. If we do not encounter anything, we
+-- return the graph.
 checkGraph :: Script -> Either [GraphError] GraphTransitions
 checkGraph scr = case allErrors of
                    [] -> Right valid
-                   _ -> Left allErrors
+                   _ -> Left $ allErrors \\ unnecessaryErrors
   where
     allErrors
       = concat
-        [ illegal
-        , unsound
-        , incomplete
-        , notReachable
-        , notReaching
-        , noEntry
-        ]
+          [ illegal
+          , unsound
+          , incomplete
+          , notReachable
+          , notReaching
+          ]
+
+    -- Errors that are subsumed by other errors.
+    unnecessaryErrors
+      = concatMap
+          (\(p1,p2) ->
+            if any p1 allErrors
+            then filter p2 allErrors
+            else [])
+          equivalentErrors
+      where
+        -- If there are any errors that match the first predicate, filter out
+        -- all errors matching the second predicate.
+        equivalentErrors :: [(GraphError->Bool, GraphError->Bool)]
+        equivalentErrors
+          = [ ( (== UnreachableFromInitial ScrGraph.terminalLabel)
+              , (== TerminalUnreachable ScrGraph.initialLabel)
+              )
+            ]
 
     actual = actualTransitions scr
     valid = Either.rights $ validTransitions scr
@@ -139,23 +153,12 @@ checkGraph scr = case allErrors of
               (map TerminalUnreachable)
         $ reachability scr
 
-    noEntry
-      = if hasEntry scr
-        then []
-        else [NoEntry]
-
 -------------------------------------------------------------------------------
 -- Implementation of the graph checks
 -------------------------------------------------------------------------------
 
 type GraphTransition = (Label, Label)
 type GraphTransitions = [GraphTransition]
-
--- | Check for existence of entry points to the graph.
-hasEntry :: Script -> Bool
-hasEntry = any (\(from, _) -> from == ScrGraph.initialLabel)
-           . Either.rights
-           . validTransitions
 
 -- | Fish out the transition declarations from the script.
 validTransitions :: Script -> [Either GraphError GraphTransition]
@@ -169,15 +172,21 @@ validTransitions = map toLabel . scriptTransitions
               Arrow Initial Terminal      -> Right ( ScrGraph.initialLabel
                                                    , ScrGraph.terminalLabel
                                                    )
-              Arrow (Step a) Initial      -> Left (TransitionToInitial a)
+              Arrow (Step from) Initial   -> Right (from, ScrGraph.initialLabel)
+
+              Arrow Initial Initial       -> Right ( ScrGraph.initialLabel
+                                                   , ScrGraph.initialLabel
+                                                   )
+              Arrow Terminal Terminal     -> Left (TransitionFromTerminal ScrGraph.terminalLabel)
               Arrow Terminal (Step a)     -> Left (TransitionFromTerminal a)
+              Arrow Terminal Initial      -> Left (TransitionFromTerminal ScrGraph.initialLabel)
               _                           -> panic "wut"
 
 -- | Fish out the actual transitions, as we get them from methods and
 -- their "transitionTo" statements, grouped by method name and source
 -- state.
 branches :: Script -> [ (Name, Label, [Label]) ]
-branches (Script _ defs trans methods)
+branches (Script _ defs trans methods _)
   = map extractBranch methods
   where
     extractBranch :: Method -> (Name, Label, [Label])
@@ -190,9 +199,9 @@ branches (Script _ defs trans methods)
     branchesMethod = fmap toLabel . concatMap go . unseq . methodBody
       where
         go :: LExpr -> [LLit]
-        go (Located l (ECall prim args))
-          | prim == Prim.primName Prim.Transition = argLits (fmap unLoc args)
-          | prim == Prim.primName Prim.Terminate = [LState "terminal" `at` l]
+        go (Located l (ECall (Left prim) args))
+          | prim == Prim.Transition = argLits (fmap unLoc args)
+          | prim == Prim.Terminate = [LState "terminal" `at` l]
           | otherwise = []
         go _ = []
 
@@ -252,7 +261,9 @@ makeGraph scr = FGL.mkGraph stateNodes stateEdges
       stateGraph = FGL.mkGraph stateNodes stateEdges
 
       labels :: [Label]
-      labels = List.nub . concatMap (\(src,dst) -> [src, dst]) $ valid
+      labels = List.nub . addInitialTerminal . concatMap (\(src,dst) -> [src, dst]) $ valid
+        where
+          addInitialTerminal = (<> [ScrGraph.initialLabel,ScrGraph.terminalLabel])
 
       stateNodes :: [FGL.LNode Label]
       stateNodes = zip [1..] labels
@@ -264,9 +275,6 @@ makeGraph scr = FGL.mkGraph stateNodes stateEdges
             getIx lbl = fromMaybe (panic "getIx: impossible")
                                   (List.lookup lbl (map Tuple.swap stateNodes))
 
-      forgetLabel :: FGL.LNode a -> FGL.Node
-      forgetLabel = fst
-
 -- | If we have performed the soundness and completeness checks, it
 -- does not matter which of the two graphs we perform the reachability
 -- analysis on. For simplicity its sake, we will go for the transition
@@ -277,7 +285,7 @@ makeGraph scr = FGL.mkGraph stateNodes stateEdges
 -- reachable.
 reachability :: Script -> ([Label],[Label])
 reachability scr = (notReachable, notReaching)
-    where 
+    where
       valid = Either.rights $ validTransitions scr
 
       stateGraph = makeGraph scr
@@ -341,6 +349,7 @@ data NodeLabel = NotReachableLabel Label
 data EdgeLabel = MissingEdge
                | IllegalEdge Name
                | LegalEdge Name
+               deriving Eq
 
 -- | Create a graph from a script with all the information to
 -- visualise the reasons why the script might not have passed the
@@ -399,7 +408,7 @@ graphviz scr = Text.unlines
 
       edgesTxt :: [Text]
       edgesTxt = map (\(edgeLabel, src, dst) -> Text.unwords
-                      [ unLabel src, "->", unLabel dst, edgeLabelTxt edgeLabel ]) edges
+                      [ unLabel src, "->", unLabel dst, edgeLabelTxt edgeLabel ]) . List.nub $ edges
 
       edgeLabelTxt MissingEdge
           = "[ style = dotted ]"
@@ -413,4 +422,4 @@ testVis :: Script -> IO ()
 testVis scr = do
   let dat = graphviz scr
   writeFile "output.dot" dat
-  Process.callCommand "circo -Tpng output.dot -o output.png"
+  Process.callCommand "dot -Tpng output.dot -o output.png"

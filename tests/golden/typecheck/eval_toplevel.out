@@ -17,3 +17,53 @@
 , ModifyState GraphTerminal
 , Terminate "Bye"
 ]
+fromList
+  [ ( Key { unKey = "a" }
+    , VDateTime
+        DateTime
+          { unDateTime =
+              Datetime
+                { year = 2020
+                , month = 1
+                , day = 1
+                , hour = 13
+                , minute = 33
+                , second = 37
+                , zone = 0
+                , week_day = 3
+                }
+          }
+    )
+  , ( Key { unKey = "b" }
+    , VDateTime
+        DateTime
+          { unDateTime =
+              Datetime
+                { year = 2020
+                , month = 1
+                , day = 11
+                , hour = 13
+                , minute = 33
+                , second = 37
+                , zone = 0
+                , week_day = 6
+                }
+          }
+    )
+  , ( Key { unKey = "c" }
+    , VDateTime
+        DateTime
+          { unDateTime =
+              Datetime
+                { year = 2020
+                , month = 1
+                , day = 31
+                , hour = 13
+                , minute = 33
+                , second = 37
+                , zone = 0
+                , week_day = 5
+                }
+          }
+    )
+  ]

@@ -10,12 +10,13 @@ and sends/receives messages to/from local processes only.
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Network.P2P.Cmd (
   Cmd(..),
   CmdResult(..),
 
-  tasksProc,
+  ExternalCmd(..),
 
   TestCmd(..),
   handleTestCmd,
@@ -25,6 +26,7 @@ module Network.P2P.Cmd (
 
   newTransaction,
   nsendTransaction,
+
 ) where
 
 import Protolude hiding (put, get, newChan)
@@ -34,7 +36,7 @@ import Control.Distributed.Process.Lifted.Class
 
 import qualified Data.Map as Map
 
-import Data.Binary
+import Data.Binary (Binary)
 import qualified Data.Text as Text
 
 import Node.Peer
@@ -46,18 +48,29 @@ import qualified Asset
 import qualified DB
 import qualified Encoding
 import qualified Ledger
+import qualified Hash
 import qualified Contract
 import qualified Key
+import qualified Transaction as Tx
+import qualified Transaction.RandomGen as TxGen
+import qualified Validate as V
 import qualified Utils
-import qualified Transaction
 import Network.Utils
-import Network.P2P.Service (Service(..))
+import Network.P2P.Service (Service(..), ServiceSpec(..))
 import Network.P2P.SignedMsg (nsendPeerSigned, nsendPeersSigned, nsendPeersManySigned)
 import Network.P2P.Controller (doDiscover)
 import qualified Network.P2P.Logging as Log
-import qualified Network.P2P.Message as Message
+import qualified Network.P2P.Message as M
 
-import System.Random
+-------------------------------------------------------------------------------
+-- Service Definition
+-------------------------------------------------------------------------------
+
+data ExternalCmd = ExternalCmd
+  deriving (Show, Generic, Binary)
+
+instance Service ExternalCmd where
+  serviceSpec _ = Worker externalCmdProc
 
 -------------------------------------------------------------------------------
 -- P2P Commands
@@ -65,7 +78,7 @@ import System.Random
 
 data Cmd
   = Test TestCmd      -- ^ Test commands
-  | Transaction Transaction.Transaction -- ^ Transaction
+  | Transaction Tx.Transaction -- ^ Transaction
   | ListAccounts
   | ListAssets
   | ListContracts
@@ -81,59 +94,57 @@ data Cmd
 -- executed when the node is booted in a test state with '--test'
 data TestCmd
 
-  -- Cmd to saturate the network with 'nTxs' transactions spaced 'nSecs' apart
-  = SaturateNetwork
-    { nTxs :: Int   -- ^ Number of transactions to be created
-    , nSecs :: Int  -- ^ Over this many seconds
-    }
+  -- | Cmd to reset mempool of entire network.
+  = ResetMemPool
 
-  -- ^ Cmd to restart a process after a given delay
-  | ServiceRestartController
-    { ctrlService :: Service -- ^ Service to restart
-    , ctrlDelay   :: Int     -- ^ Time to delay restart in microseconds
-    }
-
-  -- ^ Cmd to reset mempool of entire network.
-  | ResetMemPools
-
-  -- ^ Cmd to reset node DB
+  -- | Cmd to reset node DB
   | ResetDB
     { address   :: Address AAccount             -- ^ Address of pubkey used to sign this tx
     , signature :: Encoding.Base64PByteString   -- ^ Signature of address to prove possesion of priv key
     }
-  deriving (Eq, Show, Generic, Binary)
+
+  -- | Query a node's internal state
+  | QueryNodeState
+
+  -- | Tell a node to generate a random valid transaction
+  | GenerateTransaction
+
+  -- | Tell a node to discover peers with the given node ids
+  | DiscoverPeers [NodeId]
+
+  deriving (Eq, Show, Generic, Binary, Typeable)
 
 data CmdResult
-  = CmdResult Text
+  = CmdSuccess
   | Accounts [Account.Account]
   | Assets [Asset.Asset]
   | Contracts [Contract.Contract]
   | PeerList Peers
   | CmdFail Text
-  deriving (Show, Generic, Binary)-- XXX
-
-cmdSuccess :: CmdResult
-cmdSuccess = CmdResult "Success"
+  | GeneratedTransaction (Either Tx.InvalidTransaction ())
+  | TestData
+      { lastBlockHash :: Hash.Hash Encoding.Base16ByteString
+      , ledgerState   :: Ledger.World
+      }
+  deriving (Show, Eq, Generic, Binary, Typeable)-- XXX
 
 -------------------------------------------------------------------------------
--- P2P Tasks Proc
+-- P2P ExternalCmd Proc
 -------------------------------------------------------------------------------
 
 -- | Process that receives commands from external processes like the RPC server
 -- and/or the Console process. These commands get evaluated and then a CmdResult
 -- is returned
-tasksProc
+externalCmdProc
   :: forall m. (MonadProcessBase m, DB.MonadReadWriteDB m)
-  => Service
-  -> NodeT m ()
-tasksProc service =
-    forever $
-      onConsoleMsg =<< expect
+  => NodeT m ()
+externalCmdProc =
+    forever $ onConsoleMsg =<< expect
   where
     onConsoleMsg :: (Cmd, SendPort CmdResult) -> NodeT m ()
     onConsoleMsg (cmd, sp) = do
       Log.info $ "Recieved Cmd:\n\t" <> show cmd
-      res <- handleCmd service cmd
+      res <- handleCmd cmd
       sendChan sp res
 
 
@@ -143,7 +154,7 @@ tasksProc service =
 commTasksProc :: MonadProcessBase m => Cmd -> m CmdResult
 commTasksProc cmd = do
   (sp,rp) <- newChan
-  nsend (show Tasks) (cmd, sp)
+  nsend (show ExternalCmd) (cmd, sp)
   receiveChan rp
 
 -- | Issue a Cmd to the "tasks" process and wait for a CmdResult
@@ -151,7 +162,7 @@ commTasksProc cmd = do
 commTasksProc' :: MonadProcessBase m => Int -> Cmd -> m (Maybe CmdResult)
 commTasksProc' timeout cmd = do
   (sp,rp) <- newChan
-  nsend (show Tasks) (cmd, sp)
+  nsend (show ExternalCmd) (cmd, sp)
   receiveChanTimeout timeout rp
 
 -------------------------------------------------------------------------------
@@ -162,10 +173,9 @@ commTasksProc' timeout cmd = do
 -- or the RPC interface which translates RPCCmds into Cmds
 handleCmd
   :: (MonadProcessBase m, DB.MonadReadWriteDB m)
-  => Service
-  -> Cmd
+  => Cmd
   -> NodeT m CmdResult
-handleCmd service cmd =
+handleCmd cmd =
   case cmd of
     ListAccounts -> do
       world <- NodeState.getLedger
@@ -177,38 +187,37 @@ handleCmd service cmd =
       world <- NodeState.getLedger
       return $ Contracts $ Map.elems $ Ledger.contracts world
     Transaction tx -> do
-      nsendTransaction service tx
-      return cmdSuccess
+      nsendTransaction M.Messaging tx
+      return CmdSuccess
     Test testCmd   -> do
       testNode <- NodeState.isTestNode
       if testNode
         then handleTestCmd testCmd
-        else Log.warning "Node is not in test mode. Command ignored."
-      return cmdSuccess
+        else return $ CmdFail "Node is not in test mode. Command ignored."
     Discover -> do
       peers <-  getPeerNodeIds
       mapM_ doDiscover peers
-      return cmdSuccess
+      return CmdSuccess
     Reconnect -> do
       pid <- getSelfPid
       reconnect pid
-      return cmdSuccess
+      return CmdSuccess
     Ping -> do
       peers <- getPeerNodeIds
       nodeId <- liftP extractNodeId
       forM_ peers $ \peer -> do
         let msg = SS.fromBytes' (toS nodeId)
-        nsendPeerSigned service peer $ Message.Ping msg
-      return cmdSuccess
+        nsendPeerSigned peer M.Messaging $ M.Ping msg
+      return CmdSuccess
     (PingPeer host) -> do
       nodeId <- extractNodeId
       let msg = SS.fromBytes' (toS nodeId)
       eNodeId <- liftIO $ mkNodeId (toS host)
       case eNodeId of
         Left err     -> Log.warning err
-        Right nodeId -> nsendPeerSigned service nodeId $ Message.Ping msg
+        Right nodeId -> nsendPeerSigned nodeId M.Messaging $ M.Ping msg
 
-      return cmdSuccess
+      return CmdSuccess
     ListPeers -> do
       peers <- NodeState.getPeers
       return $ PeerList peers
@@ -220,50 +229,19 @@ handleCmd service cmd =
           return $ CmdFail err
         Right nodeId -> do
           doDiscover nodeId
-          return cmdSuccess
+          return CmdSuccess
 
 
 handleTestCmd
   :: (MonadProcessBase m, DB.MonadReadWriteDB m)
   => TestCmd
-  -> NodeT m ()
+  -> NodeT m CmdResult
 handleTestCmd testCmd =
   case testCmd of
-
-    SaturateNetwork ntxs nsecs -> do
-      -- if 0 seconds, submit txs with no delay
-      let tps = fromIntegral ntxs / fromIntegral (max 1 nsecs)
-      let delay = if (nsecs == 0 || tps == 0) then 0 else 1 / tps
-      txs <- replicateM ntxs $ do
-          (newAcc, acctKeys) <- liftIO $ Account.newAccount "GMT" mempty
-          let tz = Account.timezone newAcc
-              md = Account.metadata newAcc
-              pubSS = SS.fromBytes' $ Key.unHexPub $ Key.encodeHexPub $ Account.publicKey newAcc
-          let txHdr = Transaction.TxAccount $ Transaction.CreateAccount pubSS tz md
-
-          liftIO $ Transaction.newTransaction (Account.address newAcc) (snd acctKeys) txHdr
-
-      -- Submit txs
-      case delay of
-        0 -> nsendTransactionMany TestMessaging txs
-        _ -> Utils.delayedReplicateM_ ntxs delay $
-              void $ spawnLocal $
-                forM_ txs $ nsendTransaction TestMessaging
-
-    -- XXX Handle error cases better
-    ServiceRestartController service delay -> do
-      peers <- getPeerNodeIds
-      randN <- liftIO $ randomRIO (0, length peers)
-      case peers `atMay` randN of
-        Nothing -> return ()
-        Just nodeId -> do
-          let serviceNmSafe = SS.fromBytes $ show service
-          let msg = Message.ServiceRestart $ Message.ServiceRestartMsg service delay
-          nsendPeerSigned service nodeId (Message.Test msg)
-
-    ResetMemPools -> do
-      let resetMsg = Message.ResetMemPool Message.ResetMemPoolMsg
-      nsendPeersSigned TestMessaging (Message.Test resetMsg)
+    ResetMemPool -> do
+      Log.info "Resetting MemPool..."
+      NodeState.resetTxMemPool
+      return CmdSuccess
 
     ResetDB addr sig' -> do
       case Key.decodeSig sig' of
@@ -292,29 +270,72 @@ handleTestCmd testCmd =
                   -- Wipe entire node state except for peers (fresh world contains
                   -- preallocated accounts specified in config)
                   NodeState.resetNodeState
+      return CmdSuccess
+
+    QueryNodeState -> do
+      ledger <- getLedger
+      lastBlock <- getLastBlock
+      let hashedBlock = Hash.toHash lastBlock :: Hash.Hash Encoding.Base16ByteString
+      pure $ TestData hashedBlock ledger
+
+    GenerateTransaction -> do
+      Log.info "Received GenerateTransaction msg"
+      addr <- askSelfAddress
+      Log.info (show addr :: Text)
+      (pubKey, privKey) <- askKeyPair
+      world <- pollAccountInLedger (100 * 1000000) 0 addr =<< getLedger
+      tx <- liftIO $ TxGen.genRandTransaction addr privKey world
+      Log.info $ "Transaction generated: " <> Utils.ppShow tx
+      pure $ GeneratedTransaction (V.verifyTransaction world tx)
+
+    DiscoverPeers nids -> do
+      Log.info "Received 'DiscoverPeer' msg"
+      mapM_ doDiscover nids
+      return CmdSuccess
+
+
+pollAccountInLedger
+  :: (MonadProcessBase m, DB.MonadReadWriteDB m)
+  => Int
+  -> Int
+  -> Address AAccount
+  -> Ledger.World
+  -> NodeT m Ledger.World
+pollAccountInLedger timeout accDelay addr world =
+  case Ledger.lookupAccount addr world of
+    Left _    ->
+      if accDelay >= timeout
+        then pure world
+        else do
+          let delay = 1000000
+          liftIO $ threadDelay delay
+          liftIO $ putText "Can't find self address in ledger"
+          newWorld <- getLedger
+          pollAccountInLedger timeout (accDelay + delay) addr newWorld
+    Right acc -> pure world
 
 -------------------------------------------------------------------------------
 -- Helpers
 -------------------------------------------------------------------------------
 
 nsendTransaction
-  :: MonadProcessBase m
-  => Service
-  -> Transaction.Transaction
+  :: (MonadProcessBase m, Service s)
+  => s
+  -> Tx.Transaction
   -> NodeT m ()
 nsendTransaction service tx = do
-  let message = Message.SendTx (Message.SendTransactionMsg tx)
+  let message = M.SendTx (M.SendTransactionMsg tx)
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
   nsendPeersSigned service message
 
 nsendTransactionMany
-  :: MonadProcessBase m
-  => Service
-  -> [Transaction.Transaction]
+  :: (MonadProcessBase m, Service s)
+  => s
+  -> [Tx.Transaction]
   -> NodeT m ()
 nsendTransactionMany service txs = do
-  let messages = [Message.SendTx (Message.SendTransactionMsg tx) | tx <- txs]
+  let messages = [M.SendTx (M.SendTransactionMsg tx) | tx <- txs]
   -- Don't need to `nsendCapable` because incapable
   -- peers simply won't process the transaction
   nsendPeersManySigned service messages
@@ -322,12 +343,12 @@ nsendTransactionMany service txs = do
 -- | Creates new transaction using current node account and private key
 newTransaction
   :: MonadIO m
-  => Transaction.TransactionHeader
-  -> NodeT m Transaction.Transaction
+  => Tx.TransactionHeader
+  -> NodeT m Tx.Transaction
 newTransaction txHeader = do
   privKey <- askPrivateKey
   accAddr <- askSelfAddress
-  liftIO $ Transaction.newTransaction accAddr privKey txHeader
+  liftIO $ Tx.newTransaction accAddr privKey txHeader
 
-getTransaction :: Transaction.Transaction -> Process ()
+getTransaction :: Tx.Transaction -> Process ()
 getTransaction tx = putText "Writing transaction"

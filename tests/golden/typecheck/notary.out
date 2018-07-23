@@ -1,3 +1,12 @@
-[ ( Name { unName = "put" } , Sig [ TMsg ] TVoid , ReadWrite )
-, ( Name { unName = "end" } , Sig [] TAny , Write )
+[ ( Name { unName = "put" }
+  , Sig [ TMsg ] TVoid
+  , Effects
+      { effectSet =
+          fromList [ Write , Read , WriteVar Name { unName = "signature" } ]
+      }
+  )
+, ( Name { unName = "end" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
 ]

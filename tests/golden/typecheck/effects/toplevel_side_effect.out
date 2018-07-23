@@ -1,6 +1,6 @@
-Expected no effects
+Expected no ledger effects
 Actual effects: {read}
 location: Line 1, Column 28
-Expected no effects
+Expected no ledger effects
 Actual effects: {write}
 location: Line 2, Column 28

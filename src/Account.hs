@@ -23,7 +23,7 @@ module Account (
   accountKeyVal,
 
   -- ** Persistence
-  AccountPrompt(..),
+  AccountKeyOpt(..),
   createAccPrompt,
   createAccPrompt',
 
@@ -51,6 +51,7 @@ import qualified Utils
 import qualified Address
 import qualified SafeString
 import Metadata (Metadata(..))
+import Crypto.Random.Types (MonadRandom(..))
 import Data.Aeson ((.=), (.:))
 import Data.Aeson.Types (typeMismatch)
 import qualified Data.Aeson as A
@@ -111,7 +112,9 @@ createAccount pub timezone metadata =
 
 -- | Generate a new Acccount (random seed)
 -- returns private key so the new account can be written to disk
-newAccount :: SafeString.SafeString -> Metadata -> IO (Account, Key.ECDSAKeyPair)
+newAccount
+  :: MonadRandom m
+  => SafeString.SafeString -> Metadata -> m (Account, Key.ECDSAKeyPair)
 newAccount timezone metadata = do
   keys@(pub,_) <- Key.new
   return $ (,keys) $
@@ -147,21 +150,25 @@ readAccountData root = do
         acc  <- first toS $ A.eitherDecode' (toS account)
         if Key.validatePair pair && pk == publicKey acc
           then pure (acc, pair)
-          else (Left "key.pub and account don't match keys")
+          else Left "key.pub and account don't match keys"
 
-data AccountPrompt = Prompt | NoPrompt
-  deriving (Eq, Ord, Show)
+data AccountKeyOpt
+  = New                     -- ^ Generate a new account keypair
+  | Existing FilePath       -- ^ Load an account from an existing private key
+  | InMemory Key.PrivateKey -- ^ For use in testing
+  deriving (Eq, Show)
 
 -- | Prompts user for account creation, returning the created account data
 createAccPrompt
-  :: FilePath
-  -> Maybe FilePath
-  -> AccountPrompt
+  :: Maybe AccountKeyOpt
   -> IO (Either Text (Account, Key.ECDSAKeyPair))
-createAccPrompt root privKey accPrompt = do
-    ePrivKey <- case privKey of
-      Nothing -> promptSupplyKey $ promptArg accPrompt
-      Just _  -> promptKeyFile privKey
+createAccPrompt mAccKeyOpt = do
+    ePrivKey <-
+      case mAccKeyOpt of
+        Nothing -> promptSupplyKey Nothing
+        Just New -> promptSupplyKey (Just "n")
+        Just (Existing fp) -> promptKeyFile (Just fp)
+        Just (InMemory key) -> pure $ Right key
     case ePrivKey of
       Left err -> return $ Left err
       Right privKey -> do
@@ -171,9 +178,6 @@ createAccPrompt root privKey accPrompt = do
             keys = (pubKey,privKey)
         return $ Right (acc, keys)
   where
-    promptArg Prompt = Nothing
-    promptArg NoPrompt = Just "n"
-
     -- Prompt the user to supply a private key or not
     promptSupplyKey :: Maybe Text -> IO (Either Text Key.PrivateKey)
     promptSupplyKey (Just "y") = promptKeyFile Nothing
@@ -201,9 +205,9 @@ createAccPrompt root privKey accPrompt = do
       promptKeyFile $ Just $ toS privKeyFile
 
 -- | Like `setupAccount`, but will throw an exception if an error occurs.
-createAccPrompt' :: FilePath -> Maybe FilePath -> AccountPrompt -> IO (Account, Key.ECDSAKeyPair)
-createAccPrompt' root privKey accPrompt = do
-  eAccAndKeys <- createAccPrompt root privKey accPrompt
+createAccPrompt' :: Maybe AccountKeyOpt -> IO (Account, Key.ECDSAKeyPair)
+createAccPrompt' mAccPrompt = do
+  eAccAndKeys <- createAccPrompt mAccPrompt
   case eAccAndKeys of
     Left err         -> Utils.dieRed err
     Right accAndKeys -> return accAndKeys

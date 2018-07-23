@@ -1,0 +1,37 @@
+[ ModifyGlobal
+    Name { unName = "balances" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 500
+            )
+          ]))
+, ModifyGlobal Name { unName = "aElemOf" } (VBool True)
+, ModifyGlobal Name { unName = "notElemOf" } (VBool True)
+, ModifyGlobal
+    Name { unName = "amounts" }
+    (VSet (fromList [ VInt 1 , VInt 2 , VInt 3 , VInt 500 ]))
+, ModifyGlobal Name { unName = "elemOfSet" } (VBool True)
+, ModifyGlobal Name { unName = "notElemOfSet" } (VBool True)
+, ModifyState GraphTerminal
+, Terminate "end elementTest"
+]
+fromList
+  [ ( Key { unKey = "aElemOf" } , VBool True )
+  , ( Key { unKey = "amounts" }
+    , VSet (fromList [ VInt 1 , VInt 2 , VInt 3 , VInt 500 ])
+    )
+  , ( Key { unKey = "balances" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+             , VInt 500
+             )
+           ])
+    )
+  , ( Key { unKey = "elemOfSet" } , VBool True )
+  , ( Key { unKey = "notElemOf" } , VBool True )
+  , ( Key { unKey = "notElemOfSet" } , VBool True )
+  ]

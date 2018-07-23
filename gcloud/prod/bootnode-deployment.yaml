@@ -1,0 +1,39 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert -f ../docker-compose.kubernetes.yml
+    kompose.version: 1.13.0 (84fa826)
+  creationTimestamp: null
+  labels:
+    io.kompose.service: bootnode
+  name: bootnode
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: bootnode
+    spec:
+      containers:
+      - args:
+        - bash
+        - -c
+        - mkdir -p /var/log/uplink/; uplink chain init -d data/.uplink -b "leveldb:///data/uplink"  -k
+          config/validators/auth0/key -g config/chain.config  -v || uplink chain -d
+          data/.uplink -b "leveldb:///data/uplink" -v -g config/chain.config
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink:latest
+        name: bootnode
+        resources: {}
+        volumeMounts:
+        - mountPath: /usr/src/app/data
+          name: uplink-data
+      restartPolicy: Always
+      volumes:
+      - name: uplink-data
+        persistentVolumeClaim:
+          claimName: uplink-data
+status: {}

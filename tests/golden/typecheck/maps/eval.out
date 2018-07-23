@@ -1,0 +1,129 @@
+[ ModifyGlobal
+    Name { unName = "shares" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 100
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "shares" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 100
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "shares" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 100
+            )
+          , ( VAccount
+                (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+            , VInt 100
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "shares" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 100
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "runoff" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "runoff" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 110
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "shares" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 0
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "runoff" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VInt 210
+            )
+          , ( VAccount
+                (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+            , VInt 10
+            )
+          ]))
+]
+fromList
+  [ ( Key { unKey = "runoff" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+             , VInt 210
+             )
+           , ( VAccount
+                 (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+             , VInt 10
+             )
+           ])
+    )
+  , ( Key { unKey = "shares" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+             , VInt 0
+             )
+           , ( VAccount
+                 (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+             , VInt 10
+             )
+           ])
+    )
+  ]

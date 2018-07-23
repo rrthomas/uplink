@@ -1,5 +1,7 @@
 [ ( Name { unName = "run" }
   , Sig [ TEnum Name { unName = "myEnum" } ] TAny
-  , Write
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "foo" } ]
+      }
   )
 ]

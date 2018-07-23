@@ -45,6 +45,8 @@ timedelta = "timedelta"
 any      = "any"
 state    = "state"
 enum     = "enum"
+map      = "map"
+set      = "set"
 
 if_      = "if"
 else_    = "else"

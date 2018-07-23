@@ -1,32 +1,37 @@
 Script
   { scriptEnums = []
   , scriptDefs =
-      [ GlobalDef TFloat Name { unName = "x" } (ELit (LFloat 0.0))
+      [ GlobalDef
+          TFloat RoleAny Name { unName = "x" } (ELit (LFloat 0.0))
       , GlobalDef
           (TFixed Prec3)
+          RoleAny
           Name { unName = "f" }
           (ELit (LFixed (Fixed3 (F3 1.234))))
-      , GlobalDefNull (TFixed Prec2) Name { unName = "q" }
+      , GlobalDefNull (TFixed Prec2) RoleAny Name { unName = "q" }
       , LocalDef TInt Name { unName = "y" } (ELit (LInt 7))
       , LocalDefNull TFloat Name { unName = "v" }
       , GlobalDef
           (TAsset (TFractional Prec5))
+          RoleAny
           Name { unName = "z" }
           (ELit
              (LAsset (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
       , GlobalDef
           TContract
+          RoleAny
           Name { unName = "c" }
           (ELit
              (LContract
                 (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
       , GlobalDef
           TAccount
+          RoleAny
           Name { unName = "a" }
           (ELit
              (LAccount
                 (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")))
-      , GlobalDefNull TDateTime Name { unName = "dt" }
+      , GlobalDefNull TDateTime RoleAny Name { unName = "dt" }
       ]
   , scriptTransitions =
       [ Arrow Initial (Step Label { unLabel = "setX" })
@@ -55,6 +60,7 @@ Script
   , scriptMethods =
       [ Method
           { methodTag = Main Label { unLabel = "setDate" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "setDate" }
           , methodArgs = []
           , methodBody =
@@ -78,42 +84,49 @@ Script
           }
       , Method
           { methodTag = Main Label { unLabel = "initial" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "initialize" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
-                [ ELit (LState Label { unLabel = "setX" }) ]
+                (Left Transition) [ ELit (LState Label { unLabel = "setX" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "setup" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "confirm" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
+                (Left Transition)
                 [ ELit (LState Label { unLabel = "confirmation" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "confirmation" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "settle" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
+                (Left Transition)
                 [ ELit (LState Label { unLabel = "settlement" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "settlement" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "finalize" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
-                [ ELit (LState Label { unLabel = "terminal" }) ]
+                (Left Transition) [ ELit (LState Label { unLabel = "terminal" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "setX" }
+          , methodAccess =
+              RoleAnyOf
+                [ ELit
+                    (LAccount (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65"))
+                ]
           , methodName = Name { unName = "setX" }
           , methodArgs =
               [ Arg { argType = TInt , argName = Name { unName = "j" } }
@@ -140,36 +153,34 @@ Script
                             (EBinOp
                                Add
                                (ECall
-                                  Name { unName = "fixed3ToFloat" }
-                                  [ ECall
-                                      Name { unName = "floatToFixed3" }
-                                      [ EVar Name { unName = "k" } ]
-                                  ])
+                                  (Left Fixed3ToFloat)
+                                  [ ECall (Left FloatToFixed3) [ EVar Name { unName = "k" } ] ])
                                (EVar Name { unName = "x" })))
                          (ECall
-                            Name { unName = "transitionTo" }
+                            (Left Transition)
                             [ ELit (LState Label { unLabel = "update" }) ]))))
           }
       , Method
           { methodTag = Main Label { unLabel = "setX" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "fixX" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
-                [ ELit (LState Label { unLabel = "setup" }) ]
+                (Left Transition) [ ELit (LState Label { unLabel = "setup" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "update" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "fixY" }
           , methodArgs = []
           , methodBody =
               ECall
-                Name { unName = "transitionTo" }
-                [ ELit (LState Label { unLabel = "setup" }) ]
+                (Left Transition) [ ELit (LState Label { unLabel = "setup" }) ]
           }
       , Method
           { methodTag = Main Label { unLabel = "update" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "update" }
           , methodArgs = []
           , methodBody =
@@ -209,15 +220,13 @@ Script
                                      Add
                                      (EVar Name { unName = "m" })
                                      (ELit (LFixed (Fixed2 (F2 1.00)))))
-                                  (ECall
-                                     Name { unName = "floatToFixed2" }
-                                     [ EVar Name { unName = "x" } ])))
+                                  (ECall (Left FloatToFixed2) [ EVar Name { unName = "x" } ])))
                             (ECall
-                               Name { unName = "transitionTo" }
-                               [ ELit (LState Label { unLabel = "setX" }) ])))))
+                               (Left Transition) [ ELit (LState Label { unLabel = "setX" }) ])))))
           }
       , Method
           { methodTag = Main Label { unLabel = "f" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "f" }
           , methodArgs =
               [ Arg { argType = TInt , argName = Name { unName = "j" } }
@@ -227,27 +236,26 @@ Script
           }
       , Method
           { methodTag = Main Label { unLabel = "g" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "g" }
           , methodArgs =
               [ Arg
-                  { argType = TAsset TDiscrete , argName = Name { unName = "f" } }
+                  { argType = TAsset TDiscrete , argName = Name { unName = "ad" } }
               , Arg { argType = TAccount , argName = Name { unName = "t" } }
               ]
           , methodBody =
               EIf
                 (EBinOp
                    And
-                   (ECall
-                      Name { unName = "assetExists" } [ EVar Name { unName = "f" } ])
-                   (ECall
-                      Name { unName = "accountExists" } [ EVar Name { unName = "t" } ]))
+                   (ECall (Left AssetExists) [ EVar Name { unName = "ad" } ])
+                   (ECall (Left AccountExists) [ EVar Name { unName = "t" } ]))
                 (ESeq
                    (ECall
-                      Name { unName = "transferTo" }
-                      [ EVar Name { unName = "f" } , ELit (LInt 20) ])
+                      (Left (AssetPrimOp TransferTo))
+                      [ EVar Name { unName = "ad" } , ELit (LInt 20) ])
                    (ECall
-                      Name { unName = "transferFrom" }
-                      [ EVar Name { unName = "f" }
+                      (Left (AssetPrimOp TransferFrom))
+                      [ EVar Name { unName = "ad" }
                       , ELit (LInt 20)
                       , EVar Name { unName = "t" }
                       ]))
@@ -255,11 +263,12 @@ Script
           }
       , Method
           { methodTag = Main Label { unLabel = "initial" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "circulate" }
           , methodArgs =
               [ Arg
                   { argType = TAsset (TFractional Prec2)
-                  , argName = Name { unName = "a" }
+                  , argName = Name { unName = "af2" }
                   }
               , Arg
                   { argType = TFixed Prec2 , argName = Name { unName = "amount" } }
@@ -267,18 +276,19 @@ Script
           , methodBody =
               ESeq
                 (ECall
-                   Name { unName = "circulate" }
-                   [ EVar Name { unName = "a" } , EVar Name { unName = "amount" } ])
+                   (Left (AssetPrimOp CirculateSupply))
+                   [ EVar Name { unName = "af2" } , EVar Name { unName = "amount" } ])
                 (ECall
-                   Name { unName = "transitionTo" }
+                   (Left Transition)
                    [ ELit (LState Label { unLabel = "circulated" }) ])
           }
       , Method
           { methodTag = Main Label { unLabel = "circulated" }
+          , methodAccess = RoleAny
           , methodName = Name { unName = "transfer" }
           , methodArgs =
               [ Arg
-                  { argType = TAsset TBinary , argName = Name { unName = "a" } }
+                  { argType = TAsset TBinary , argName = Name { unName = "ab" } }
               , Arg { argType = TAccount , argName = Name { unName = "from" } }
               , Arg { argType = TAccount , argName = Name { unName = "to" } }
               , Arg { argType = TBool , argName = Name { unName = "amount" } }
@@ -286,14 +296,22 @@ Script
           , methodBody =
               ESeq
                 (ECall
-                   Name { unName = "transferHoldings" }
+                   (Left (AssetPrimOp TransferHoldings))
                    [ EVar Name { unName = "from" }
-                   , EVar Name { unName = "a" }
+                   , EVar Name { unName = "ab" }
                    , EVar Name { unName = "amount" }
                    , EVar Name { unName = "to" }
                    ])
-                (ECall
-                   Name { unName = "terminate" } [ ELit (LMsg "finished transfer") ])
+                (ECall (Left Terminate) [ ELit (LMsg "finished transfer") ])
+          }
+      ]
+  , scriptHelpers =
+      [ Helper
+          { helperName = Name { unName = "add50" }
+          , helperArgs =
+              [ Arg { argType = TInt , argName = Name { unName = "xyz" } } ]
+          , helperBody =
+              EBinOp Add (EVar Name { unName = "xyz" }) (ELit (LInt 50))
           }
       ]
   }

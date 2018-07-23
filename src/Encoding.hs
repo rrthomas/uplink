@@ -46,10 +46,11 @@ data EncodingError a
   deriving (Show)
 
 class (B.ByteArrayAccess a, S.Serialize a) => ByteStringEncoding a where
-  encodeBase :: ByteString -> a
-  decodeBase :: a -> ByteString
-  unbase :: a -> ByteString
-  parseEncodedBS :: ByteString -> Either (EncodingError a) a
+  encodeBase :: ByteString -> a                               -- ^ Encode a ByteString with a given byte encoding.
+  decodeBase :: a -> ByteString                               -- ^ Decode ByteStringEncoding to ByteString.
+  unbase :: a -> ByteString                                   -- ^ Unwrap ByteStringEncoding to ByteString without decoding.
+  parseEncodedBS :: ByteString -> Either (EncodingError a) a  -- ^ Check whether a ByteString is valid according to a given byte encoding.
+                                                              -- Wrap it with ByteStringEncoding if valid.
 
 -------------------------------------------------------------------------------
 -- Base58 Encoding
@@ -61,7 +62,7 @@ class (B.ByteArrayAccess a, S.Serialize a) => ByteStringEncoding a where
 -- > 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
 newtype Base58ByteString = Base58ByteString
   { unbase58 :: ByteString
-  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Hashable, Read, B.Binary, Pretty)
+  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Read, B.Binary, Pretty)
 
 instance ByteStringEncoding Base58ByteString where
   encodeBase = Base58ByteString . B58.encodeBase58 B58.bitcoinAlphabet
@@ -107,7 +108,7 @@ instance FromJSONKey Base58ByteString where
 
 newtype Base16ByteString = Base16ByteString
   { unbase16 :: ByteString
-  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Hashable, Read, B.Binary, ToField, FromField)
+  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Read, B.Binary, ToField, FromField)
 
 instance ByteStringEncoding Base16ByteString where
   encodeBase = Base16ByteString . B.convertToBase B.Base16
@@ -144,7 +145,7 @@ instance ToJSON Base16ByteString where
 
 newtype Base64ByteString = Base64ByteString
  { unbase64 :: ByteString
- } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Hashable, Read, B.Binary, ToField, FromField)
+ } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Read, B.Binary, ToField, FromField)
 
 instance ByteStringEncoding Base64ByteString where
   encodeBase = Base64ByteString . B.convertToBase B.Base64URLUnpadded
@@ -161,10 +162,6 @@ instance ByteStringEncoding Base64ByteString where
 
 decodeBase64E :: Base64ByteString -> Either [Char] ByteString
 decodeBase64E b = B.convertFromBase B.Base64URLUnpadded (unbase64 b)
-
--- | Base 64 encode hash
-base64 :: ByteString -> Base64ByteString
-base64 = Base64ByteString
 
 encodeBase64 :: ByteString -> Base64ByteString
 encodeBase64 = encodeBase
@@ -187,7 +184,7 @@ instance ToJSON Base64ByteString where
 -- | Base 64 hash (padded)
 newtype Base64PByteString = Base64PByteString
   { unbase64P :: ByteString
-  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Hashable, Read, B.Binary, ToField, FromField)
+  } deriving (Show, B.ByteArrayAccess, S.Serialize, Eq, Ord, Monoid, NFData, Read, B.Binary, ToField, FromField)
 
 instance ByteStringEncoding Base64PByteString where
   encodeBase = Base64PByteString . B.convertToBase B.Base64

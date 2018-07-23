@@ -1,2 +1,2 @@
 We have the following graph errors:
-Missing transition from state: 'initial' to 'terminal'
+Missing transition from state: 'initial' to 'terminal'.

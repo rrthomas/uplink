@@ -12,7 +12,8 @@ Process to simulate FCL contract execution
 {-# LANGUAGE ConstraintKinds #-}
 
 module Network.P2P.Simulate (
-  simulationProc,
+  Simulation(..),
+
   SimulationMsg(..),
   SimulationError(..),
   SimulationSuccess(..),
@@ -65,8 +66,8 @@ import Asset       (Asset)
 import Ledger      (World(..), lookupAsset)
 import Block       (Block(..), BlockHeader(..))
 import SafeString  (SafeString, toBytes)
-import Script      (Value, Name, Method(..), Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums)
-import Script.Typecheck (TypeErrInfo, tcMethod)
+import Script      (Value, Name, Method(..), Type, TimeDelta(..), argtys, createEnumInfo, scriptEnums, scriptHelpers)
+import Script.Typecheck (TypeErrInfo, tcMethodCall)
 import Script.Init (createFauxContract)
 import Script.Eval (EvalCtx, EvalState, runEvalM, eval, initEvalState)
 import Script.Error (EvalFail)
@@ -74,10 +75,8 @@ import Script.Pretty (prettyPrint)
 
 import Script.Parser (parseTimeDelta)
 import NodeState   (NodeT, getLedger)
-import qualified Homomorphic as Homo
 import qualified Utils
 
-import Network.P2P.Service (Service(Simulation))
 import qualified Network.Utils as NUtils
 
 import qualified Contract as C
@@ -87,6 +86,9 @@ import qualified Time
 import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
 import qualified Hash
+
+import Network.P2P.Service (Service(..), ServiceSpec(Worker))
+
 {-
 
 The contract simulation process receives `SimulationMsg`s and responds with
@@ -231,7 +233,7 @@ instance Simulatable CallMethod' where
         Left err -> pure $ Left $ InvalidMethodName err
         Right method -> do
           -- Typecheck args before evaluation
-          let tcRes = tcMethod cEnumInfo method args
+          let tcRes = tcMethodCall cEnumInfo method args
           case tcRes of
             Left err -> pure $ Left $ InvalidArgType err
             Right _ -> do
@@ -372,6 +374,16 @@ instance Simulatable QueryLedgerState' where
   simulate sc QueryLedgerState' = pure $ Eval.worldState $ evalState sc
 
 --------------------------------------------------------------------------------
+-- Simulation Service Definition
+--------------------------------------------------------------------------------
+
+data Simulation = Simulation
+  deriving (Show, Generic, B.Binary)
+
+instance Service Simulation where
+  serviceSpec _ = Worker simulationProc
+
+--------------------------------------------------------------------------------
 -- Simulation Process
 --------------------------------------------------------------------------------
 
@@ -474,7 +486,6 @@ handleSimulationMsg sims (sp, simMsg) =
               blockTs  = Block.timestamp $ Block.header lastBlock
           nodeAddr <- N.askSelfAddress
           nodePrivKey <- N.askPrivateKey
-          (pub,_) <- liftBase $ Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
           pure EvalCtx
             { currentBlock = blockIdx
             , currentValidator = nodeAddr
@@ -485,7 +496,7 @@ handleSimulationMsg sims (sp, simMsg) =
             , currentTxIssuer = issuer
             , currentAddress = C.address contract
             , currentPrivKey = nodePrivKey
-            , currentStorageKey = pub
+            , currentHelpers = scriptHelpers (C.script contract)
             }
 
 --------------------------------------------------------------------------------

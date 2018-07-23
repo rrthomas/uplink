@@ -20,6 +20,7 @@ import qualified TestStorage
 import qualified TestDB
 import qualified TestTx
 import qualified TestScript
+import qualified TestNetwork
 
 import qualified DB.LevelDB as DB
 import qualified Reference
@@ -44,11 +45,11 @@ suite = testGroup "Test Suite" [
   -- XML Serialize Tests
   , TestXML.xmlTests
 
-  -- Script Evaluation Tests
+  -- Script parser/pretty printer Tests
   , TestScript.scriptPropTests
 
-  -- Script Parser/Printer Tests
-  , TestScript.scriptGoldenTests
+  -- Script compilation and evaluation Tests
+  , TestScript.scriptCompilerTests
 
   -- Binary Serialization Tests
   , TestBinary.binaryTests
@@ -67,6 +68,9 @@ suite = testGroup "Test Suite" [
 
   -- Transaction Serialization Tests
   , TestTx.cerealTests
+
+  -- Network Tests
+  , TestNetwork.networkTests
   ]
 
 -------------------------------------------------------------------------------

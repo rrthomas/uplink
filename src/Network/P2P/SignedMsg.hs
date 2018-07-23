@@ -153,10 +153,8 @@ sendSigned pid =
 -- the network-access token before sending it to the named process in the local
 -- registry.
 nsendSigned
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> a
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => s -> a -> NodeT m ()
 nsendSigned service =
   nsend (show service) <=< mkSignedMsg
 
@@ -164,31 +162,24 @@ nsendSigned service =
 -- the network-access token before sending it to the named process in a remote
 -- registry on the node with the supplied `NodeId`.
 nsendPeerSigned
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> NodeId
-  -> a
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => NodeId -> s -> a -> NodeT m ()
 nsendPeerSigned service peer msg = do
   signedMsg <- mkSignedMsg msg
   nsendPeer service peer signedMsg
 
 -- | Sends a signed message to all known peers
 nsendPeersSigned
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> a
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => s -> a -> NodeT m ()
 nsendPeersSigned service msg = do
   signedMsg <- mkSignedMsg msg
   nsendPeers service signedMsg
 
 -- | Sends many signed messages to all known peers
 nsendPeersManySigned
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> [a]
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => s -> [a] -> NodeT m ()
 nsendPeersManySigned service msgs = do
   signedMsgs <- mapM mkSignedMsg msgs
   nsendPeersMany service signedMsgs

@@ -1,64 +1,45 @@
-Type error at Line 2, Column 17:
-   Invalid definition for y:
-      Expression 0.0 does not have type int
+Type error at Line 15, Column 7:
+   Could not match expected type 'float' with actual type 'int':
+      Type float was inferred from the assignment to variable 'y' on Line 15, Column 7
+      Type int was inferred from the type signature of argument 1 of function 'setX' on Line 13, Column 11
 
-Type error at Line 10, Column 7:
-   Invalid local var assignment: 
-      Variable on the RHS of Local var assignment must be another local var
-      Type int was inferred because of the type signature of 'setX' on Line 8, Column 11
+Type error at Line 21, Column 16:
+   Could not match expected type 'int' with actual type 'float':
+      Type int was inferred from use of binary operator '*' on Line 21, Column 14
+      Type float was inferred from literal '1.0' on Line 21, Column 16
 
-Type error at Line 15, Column 16:
-   Cannot unify type 'int' with type 'float':
-      Type int was inferred from use of binary operator '*' on Line 15, Column 14
-      Type float was inferred from literal '1.0' on Line 15, Column 16
+Type error at Line 25, Column 24:
+   Could not match expected type 'fixed2' with actual type 'fixed3':
+      Type fixed2 was inferred from use of binary operator '+' on Line 25, Column 13
+      Type fixed3 was inferred from use of binary operator '*' on Line 25, Column 15
 
-Type error at Line 18, Column 11:
-   Cannot unify type 'int' with type 'float':
-      Type int was inferred from use of binary operator '+' on Line 18, Column 9
-      Type float was inferred from literal '7.0' on Line 18, Column 11
+Type error at Line 25, Column 26:
+   Could not match expected type 'fixed3' with actual type 'fixed5':
+      Type fixed3 was inferred from use of binary operator '*' on Line 25, Column 24
+      Type fixed5 was inferred from literal '1.23456f' on Line 25, Column 26
 
-Type error at Line 18, Column 11:
-   Cannot unify type 'int' with type 'float':
-      Type int was inferred from use of binary operator '+' on Line 18, Column 9
-      Type float was inferred from literal '7.0' on Line 18, Column 11
+Type error at Line 31, Column 3:
+   Invalid function name:  transfer
 
-Type error at Line 18, Column 11:
-   Cannot unify type 'int' with type 'float':
-      Type int was inferred by top level definition for variable 'y' on Line 2, Column 17
-      Type float was inferred from literal '7.0' on Line 18, Column 11
-
-Type error at Line 19, Column 15:
-   Cannot unify type 'fixed2' with type 'fixed3':
-      Type fixed2 was inferred from use of binary operator '+' on Line 19, Column 13
-      Type fixed3 was inferred from use of binary operator '*' on Line 19, Column 15
-
-Type error at Line 19, Column 26:
-   Cannot unify type 'fixed3' with type 'fixed5':
-      Type fixed3 was inferred from use of binary operator '*' on Line 19, Column 24
-      Type fixed5 was inferred from literal '1.23456f' on Line 19, Column 26
-
-Type error at Line 24, Column 3:
-   Invalid primitive operation:  transfer
-
-Type error at Line 25, Column 17:
-   Cannot unify type 'account' with type 'assetFrac2':
-      Type account was inferred from the argument type of prim op 'accountExists' on Line 25, Column 17
+Type error at Line 32, Column 17:
+   Could not match expected type 'account' with actual type 'assetFrac2':
+      Type account was inferred from the type signature of argument 1 of function 'accountExists' on Line 32, Column 17
       Type assetFrac2 was inferred by top level definition for variable 'z' on Line 3, Column 16
 
-Type error at Line 26, Column 15:
-   Cannot unify type 'asset' with type 'account':
-      Type asset was inferred from the argument type of prim op 'assetExists' on Line 26, Column 15
+Type error at Line 33, Column 15:
+   Could not match expected type 'asset' with actual type 'account':
+      Type asset was inferred from the type signature of argument 1 of function 'assetExists' on Line 33, Column 15
       Type account was inferred by top level definition for variable 'a' on Line 5, Column 13
 
-Type error at Line 31, Column 19:
-   Cannot unify type 'asset' with type 'account':
-      Type asset was inferred from the argument type of prim op 'assetExists' on Line 31, Column 19
-      Type account was inferred because of the type signature of 'g' on Line 30, Column 24
+Type error at Line 39, Column 19:
+   Could not match expected type 'asset' with actual type 'account':
+      Type asset was inferred from the type signature of argument 1 of function 'assetExists' on Line 39, Column 19
+      Type account was inferred from the type signature of argument 2 of function 'g' on Line 38, Column 24
 
-Type error at Line 31, Column 39:
-   Cannot unify type 'account' with type 'assetBin':
-      Type account was inferred from the argument type of prim op 'accountExists' on Line 31, Column 39
-      Type assetBin was inferred because of the type signature of 'g' on Line 30, Column 13
+Type error at Line 39, Column 39:
+   Could not match expected type 'account' with actual type 'assetBin':
+      Type account was inferred from the type signature of argument 1 of function 'accountExists' on Line 39, Column 39
+      Type assetBin was inferred from the type signature of argument 1 of function 'g' on Line 38, Column 13
 
-Type error at Line 32, Column 5:
-   Invalid primitive operation:  transfer
+Type error at Line 40, Column 5:
+   Invalid function name:  transfer

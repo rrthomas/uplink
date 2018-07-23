@@ -26,7 +26,6 @@ import qualified Script.Storage as Storage
 import qualified Script.Compile as Compile
 import Ledger (World)
 import Script.Eval (EvalCtx(..))
-import qualified Homomorphic as Homo
 
 -- | Create a contract
 createContract
@@ -43,45 +42,44 @@ createContract
   -> Text                                 -- ^ Raw FCL code
   -> IO (Either Text Contract)
 createContract contractAddr blockIdx blockTs nodeAddr txHash txOrigin privKey cTimestamp cOwner world body = do
-  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
-  let evalCtx = EvalCtx
-        { currentBlock = blockIdx
-        , currentValidator = nodeAddr
-        , currentTransaction = txHash
-        , currentTimestamp = blockTs
-        , currentCreated = cTimestamp
-        , currentDeployer = cOwner
-        , currentTxIssuer = txOrigin
-        , currentAddress = contractAddr
-        , currentPrivKey = privKey
-        , currentStorageKey = pub
-        }
-  createContractWithEvalCtx evalCtx world body
+  case Compile.compile body of
+    Left err          -> pure (Left err)
+    Right (_, script) -> do
+      let helpers = scriptHelpers script
+      createContractWithEvalCtx (mkEvalCtx helpers) world script
+  where
+    mkEvalCtx helpers = EvalCtx
+      { currentBlock = blockIdx
+      , currentValidator = nodeAddr
+      , currentTransaction = txHash
+      , currentTimestamp = blockTs
+      , currentCreated = cTimestamp
+      , currentDeployer = cOwner
+      , currentTxIssuer = txOrigin
+      , currentAddress = contractAddr
+      , currentPrivKey = privKey
+      , currentHelpers = helpers
+      }
 
 -- | Create a contract with a supplied evaluation context
 createContractWithEvalCtx
   :: EvalCtx    -- ^ Context to evaluate the top-level definitions in
   -> World      -- ^ Initial world
-  -> Text       -- ^ Raw FCL code
+  -> Script     -- ^ Raw FCL code
   -> IO (Either Text Contract)
-createContractWithEvalCtx evalCtx world body
-  = case Compile.compile body of
-      Left err
-        -> pure (Left err)
-      Right (_, ast)
-        -> do
-        gs <- Storage.initStorage evalCtx world ast
-        pure . pure $ Contract.Contract
-               { Contract.timestamp        = currentTimestamp evalCtx
-               , Contract.script           = ast
-               , Contract.globalStorage    = gs
-               , Contract.localStorage     = Map.empty
-               , Contract.localStorageVars = Storage.initLocalStorageVars ast
-               , Contract.methods          = Script.methodNames ast
-               , Contract.state            = Graph.GraphInitial
-               , Contract.owner            = currentDeployer evalCtx
-               , Contract.address          = currentAddress evalCtx
-               }
+createContractWithEvalCtx evalCtx world ast = do
+  gs <- Storage.initStorage evalCtx world ast
+  pure . pure $ Contract.Contract
+         { Contract.timestamp        = currentTimestamp evalCtx
+         , Contract.script           = ast
+         , Contract.globalStorage    = gs
+         , Contract.localStorage     = Map.empty
+         , Contract.localStorageVars = Storage.initLocalStorageVars ast
+         , Contract.methods          = Script.methodNames ast
+         , Contract.state            = Graph.GraphInitial
+         , Contract.owner            = currentDeployer evalCtx
+         , Contract.address          = currentAddress evalCtx
+         }
 
 -- | This function is used to create Contracts that explicitly _won't_ be
 -- submitted to the ledger. This function creates a transaction and then derives

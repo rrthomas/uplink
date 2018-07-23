@@ -1,6 +1,32 @@
-[ ( Name { unName = "setX" } , Sig [] TVoid , Write )
-, ( Name { unName = "setX2" } , Sig [] TVoid , Write )
-, ( Name { unName = "setY" } , Sig [] TVoid , Write )
-, ( Name { unName = "setY2" } , Sig [] TVoid , Write )
-, ( Name { unName = "setZ" } , Sig [] TAny , Write )
+[ ( Name { unName = "setX" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "x" } ] }
+  )
+, ( Name { unName = "setX2" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "x" } ] }
+  )
+, ( Name { unName = "setY" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "y" } ] }
+  )
+, ( Name { unName = "setY2" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "y" } ] }
+  )
+, ( Name { unName = "setZ" }
+  , Sig [] TAny
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "x" }
+            , ReadVar Name { unName = "y" }
+            ]
+      }
+  )
 ]

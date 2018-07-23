@@ -79,8 +79,9 @@ data Pass
 stage :: Pretty.Pretty err => Pass -> Either err a -> Either Text a
 stage pass = either (Left . Pretty.prettyPrint) Right
 
--- | Compile a given file into it's signatures and AST.
-compileFile :: FilePath -> IO (Either Text ([(Name,Sig,Effect.Effect)], Script))
+-- | Compile a given file into its signatures and AST (Right) or return
+-- an error message (Left).
+compileFile :: FilePath -> IO (Either Text ([(Name,Sig,Effect.Effects)], Script))
 compileFile fpath = do
   res <- Utils.safeRead fpath
   case res of
@@ -88,27 +89,23 @@ compileFile fpath = do
     (Right contents) -> return $ compile $ decodeUtf8 contents
 
 -- | Compile a text stream into it's signatures and AST.
-compile :: Text -> Either Text ([(Name,Sig,Effect.Effect)], Script)
+compile :: Text -> Either Text ([(Name,Sig,Effect.Effects)], Script)
 compile body = do
   past <- stage Parse (Parser.parseScript body)
   compileScript past
 
 -- | Compile an abstract syntax tree into it's signatures and AST.
-compileScript :: Script -> Either Text ([(Name,Sig,Effect.Effect)], Script)
-compileScript iast = do
-  let ast = applyLitSubsts iast
+compileScript :: Script -> Either Text ([(Name,Sig,Effect.Effects)], Script)
+compileScript ast = do
   _    <- stage DuplCheck (Dupl.duplicateCheck ast)
-  sigs <- stage Typecheck (Typecheck.signatures ast)
   gr   <- stage Graph (Anal.checkGraph ast)
   _    <- stage UndefCheck (Undef.undefinednessAnalysis ast)
   effects <- stage EffectCheck (Effect.effectCheckScript ast)
+  sigs <- stage Typecheck (Typecheck.signatures ast)
   let sigsEffects = Effect.combineSigsEffects sigs effects
   pure (sigsEffects, ast)
-  where
-    applyLitSubsts :: Script -> Script
-    applyLitSubsts s = s { Script.scriptDefs = Typecheck.defnAddrSubst (Script.scriptDefs s) }
 
--- | Compile returning either the parser errors
+-- | Given a file path, make sure the script parses, returning any parser errors
 lintFile :: FilePath -> IO [Parser.ParseErrInfo]
 lintFile fpath = do
   fcontents <- readFile fpath
@@ -140,7 +137,6 @@ loadStorageFile fpath = do
     Left err -> return $ Left err
     Right contents -> pure (loadStorage $ decodeUtf8 contents)
 
-
 loadStorage :: Text -> (Either Text Storage.Storage)
 loadStorage body = first toS $ A.eitherDecode (toS body)
 
@@ -168,7 +164,7 @@ matchTypes a b  = Map.mapMaybe identity $ Map.intersectionWith matchTypes' a b
     matchTypes' a b = if a == b then Nothing else Just (a,b)
 
 -- | Empty compiler artifact
-emptyTarget :: IO (Either Text ([(Name,Sig,Effect.Effect)], Script))
+emptyTarget :: IO (Either Text ([(Name,Sig,Effect.Effects)], Script))
 emptyTarget = pure (Right ([], Script.emptyScript))
 
 -------------------------------------------------------------------------------

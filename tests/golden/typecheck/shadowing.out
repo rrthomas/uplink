@@ -1,0 +1,2 @@
+Duplicate variables found:
+ > The top level variable 'a' is shadowed by an argument in method 'shadow'.

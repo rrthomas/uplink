@@ -1,0 +1,4 @@
+Type error at Line 14, Column 21:
+   Could not match expected type '(int) -> bool' with actual type '(float) -> bool':
+      Type (int) -> bool was inferred from the type signature of argument 1 of function 'filter' on Line 14, Column 21
+      Type (float) -> bool was inferred from the helper function definition 'moreThanTwo' on Line 18, Column 1

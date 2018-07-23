@@ -18,7 +18,6 @@ module Storage (
   Key(..),
   Value(..),
   Storage,
-  Schema,
   GlobalStorage(..),
   LocalStorage(..),
 
@@ -31,18 +30,19 @@ module Storage (
   -- ** Validation
   validateStorage,
 
-  -- ** Schema
-  hashSchema,
+  -- ** Hashing
   hashStorage,
-  hashGlobalStorage,
 
 ) where
 
 import Protolude hiding (Type)
 
-import Script (Type(..), Value(..), DateTime(..))
+import Script (Value(..), DateTime(..))
 import Script.Pretty (Pretty(..))
-import SafeInteger ( toSafeInteger', fromSafeInteger)
+
+import Crypto.Number.Serialize (os2ip)
+
+import qualified Encoding
 import qualified Hash
 
 import Datetime.Types
@@ -50,7 +50,7 @@ import Datetime.Types
 import Data.Scientific
 import Data.Serialize as S (Serialize, encode, decode, put, get)
 import Data.Aeson (FromJSONKey(..), ToJSONKey(..), ToJSON(..), FromJSON(..), object, (.=), (.:))
-import Data.Aeson.Types (Parser, typeMismatch, toJSONKeyText)
+import Data.Aeson.Types (typeMismatch, toJSONKeyText)
 import qualified Data.Aeson as A
 import qualified Data.Map as Map
 
@@ -65,7 +65,6 @@ newtype Key = Key { unKey :: Text }
   deriving (Eq, Show, Generic, Ord, NFData, IsString)
 
 type Storage = Map.Map Key Value
-type Schema = [(Key, Type)]
 
 newtype GlobalStorage = GlobalStorage { unGlobalStorage :: Storage }
   deriving (Eq, Show, Generic, NFData, Hash.Hashable)
@@ -122,17 +121,17 @@ instance ToJSON GlobalStorage where
 instance ToJSON LocalStorage where
   toJSON = toJSON . unLocalStorage
 
+instance ToJSONKey Value where
+
 instance ToJSON Value where
   toJSON = \case
      VInt n       -> object ["tag" .= ("VInt" :: Text), "contents" .= toJSON n]
-     VCrypto n    -> object ["tag" .= ("VCrypto" :: Text), "contents" .= A.toJSON (fromSafeInteger n)]
      VFloat n     -> object ["tag" .= ("VFloat" :: Text), "contents" .= toJSON n]
      VFixed f     -> object ["tag" .= ("VFixed" :: Text), "contents" .= A.toJSON f]
      VBool n      -> object ["tag" .= ("VBool" :: Text), "contents" .= toJSON n]
      VVoid        -> object ["tag" .= ("VVoid" :: Text), "contents" .= A.Null]
      VSig sig     -> object ["tag" .= ("VSig" :: Text), "contents" .= A.toJSON sig]
      VMsg n       -> object ["tag" .= ("VMsg" :: Text), "contents" .= A.toJSON n]
-     VAddress n   -> object ["tag" .= ("VAddress" :: Text), "contents" .= toJSON n]
      VAccount n   -> object ["tag" .= ("VAccount" :: Text), "contents" .= toJSON n]
      VAsset n     -> object ["tag" .= ("VAsset" :: Text), "contents" .= toJSON n]
      VContract n  -> object ["tag" .= ("VContract" :: Text), "contents" .= toJSON n]
@@ -140,6 +139,8 @@ instance ToJSON Value where
      VTimeDelta n -> object ["tag" .= ("VTimeDelta" :: Text), "contents" .= toJSON n]
      VState n     -> object ["tag" .= ("VState" :: Text), "contents" .= toJSON n]
      VEnum c      -> object ["tag" .= ("VEnum" :: Text), "contents" .= toJSON c]
+     VMap vmap    -> object ["tag" .= ("VMap" :: Text), "contents" .= toJSON vmap]
+     VSet vset    -> object ["tag" .= ("VSet" :: Text), "contents" .= toJSON vset]
      VUndefined   -> object ["tag" .= ("VUndefined" :: Text), "contents" .= A.Null]
 
 instance FromJSON GlobalStorage where
@@ -172,7 +173,6 @@ instance FromJSON Value where
         "VAccount"  -> VAccount  <$> o .: "contents"
         "VAsset"    -> VAsset    <$> o .: "contents"
         "VContract" -> VContract <$> o .: "contents"
-        "VAddress" -> VAddress  <$> o .: "contents"
         "VDateTime"-> do
             c <- parseDatetime <$> (o .: "contents")
             case c of
@@ -180,7 +180,6 @@ instance FromJSON Value where
               Nothing -> typeMismatch "Invalid date format, expecting ISO8601, given:" v
         "VTimeDelta" -> VTimeDelta  <$> o .: "contents"
         "VSig"      -> VSig      <$> o .: "contents"
-        "VCrypto"   -> VCrypto   <$> fmap toSafeInteger' (o .: "contents" :: Parser Integer)
         "VFixed"    -> VFixed    <$> o .: "contents"
         "VMsg"      -> VMsg      <$> o .: "contents"
         "VEnum"     -> VEnum     <$> o .: "contents"
@@ -223,18 +222,8 @@ instance FromField Key where
 instance Hash.Hashable Key where
   toHash (Key bs) = Hash.toHash bs
 
-instance Hashable Key where
-  hashWithSalt salt (Key bs) = hashWithSalt salt bs
+base16HashToInteger :: Hash.Hash Encoding.Base16ByteString -> Integer
+base16HashToInteger = os2ip
 
--- Evil orphan instance, since 'hashable' doesn't include 'containers'
-instance (Hashable a, Hashable b) => Hashable (Map a b) where
-   hashWithSalt = Map.foldlWithKey' (\s k v -> hashWithSalt (hashWithSalt s k) v)
-
-hashStorage :: Storage -> Int
-hashStorage = hash
-
-hashGlobalStorage :: GlobalStorage -> Int
-hashGlobalStorage = hashStorage . unGlobalStorage
-
-hashSchema :: Schema -> Int
-hashSchema = hash
+hashStorage :: Storage -> Integer
+hashStorage = base16HashToInteger . Hash.toHash

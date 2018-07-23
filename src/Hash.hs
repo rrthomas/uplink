@@ -288,10 +288,11 @@ parseHash
 parseHash encBS =
   if validateShaBS encBS
      then case digestFromByteString decBS of
-            Nothing -> Left (toS decBS <> " is an invalid hash")
+            Nothing -> Left (rawEncBSAsText <> " is an invalid hash")
             Just d  -> Right $ Hash d
-     else Left (toS decBS <> " is an invalid hash")
+     else Left (rawEncBSAsText <> " is an invalid hash")
   where
+    rawEncBSAsText = toS (Encoding.unbase encBS)
     decBS = Encoding.decodeBase encBS
 
 parseRawHash
@@ -360,14 +361,3 @@ instance FromField (Hash Encoding.Base58ByteString) where
     case digestFromByteString unencBS of
       Nothing -> fail "Failed to decode base58 encoded Hash Digest"
       Just d  -> pure $ Hash d
-
--------------------------------------------------------------------------------
--- Testing
--------------------------------------------------------------------------------
-
-data TestHash = TestHash Int ByteString
-  deriving (Show, Generic)
-
--- Can be derived with DeriveAnyClass but doesn't play nice with GND. For now,
--- wait until GHC 8.2
-instance Hashable TestHash

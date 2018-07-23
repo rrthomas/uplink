@@ -40,7 +40,7 @@ data Command
   | Data    DataCommand
   | Version
   | Repl { script :: FilePath, verbose :: Bool, worldState :: Maybe FilePath }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 data KeyCommand
   = CreateAuthorities { nAuths :: Int }
@@ -84,8 +84,8 @@ data ImportData
 
 data ChainCommand
   = Run
-  | Init Account.AccountPrompt (Maybe ImportData)
-  deriving (Eq, Ord, Show)
+  | Init (Maybe Account.AccountKeyOpt) (Maybe ImportData)
+  deriving (Eq, Show)
 
 -- Overloaded configuration settings passed on the commandline that supercede
 -- configuration files.
@@ -104,8 +104,8 @@ data Opts = Opts
   , _command        :: Command
   , _rpcReadOnly    :: Maybe Bool
   , _testMode       :: Maybe Bool
-  , _privKey        :: Maybe FilePath
   , _nodeDir        :: Maybe FilePath
+  , _monitorPort    :: Maybe Int
   } deriving (Show)
 
 defaultOpts :: Opts
@@ -122,6 +122,6 @@ defaultOpts = Opts
   , _command        = Chain Run
   , _rpcReadOnly    = Just False
   , _testMode       = Just False
-  , _privKey        = Nothing
   , _nodeDir        = Just ".uplink"
+  , _monitorPort    = Nothing
   }

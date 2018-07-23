@@ -68,7 +68,7 @@ type ConnectionPool = Pool.Pool Connection
 
 newtype PostgresT m a = PostgresT
   { unPostgresT :: ReaderT ConnectionPool m a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadTrans, MonadReader ConnectionPool)
+  } deriving (Typeable, Functor, Applicative, Monad, MonadIO, MonadTrans, MonadReader ConnectionPool)
 
 runPostgresT :: ConnectionPool -> (PostgresT m a) -> m a
 runPostgresT connPool = flip runReaderT connPool . unPostgresT

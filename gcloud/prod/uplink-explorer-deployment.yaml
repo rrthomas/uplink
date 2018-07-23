@@ -1,0 +1,30 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert -f ../docker-compose.kubernetes.yml
+    kompose.version: 1.13.0 (84fa826)
+  creationTimestamp: null
+  labels:
+    io.kompose.service: uplink-explorer
+  name: uplink-explorer
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: uplink-explorer
+    spec:
+      containers:
+      - env:
+        - name: RPC_HOST
+          value: bootnode
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:latest
+        name: uplink-explorer
+        ports:
+        - containerPort: 80
+        resources: {}
+      restartPolicy: Always
+status: {}

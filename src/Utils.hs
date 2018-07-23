@@ -16,11 +16,18 @@ module Utils (
   putGreen,
   dieRed,
 
+  zipWith3M,
+  zipWith3M_,
+
   safeRead,
   safeReadLazy,
   safeWrite,
   safeWithFile,
 
+  waitTimeout,
+  waitTimeout',
+  retryN,
+  ThreadTimeoutException,
   waitUntil,
   delayedReplicateM_,
 
@@ -60,11 +67,15 @@ import qualified Data.Serialize as S
 import qualified Data.Text as T
 
 import System.Console.Haskeline
+import Control.Retry
 
-import Text.Parsec.Text
-import Text.Parsec
+import qualified Text.Parsec.Text as T
+import qualified Text.Parsec as T
 import Text.Printf (printf)
 import qualified Text.Show.Pretty (ppShow)
+
+import Control.Concurrent.Async (race, wait)
+import Control.Exception (Exception)
 
 import System.Console.ANSI
 import System.Directory
@@ -119,13 +130,61 @@ dieRed msg = do
 
 --------------------------------------------------------------------------------
 
+zipWith3M :: Monad m => (a -> b -> c -> m d) -> [a] -> [b] -> [c] -> m [d]
+zipWith3M _ [] _ _ = pure []
+zipWith3M _ _ [] _ = pure []
+zipWith3M _ _ _ [] = pure []
+zipWith3M f (a:as) (b:bs) (c:cs) =
+  (:) <$> f a b c <*> zipWith3M f as bs cs
+
+zipWith3M_ :: Monad m => (a -> b -> c -> m d) -> [a] -> [b] -> [c] -> m ()
+zipWith3M_ f as bs cs = void (zipWith3M f as bs cs)
+
+--------------------------------------------------------------------------------
+
+data ThreadTimeoutException = ThreadTimeoutException
+     deriving (Show, Typeable)
+
+instance Exception ThreadTimeoutException
+
+-- | Wait for an task to complete
+waitTimeout :: IO a -> Int -> IO (Either ThreadTimeoutException a)
+waitTimeout f i = do
+  t <- async f
+  race (threadDelay i >> pure ThreadTimeoutException) (wait t)
+
+-- | Wait for an task to complete or throw an error
+waitTimeout' :: IO a -> Int -> IO a
+waitTimeout' f i = do
+  tE <- waitTimeout f i
+  case tE of
+    Left err -> panic "Timeout exception"
+    Right t -> pure t
+
+retryN'
+  :: Int      -- ^ # Retries
+  -> Int      -- ^ Timeout in each attempt
+  -> IO a     -- ^ Action to compute
+  -> IO a
+retryN' n i f =
+  liftIO $ recoverAll
+    (exponentialBackoff 1000 <> limitRetries n)
+    (const $ Utils.waitTimeout' f i)
+
+retryN
+  :: Int      -- ^ # Retries
+  -> Int      -- ^ Timeout in each attempt
+  -> IO a     -- ^ Action to compute
+  -> IO (Either ThreadTimeoutException a)
+retryN n i f = try $ retryN' n i f
+
 -- | Waits until the specified timestamp (microseconds). If the time to wait
 -- until is earlier than "now", return immediately.
 waitUntil :: Time.Timestamp -> IO Int64
 waitUntil t = do
   t' <- Time.now
   let tdiff = t - t'
-  if (tdiff > 0)
+  if tdiff > 0
     then do
       threadDelay (fromIntegral tdiff)
       pure tdiff
@@ -237,10 +296,10 @@ yesOrNoPrompt msg = do
     v | v `elem` ["n", "no"] -> pure False
     _ -> yesOrNoPrompt msg
 
-parsePrompt :: MonadIO m => Text -> Parser a -> m a
+parsePrompt :: MonadIO m => Text -> T.Parser a -> m a
 parsePrompt msg p = do
   str <- liftIO $ Utils.prompt msg
-  case parse p "<prompt>" (toS str) of
+  case T.parse p "<prompt>" (toS str) of
     (Left err) -> do
       print err
       parsePrompt msg p

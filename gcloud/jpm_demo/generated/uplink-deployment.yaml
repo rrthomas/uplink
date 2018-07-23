@@ -1,0 +1,28 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: uplink
+  name: uplink
+spec:
+  replicas: 6
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: uplink
+    spec:
+      containers:
+      - command:
+        - bash
+        - -c
+        - sleep 7 && yes n | uplink chain  -c config/node.config.local.docker
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+        name: uplink
+        ports:
+        - containerPort: 8545
+        resources: {}
+      restartPolicy: Always
+status: {}

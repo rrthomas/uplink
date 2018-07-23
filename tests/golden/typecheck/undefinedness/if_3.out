@@ -1,5 +1,28 @@
-[ ( Name { unName = "go" } , Sig [] TVoid , Write )
-, ( Name { unName = "init" } , Sig [] TVoid , ReadWrite )
-, ( Name { unName = "exitOne" } , Sig [] TAny , Write )
-, ( Name { unName = "exitTwo" } , Sig [] TAny , Write )
+[ ( Name { unName = "go" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "init" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet =
+          fromList [ Write , Read , WriteVar Name { unName = "a" } ]
+      }
+  )
+, ( Name { unName = "exitOne" }
+  , Sig [] TAny
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "a" }
+            , WriteVar Name { unName = "b" }
+            ]
+      }
+  )
+, ( Name { unName = "exitTwo" }
+  , Sig [] TAny
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "b" } ] }
+  )
 ]

@@ -51,7 +51,6 @@ instance FromJSON PrecN where
 
 instance Serialize PrecN
 instance Binary PrecN
-instance Hashable PrecN
 instance Hash.Hashable PrecN
 instance NFData PrecN
 
@@ -69,22 +68,22 @@ instance HasResolution E5 where
   resolution _ = 100000
 
 newtype Fixed1 = F1 (Fixed E1)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 newtype Fixed2 = F2 (Fixed E2)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 newtype Fixed3 = F3 (Fixed E3)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 newtype Fixed4 = F4 (Fixed E4)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 newtype Fixed5 = F5 (Fixed E5)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 newtype Fixed6 = F6 (Fixed E6)
-  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, Hashable, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Generic, NFData, Num, Fractional, ToJSON, FromJSON)
 
 putFixed :: Fixed a -> Data.Serialize.Put
 putFixed (MkFixed n) = Data.Serialize.put (toSafeInteger' n)
@@ -126,7 +125,6 @@ data FixedN
   | Fixed6 Fixed6
   deriving (Eq, Ord, Show, Generic)
 
-instance Hashable FixedN
 instance Serialize FixedN
 instance ToJSON FixedN
 instance FromJSON FixedN

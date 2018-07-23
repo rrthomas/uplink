@@ -104,7 +104,7 @@ postgresTests =
 
 levelDBTests :: TestTree
 levelDBTests =
-  withResource (createDB "tmp") deleteDBs $ \dbIO -> do
+  withResource (createDB "tmp") deleteDBs $ \dbIO ->
     dbReadWriteTests "LevelDB" $ \action ->
       flip runLevelDBT action =<< dbIO
   where
@@ -119,7 +119,7 @@ dbReadWriteTests
   => TestName
   -> (m () -> IO ())
   -> TestTree
-dbReadWriteTests testNm runDB = do
+dbReadWriteTests testNm runDB =
    testGroup (testNm ++ ": Write/Read all values to/from DB")
      [ HUnit.testCase "Write/Read block tests" testBlocksDB
      , HUnit.testCase "Write/Read assets tests" testAssetsDB

@@ -1,0 +1,14 @@
+Type error at Line 18, Column 14:
+   Could not match expected type 'map<account, float>' with actual type 'map<account, int>':
+      Type map<account, float> was inferred from the assignment to variable 'balances' on Line 18, Column 14
+      Type map<account, int> was inferred from the return type of the function 'transform' on Line 18, Column 14
+
+Type error at Line 18, Column 24:
+   Could not match expected type '(float) -> c' with actual type '(int) -> int':
+      Type (float) -> c was inferred from the type signature of argument 1 of function 'transform' on Line 18, Column 24
+      Type (int) -> int was inferred from the helper function definition 'calcInterest' on Line 28, Column 1
+
+Type error at Line 24, Column 14:
+   Could not match expected type 'map<account, float>' with actual type 'map<account, int>':
+      Type map<account, float> was inferred from the assignment to variable 'balances' on Line 24, Column 14
+      Type map<account, int> was inferred from the return type of the function 'transform' on Line 24, Column 14

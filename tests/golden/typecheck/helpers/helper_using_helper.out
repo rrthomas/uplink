@@ -1,0 +1,13 @@
+[ ModifyGlobal
+    Name { unName = "flipper" }
+    (VEnum EnumConstr { unEnumConstr = "Flip" })
+, ModifyState (GraphLabel Label { unLabel = "intermediate" })
+, ModifyGlobal Name { unName = "x" } (VInt 43)
+, ModifyState (GraphLabel Label { unLabel = "terminal" })
+]
+fromList
+  [ ( Key { unKey = "flipper" }
+    , VEnum EnumConstr { unEnumConstr = "Flip" }
+    )
+  , ( Key { unKey = "x" } , VInt 43 )
+  ]

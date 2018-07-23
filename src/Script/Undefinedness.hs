@@ -57,6 +57,7 @@ module Script.Undefinedness (
 import Protolude
 
 import Control.Arrow ((&&&))
+import Control.Exception.Base (assert)
 import qualified Data.Either as Either
 import qualified Data.List as List
 import Data.Map (Map)
@@ -185,9 +186,9 @@ initialEnv = handleErrors . foldlM addDef Map.empty . scriptDefs
           [] -> pure env
           errs@(_:_) -> Left [InvalidStackTrace [] errs]
 
-    addDef oldEnv (GlobalDef _ n lexpr)
+    addDef oldEnv (GlobalDef _ _ n lexpr)
       = checkAssignment (located lexpr) oldEnv n lexpr
-    addDef oldEnv (GlobalDefNull _ ln)
+    addDef oldEnv (GlobalDefNull _ _ ln)
       = pure $ Map.insert (locVal ln) Uninitialized oldEnv
     addDef oldEnv (LocalDef _ n lexpr)
       = checkAssignment (located lexpr) oldEnv n lexpr
@@ -405,19 +406,25 @@ checkStatement (Located loc (EAssign var rhs)) (currState, oldEnv)
   = do
   newEnv <- checkAssignment loc oldEnv var rhs
   pure [(currState, newEnv)]
-checkStatement (Located _ (ECall opname ss)) (currState, oldEnv)
-  = case Prim.lookupPrim opname of
-      Nothing
-        -> Left "unknown primop"
-      Just Prim.Terminate
-        -> pure [(currState, oldEnv), (Main "terminal", oldEnv)]
-      Just Prim.Transition
-        -> case ss of
-             [Located _ (ELit (Located _ (LState newState)))]
-               -> pure [(currState, oldEnv), (Main newState, oldEnv)]
-             _ -> Left "malformed primop args"
-      Just _ -> (pure . (currState,) . envMeets)
-                <$> mapM (`checkExpression` oldEnv) ss
+checkStatement (Located _ (ECall efunc ss)) (currState, oldEnv)
+  = case efunc of
+      -- Currently, helper functions are not allowed to have effects
+      -- In the future, we will have to lookup the helper function body
+      -- and call 'checkStatement' on it. However, we still check all the
+      -- argument expressions to the helper function for undefinedness.
+      Right nm ->
+        pure . (currState,) . envMeets
+          <$> mapM (`checkExpression` oldEnv) ss
+      Left Prim.Terminate ->
+        pure [(currState, oldEnv), (Main "terminal", oldEnv)]
+      Left Prim.Transition ->
+        case ss of
+          [Located _ (ELit (Located _ (LState newState)))]
+            -> pure [(currState, oldEnv), (Main newState, oldEnv)]
+          _ -> Left "malformed primop args"
+      Left _ ->
+        pure . (currState,) . envMeets
+          <$> mapM (`checkExpression` oldEnv) ss
 checkStatement (Located _ ENoOp) env
   = pure [env]
 
@@ -444,13 +451,13 @@ checkAssignment loc oldEnv var rhs = do
   pure newEnv
 
 -- | Mapping from method names to expressions
-type Methods = Map Name LExpr
+type Methods = Map Name Method
 
 -- | Map method names to their bodies (statements/expressions)
 fetchScriptMethods :: Script -> Methods
 fetchScriptMethods
   = Map.fromList
-    . map (methodName &&& methodBody)
+    . map (methodName &&& identity)
     . scriptMethods
 
 -- | Validate a single stack trace
@@ -460,52 +467,71 @@ validateStackTrace
   -> Methods -- ^ map of method names and their bodies
   -> StackTrace -- ^ the stack trace to validate
   -> UndefinednessResult
-validateStackTrace initEnv methodBodies
-  = foldl step emptyResult . lookupMethodBodies
+validateStackTrace initEnv methods
+  = foldl step emptyResult . getRelevantMethods
     where
       emptyResult :: UndefinednessResult
       emptyResult = Right $ ValidStackTrace [] initEnv
 
       step
         :: UndefinednessResult
-        -> (Name, GraphLabel, GraphLabel, LExpr)
+        -> (Name, GraphLabel, GraphLabel, Method)
         -> UndefinednessResult
       step (Left invalidStackTrace) _
         = Left invalidStackTrace
-      step (Right (ValidStackTrace strace oldEnv)) (m, src, dst, stmt)
-        = case newEnv of
-            Left err
-              -> Left $ InvalidStackTrace straceNew (errMsg [err])
-            Right env'
-              -> case collectErrors env' of
-                   []
-                     -> Right $ ValidStackTrace straceNew env'
-                   errs@(_:_)
-                     -> Left $ InvalidStackTrace straceNew (errMsg errs)
+      step (Right (ValidStackTrace strace oldEnv)) (m, src, dst, method)
+        = case accessRestrictionErrs of
+            errs@(_:_) ->
+              Left $ InvalidStackTrace straceNew (errMsg errs)
+            [] ->
+              case newEnv of
+                Left err
+                  -> Left $ InvalidStackTrace straceNew (errMsg [err])
+                Right env'
+                  -> case collectErrors env' of
+                       []
+                         -> Right $ ValidStackTrace straceNew env'
+                       errs@(_:_)
+                         -> Left $ InvalidStackTrace straceNew (errMsg errs)
+
         where
           straceNew = extendStackTrace m src dst strace
           newEnv = (envMeets
                    . map snd
                    . filter ((== dst) . fst))
-                   <$> checkStatement stmt (src, oldEnv)
+                   <$> checkStatement (methodBody method) (src, oldEnv)
 
           errMsg = ("In method " <> unName m <> ":" :)
+
+          accessRestrictionErrs
+            = case methodAccess method of
+                RoleAny ->
+                  []
+                RoleAnyOf rs ->
+                  -- checkExpression returns a Left case if the expression is a
+                  -- statement, but this should be ruled out by type checking
+                  assert ([] == (lefts . map (`checkExpression` oldEnv) $ rs))
+                    $ collectErrors
+                    . envMeets
+                    . rights
+                    . map (`checkExpression` oldEnv)
+                    $ rs
 
       extendStackTrace
         :: Name -> GraphLabel -> GraphLabel -> StackTrace -> StackTrace
       extendStackTrace m src dst strace
         = strace ++ [StackTraceItem m src dst]
 
-      lookupMethodBodies
-        :: StackTrace -> [(Name, GraphLabel, GraphLabel, LExpr)]
-      lookupMethodBodies
-        = Maybe.mapMaybe lookupMethodBody
+      getRelevantMethods
+        :: StackTrace -> [(Name, GraphLabel, GraphLabel, Method)]
+      getRelevantMethods
+        = Maybe.mapMaybe lookupMethod
 
-      lookupMethodBody
-        :: StackTraceItem -> Maybe (Name, GraphLabel, GraphLabel, LExpr)
-      lookupMethodBody (StackTraceItem m src dst) = do
-        body <- Map.lookup m methodBodies
-        pure (m, src, dst, body)
+      lookupMethod
+        :: StackTraceItem -> Maybe (Name, GraphLabel, GraphLabel, Method)
+      lookupMethod (StackTraceItem m src dst) = do
+        method <- Map.lookup m methods
+        pure (m, src, dst, method)
 
 -- | Collect erroneous variables from an environment
 collectErrors

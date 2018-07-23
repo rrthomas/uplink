@@ -30,10 +30,7 @@ module Address (
   AContract,
   AAccount,
   AAsset,
-  AUnknown,
   showAddr,
-  addrFromUnknown,
-  unknownAddrFromAddr,
   EitherAccountContract,
 
   -- ** Parsing
@@ -64,16 +61,14 @@ import Prelude (Show(..), show)
 import Data.Typeable
 import Protolude hiding (Show, show)
 import qualified GHC.TypeLits as Lits
-import qualified Data.Coerce
 import Utils (panicImpossible)
 import qualified Encoding
 import qualified Key
 import qualified Hash
 import Script.Pretty (Pretty(..), squotes)
 
-
+import Crypto.Random.Types (MonadRandom(..))
 import Data.Aeson (Value(..), ToJSON(..), FromJSON(..), ToJSONKey(..), FromJSONKey(..))
-
 import Data.Aeson.Types (typeMismatch, toJSONKeyText, FromJSONKeyFunction(..))
 import Data.Serialize (Serialize)
 import qualified Data.Binary as B
@@ -97,9 +92,6 @@ addrSize = Hash.hashSize
 -- | A ledger address, derived from elliptic curve point
 newtype Address a = Address (Hash.Hash Encoding.Base58ByteString)
   deriving (Show, Read, Eq, Ord, Generic, NFData, B.Binary, Typeable, Hash.Hashable)
-
-instance Hashable (Address a) where
-  hashWithSalt salt (Address h) = hashWithSalt salt (Hash.getRawHash h)
 
 instance ToJSON (Address a) where
   toJSON (Address b) = toJSON b
@@ -129,7 +121,6 @@ instance Pretty (Address a) where
 data AContract
 data AAccount
 data AAsset
-data AUnknown
 
 instance Show AAccount where
   show = panicImpossible $ Just "Cannot evaluate address tag"
@@ -145,18 +136,6 @@ instance Show AAsset where
   show = panicImpossible $ Just "Cannot evaluate address tag"
 instance Eq AAsset where
   (==) = panicImpossible $ Just "Cannot evaluate address tag"
-
-instance Show AUnknown where
-  show = panicImpossible $ Just "Cannot evaluate address tag"
-instance Eq AUnknown where
-  (==) = panicImpossible $ Just "Cannot evaluate address tag"
-
-
-addrFromUnknown :: Address AUnknown -> Address a
-addrFromUnknown = Data.Coerce.coerce
-
-unknownAddrFromAddr :: Address a -> Address AUnknown
-unknownAddrFromAddr = Data.Coerce.coerce
 
 type family AddrTag i where
   AddrTag AContract = "c"
@@ -246,19 +225,19 @@ recoverAddress' sig = bimap deriveAddress deriveAddress . Key.recover sig
 -------------------------------------------------------------------------------
 
 -- | Generate a new random 'Address' from random key.
-newAddr :: IO (Address a)
+newAddr :: MonadRandom m => m (Address a)
 newAddr = Key.new >>= \(pub, priv) -> pure (deriveAddress pub)
 
 -- | Generate a key public key, address pair.
-newPair :: IO (Key.PubKey, Address a)
+newPair :: MonadRandom m => m (Key.PubKey, Address a)
 newPair = Key.new >>= \(pub, priv) -> pure (pub, deriveAddress pub)
 
 -- | Generate a key private key, public key, address pair.
-newTriple :: IO (Key.PrivateKey, Key.PubKey, Address a)
+newTriple :: MonadRandom m => m (Key.PrivateKey, Key.PubKey, Address a)
 newTriple = Key.new >>= \(pub, priv) -> pure (priv, pub, deriveAddress pub)
 
 -- | Generate a set of new addresses
-newAddrs :: Int -> IO [Address a]
+newAddrs :: MonadRandom m => Int -> m [Address a]
 newAddrs n = replicateM n newAddr
 
 -------------------------------------------------------------------------------

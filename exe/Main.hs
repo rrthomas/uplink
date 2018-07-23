@@ -59,15 +59,26 @@ chainParser = runChainParser
       where
         initChainOptsParser :: Parser Opts
         initChainOptsParser = do
-          init <- Init <$> initAccParser <*> importDataParser
+          init <- Init <$> initAccPromptParser <*> importDataParser
           chainOpts <- optsParser
           return chainOpts { _command = Driver.Chain init }
 
-        -- Used for spinning up nodes on the test network
-        initAccParser :: Parser Account.AccountPrompt
-        initAccParser = flag Account.Prompt Account.NoPrompt $
-             long "new-account"
-          <> help "Don't prompt for new account creation."
+        initAccPromptParser :: Parser (Maybe Account.AccountKeyOpt)
+        initAccPromptParser =
+            -- first try
+            existingKeyParser <|> newKeyParser
+          where
+            newKeyParser =
+              flag Nothing (Just Account.New) $
+                  long "key-gen"
+                <> help "Generate a new key pair for the account automatically"
+
+            existingKeyParser  =
+              fmap (Just . Account.Existing) $
+                strOption $
+                     long "existing-key"
+                  <> short 'k'
+                  <> help "Create an account with an existing private key"
 
         -- Load blocks or world state from a file
         importDataParser :: Parser (Maybe ImportData)
@@ -105,8 +116,8 @@ chainParser = runChainParser
       _verbose   <- verbose
       _rpcReadOnly <- rpcReadOnly
       _testMode  <- testMode
-      _privKey   <- privKey
       _nodeDir   <- nodeDir
+      _monitorPort <- monitorPort
 
       pure Opts {..}
 
@@ -439,19 +450,18 @@ testMode = optional $ flag False True $
      long "test"
   <> help "Run node in test mode"
 
-privKey :: Parser (Maybe FilePath)
-privKey = optional $ strOption $
-     long "privkey"
-  <> short 'k'
-  <> metavar "PATH"
-  <> help "Private key"
-
 nodeDir :: Parser (Maybe FilePath)
 nodeDir = optional $ strOption $
      long "datadir"
   <> short 'd'
   <> metavar "PATH"
   <> help "Specify the node data directory path"
+
+monitorPort :: Parser (Maybe Int)
+monitorPort = optional $ option auto $
+     long "monitor-port"
+  <> metavar "PORT"
+  <> help "Specify the port the monitoring server runs on"
 
 -------------------------------------------------------------------------------
 -- Toplevel
@@ -526,9 +536,11 @@ handleOpts o@Opts {..} = do
               = _testMode    `fallback` (Config.testMode c)
             , Config.nodeDataDir
               = _nodeDir     `fallback` (Config.nodeDataDir c)
+            , Config.monitorPort
+              = _monitorPort `fallback` (Config.monitorPort c)
             }
 
-  Driver.driver (Opts._command o) o config
+  Driver.driver (Opts._command o) config
 
   where
     fallback :: Maybe a -> a -> a

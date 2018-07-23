@@ -161,7 +161,7 @@ validateBlock validateCtx newBlock = do
           case List.findIndex (== currBlkOrigin) blockOrigins of
             Nothing  -> pure $ Right ()
             Just idx -> pure $ Left $
-              let blocksNeededToWait = blockGenLimit poaParams - idx + 1
+              let blocksNeededToWait = blockGenLimit poaParams - idx
                   blockOrigin = Block.origin $ Block.header newBlock
                in BlockGenLimitSurpassed blocksNeededToWait blockOrigin
 

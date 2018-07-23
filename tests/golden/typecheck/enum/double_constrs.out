@@ -1,2 +1,2 @@
-Duplicate definitions found:
- - Duplicate constructor: Foo
+Duplicate variables found:
+ > Duplicate constructor: Foo

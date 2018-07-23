@@ -1,5 +1,5 @@
 name: uplink
-version: 0.1.6
+version: 0.1.7
 synopsis: A distributed ledger for finance.
 maintainer: Stephen Diehl (stephen@adjoint.io)
 license: Apache
@@ -20,6 +20,11 @@ flags:
     manual: False
     default: False
 
+  ekg:
+    description: Monitor using HTTP server
+    manual: True
+    default: False
+
 dependencies:
   # Prelude
   - base >= 4.7 && < 5.0
@@ -38,6 +43,7 @@ dependencies:
   - scientific
   - filelock
   - ansi-terminal
+  - rank1dynamic
 
   # Date & Time
   - time
@@ -52,6 +58,7 @@ dependencies:
   - lifted-base
   - distributed-process-lifted
   - lifted-async
+  - retry
 
   # Data Structures
   - containers
@@ -108,8 +115,11 @@ dependencies:
   - http-client
   - network-transport
   - network-transport-tcp
+  - network-transport-tcp-tls
   - network-transport-inmemory
+  - distributed-static
   - distributed-process
+  - distributed-process-supervisor
   - wai
   - wai-logger
   - warp
@@ -133,6 +143,11 @@ dependencies:
 
   # Testing
   - random
+
+when:
+  - condition: flag(ekg)
+    dependencies:
+    - ekg
 
 library:
   source-dirs: src
@@ -216,6 +231,9 @@ library:
     # Addresses
     - Address
 
+    # Transaction
+    - Transaction.RandomGen
+
     # Cryptography
     - Hash
     - Key
@@ -265,6 +283,7 @@ library:
     - Network.P2P.Send
     - Network.P2P.Simulate
     - Network.P2P.Logging
+    - Network.P2P.Logging.Rule
 
     # Consensus
     - Consensus
@@ -297,6 +316,10 @@ library:
     - Script.Undefinedness
     - Script.Effect
 
+  when:
+    - condition: flag(ekg)
+      cpp-options: -DEKG
+
 executables:
   uplink:
     main: Main.hs
@@ -306,6 +329,8 @@ executables:
       - OverloadedStrings
     other-modules:
       Paths_uplink
+    ghc-options:
+      -with-rtsopts=-T
     when:
       - condition: os(linux) && flag(static)
         ghc-options: -static -optl-static

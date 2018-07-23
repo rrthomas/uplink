@@ -10,6 +10,10 @@ Transaction data structures and serialization.
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Transaction (
   -- ** Types
@@ -45,10 +49,14 @@ module Transaction (
   TxValidationError(..),
   InvalidTxField(..),
 
+  TxHeader(..),
+  TxElem(..),
+  txElemName,
+  txElemToTransactionHeader,
+
   -- ** Validation / Verification
   verifyTransaction,
   validateTransaction,
-
 ) where
 
 import Protolude hiding (to, put, get)
@@ -57,14 +65,15 @@ import Hash (sha256)
 import Data.Aeson hiding (decode, encode)
 import Data.Aeson.Types (Parser, typeMismatch)
 import Data.Serialize as S
-import qualified Data.Binary as Binary
+import qualified Data.Binary as B
 import Control.Monad (fail)
+import Crypto.Random.Types (MonadRandom(..))
 
 import SafeString (SafeString)
-import SafeInteger (SafeInteger)
+import SafeInteger (SafeInteger, toSafeInteger')
 
 import Asset (Balance, putAssetType, getAssetType, putRef, getRef, Holder(..))
-import Address (Address, putAddress, getAddress, AAccount, AAsset, AContract)
+import Address (Address, putAddress, getAddress, AAccount, AAsset, AContract, emptyAddr)
 import Metadata (Metadata(..))
 import qualified Key
 import qualified Time
@@ -82,8 +91,12 @@ import qualified Script.Eval
 import qualified Script.Typecheck
 import qualified Script.Compile as Compile
 
+import Transaction.Generics (TxHeader(..), TxElem(..), txElemName, txElemIndex)
+
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
+
+import qualified Data.List as DL
 
 -------------------------------------------------------------------------------
 -- Transaction
@@ -101,7 +114,7 @@ data TransactionHeader
   = TxContract TxContract  -- ^ Contract transaction
   | TxAsset TxAsset        -- ^ Asset transactions
   | TxAccount TxAccount    -- ^ Account transactions
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, TxHeader)
 
 data Status
   = Pending     -- ^ Transaction is waiting to be included in a block or rejected
@@ -127,7 +140,8 @@ data TxContract
     , method  :: ByteString
     , args    :: [Storage.Value]
   }
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, TxHeader)
+
 
 -- XXX This is currently unused anywhere in Uplink
 data SyncLocalOp
@@ -135,6 +149,7 @@ data SyncLocalOp
   | Sync
   | Finalize (Address AContract) SafeInteger.SafeInteger
   deriving (Show, Eq, Generic, NFData, Hash.Hashable, Serialize)
+
 
 data TxAsset
   = CreateAsset {
@@ -165,7 +180,7 @@ data TxAsset
   | RevokeAsset {
       address :: Address AAsset                   -- ^ Address of asset to revoke
   }
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, TxHeader)
 
 data TxAccount
   = CreateAccount {
@@ -176,80 +191,52 @@ data TxAccount
   | RevokeAccount {
       address   :: Address AAccount     -- ^ Issue a revocation of an account
   }
-  deriving (Show, Eq, Generic, NFData, Hash.Hashable)
+  deriving (Show, Eq, Generic, NFData, Hash.Hashable, TxHeader)
 
 -------------------------------------------------------------------------------
 -- Serialization
 -------------------------------------------------------------------------------
 
-{- XXX
-
-Currently every time a new transaction is added:
-
-  1) The programmer must manually change the Serialization instance for Transaction
-     header, juggling the binary encoding flag denoting which constructor/transaction
-     header.
-
-  2) get<TxHeaderType> functions must be changed, incorporating the binary encoding
-     flag shift that is necessary in this encoding model.
-
-  3) put<TxHeaderType> functions must be changed, for the same reason listed in the
-     description of changes for get<TxHeaderType>
-
-XXX
-Suggestion: Serialization of Transaction headers should be rewritten to take advantage
-of types; We can use Data.Typeable `typeRep` to get the number of constructors and pass
-that to helper functions that assign binary encoding flags to each constructor (for Put).
-For get, we could use the typerep to see what constructor the flag corresponds to.
-XXX
-
--}
-
-instance Binary.Binary Transaction where
+instance B.Binary Transaction where
   put = Utils.putBinaryViaSerialize
   get = Utils.getBinaryViaSerialize
 
 instance Serialize TransactionHeader where
-  put txHdr = case txHdr of
-    TxContract txc -> put txc
+  put txHdr = case txElemIndex txHdr of
+    Nothing -> panic $ "Can't find TransactionHeader to serialize" <> show txHdr
+    Just level1 -> do
+      putWord16be level1
+      case txHdr of
+        TxContract txc -> put txc
 
-    TxAsset txa -> put txa
+        TxAsset txa -> put txa
 
-    TxAccount txa -> put txa
+        TxAccount txa -> put txa
 
   get = do
-    code <- getWord16be
-    let code' = fromInteger $ toInteger code
-    if | code `elem` [1000, 1001, 1002] ->
-          getTxContract code'
+    level1 <- fromInteger . toInteger <$> getWord16be
+    let txElem = txElemToTransactionHeader $ tHeader (witness :: TransactionHeader) DL.!! level1
 
-       | code `elem` [1003, 1004, 1005, 1006, 1007] ->
-          getTxAsset code'
+    case txElem of
+      TxContract _ -> TxContract <$> get
+      TxAsset _ -> TxAsset <$> get
+      TxAccount _ -> TxAccount <$> get
 
-       | code `elem` [1008, 1009] ->
-          getTxAccount code'
-
-       | otherwise -> fail $
-           "Invalid TxHeaderType flag: " <> show code
-
-getTxContract :: Int -> Get TransactionHeader
-getTxContract 1000 =
-  TxContract . CreateContract <$> get
-getTxContract 1001 = do
+getTxContract :: TxContract -> Get TxContract
+getTxContract CreateContract{} =
+  CreateContract <$> get
+getTxContract SyncLocal{} = do
   addr <- getAddress
   op   <- get
-  pure $ TxContract $
-    SyncLocal addr op
-getTxContract 1002 = do
+  pure $ SyncLocal addr op
+getTxContract Call{} = do
   address <- getAddress
   method  <- get
   args    <- get
-  pure $ TxContract $
-    Call address method args
-getTxContract n = fail $ "getTxContract " <> show n
+  pure $ Call address method args
 
-getTxAsset :: Int -> Get TransactionHeader
-getTxAsset 1003 = do
+getTxAsset :: TxAsset -> Get TxAsset
+getTxAsset CreateAsset{} = do
   name   <- get
   supply <- getInt64be
   ref    <- getWord16be
@@ -260,108 +247,120 @@ getTxAsset 1003 = do
            " is not a valid CreateAsset reference prefix."
   assetType <- getAssetType
   md <- get
-  pure $ TxAsset $
-    CreateAsset name supply mRef assetType md
-getTxAsset 1004 = do
+  pure $ CreateAsset name supply mRef assetType md
+getTxAsset Transfer{} = do
   asset <- getAddress
   to    <- getAddress
   bal   <- getInt64be
-  pure $ TxAsset $
-    Transfer asset (Holder (to :: Address AAccount)) bal
-getTxAsset 1005 = do
+  pure $ Transfer asset (Holder (to :: Address AAccount)) bal
+getTxAsset Circulate{} = do
   assetAddr <- getAddress
   amount    <- getInt64be
-  pure $ TxAsset $
-    Circulate assetAddr amount
-getTxAsset 1006 = do
+  pure $ Circulate assetAddr amount
+getTxAsset Bind{} = do
   assetAddr    <- getAddress
   contractAddr <- getAddress
   bindProof    <- get :: Get (SafeInteger, SafeInteger)
-  pure $ TxAsset $
-    Bind assetAddr contractAddr bindProof
-getTxAsset 1007 = do
+  pure $ Bind assetAddr contractAddr bindProof
+getTxAsset (RevokeAsset _) = do
   addr <- getAddress
-  pure $ TxAsset $
-    RevokeAsset addr
-getTxAsset n = fail $ "getTxAsset " <> show n
+  pure $ RevokeAsset addr
 
-getTxAccount :: Int -> Get TransactionHeader
-getTxAccount 1008 = do
+getTxAccount :: TxAccount -> Get TxAccount
+getTxAccount CreateAccount{} = do
   pubKey <- get
   tz <- get
   md <- get
-  pure $ TxAccount $ CreateAccount pubKey tz md
-getTxAccount 1009 = do
+  pure $ CreateAccount pubKey tz md
+getTxAccount RevokeAccount{} = do
   addr <- getAddress
-  pure $ TxAccount $
-    RevokeAccount addr
-getTxAccount n = fail $ "getTxAccount " <> show n
+  pure $ RevokeAccount addr
 
 instance Serialize TxContract where
-  put txc = case txc of
-    CreateContract contract -> do
-      putWord16be 1000
-      put contract
+  put txc = case txElemIndex txc of
+    Nothing -> panic $ "Can't find TxContract to serialize" <> show txc
+    Just level2 -> case txc of
+      CreateContract contract -> do
+        putWord16be level2
+        put contract
 
-    SyncLocal addr op -> do
-      putWord16be 1001
-      putAddress addr
-      put op
+      SyncLocal addr op -> do
+        putWord16be level2
+        putAddress addr
+        put op
 
-    Call address method args -> do
-      putWord16be 1002
-      putAddress address
-      put method
-      put args
+      Call address method args -> do
+        putWord16be level2
+        putAddress address
+        put method
+        put args
+  get = do
+    level2 <- fromInteger . toInteger <$> getWord16be
+    getTxContract $ txElemToTxContract $
+      tHeader (witness :: TxContract) DL.!! level2
+
 
 instance Serialize TxAsset where
-  put txa = case txa of
-    CreateAsset name supply mRef assetType md -> do
-      putWord16be 1003
-      put name
-      putInt64be supply
+  put txa = case txElemIndex txa of
+    Nothing -> panic $ "Can't find TxAsset to serialize" <> show txa
+    Just level2 -> case txa of
+      CreateAsset name supply mRef assetType md -> do
+        putWord16be level2
+        put name
+        putInt64be supply
 
-      case mRef of
-        Nothing -> putWord16be 0
-        Just ref -> do
-          putWord16be 1
-          putRef ref
+        case mRef of
+          -- TODO: What's this for?
+          Nothing -> putWord16be 0
+          Just ref -> do
+            putWord16be 1
+            putRef ref
 
-      putAssetType assetType
-      put md
+        putAssetType assetType
+        put md
 
-    Transfer asset (Holder to) bal -> do
-      putWord16be 1004
-      putAddress asset
-      putAddress to
-      putInt64be bal
+      Transfer asset (Holder to) bal -> do
+        putWord16be level2
+        putAddress asset
+        putAddress to
+        putInt64be bal
 
-    Circulate asset amount -> do
-      putWord16be 1005
-      putAddress asset
-      putInt64be amount
+      Circulate asset amount -> do
+        putWord16be level2
+        putAddress asset
+        putInt64be amount
 
-    Bind asset act sig -> do
-      putWord16be 1006
-      putAddress asset
-      putAddress act
-      put sig
+      Bind asset act sig -> do
+        putWord16be level2
+        putAddress asset
+        putAddress act
+        put sig
 
-    RevokeAsset addr -> do
-      putWord16be 1007
-      putAddress addr
+      RevokeAsset addr -> do
+        putWord16be level2
+        putAddress addr
+  get = do
+    level2 <- fromInteger . toInteger <$> getWord16be
+    getTxAsset $ txElemToTxAsset $
+      tHeader (witness :: TxAsset) DL.!! level2
 
 instance Serialize TxAccount where
-  put txa = case txa of
-    CreateAccount pubKey tz md -> do
-      putWord16be 1008
-      put pubKey
-      put tz
-      put md
+  put txa = case txElemIndex txa of
+    Nothing -> panic $ "Can't find TxAccount to serialize" <> show txa
+    Just level2 -> case txa of
+      CreateAccount pubKey tz md -> do
+        putWord16be level2
+        put pubKey
+        put tz
+        put md
 
-    RevokeAccount addr -> do
-      putWord16be 1009
-      putAddress addr
+      RevokeAccount addr -> do
+        putWord16be level2
+        putAddress addr
+  get = do
+    level2 <- fromInteger . toInteger <$> getWord16be
+    getTxAccount $ txElemToTxAccount $
+      tHeader (witness :: TxAccount) DL.!! level2
 
 txCall :: Address AContract -> ByteString -> [Storage.Value] -> TxContract
 txCall = Call
@@ -650,10 +649,11 @@ transactionToAddress =
 
 -- | Create a new transaction.
 newTransaction
-  :: Address AAccount   -- ^ Origin Account Address
+  :: MonadRandom m
+  => Address AAccount   -- ^ Origin Account Address
   -> Key.PrivateKey     -- ^ Private Key
   -> TransactionHeader  -- ^ Transaction payload
-  -> IO Transaction
+  -> m Transaction
 newTransaction origin privKey header = do
   sig    <- Key.sign privKey $ S.encode header
   pure Transaction {
@@ -664,9 +664,10 @@ newTransaction origin privKey header = do
 
 -- | Sign a transaction with a private key
 signTransaction
-  :: Key.PrivateKey
+  :: MonadRandom m
+  => Key.PrivateKey
   -> Transaction
-  -> IO Key.Signature
+  -> m Key.Signature
 signTransaction key = Key.sign key . S.encode . header
 
 -------------------------------------------------------------------------------
@@ -749,7 +750,7 @@ verifyTransaction key t = do
 -- | Validate a transaction without looking up the origin account
 -- by using cryptography magic (public key recovery from signature).
 validateTransaction :: Transaction -> Either InvalidTransaction ()
-validateTransaction tx@Transaction{..} = do
+validateTransaction tx@Transaction{..} =
     -- Validate transaction signature
     first (mkInvalidTx . InvalidTxSignature) $
       let headerBS = S.encode header in
@@ -779,3 +780,87 @@ instance FromField TxValidationError where
       Nothing            -> returnError UnexpectedNull f ""
       Just (Left err)    -> returnError ConversionFailed f err
       Just (Right txErr) -> return txErr
+
+-------------------------------------------------------------------------------
+-- Convert generic transaction elems to transaction types
+-------------------------------------------------------------------------------
+
+txElemToTxAccount :: TxElem -> TxAccount
+txElemToTxAccount e = if
+  | e == txElemName createAccountEmpty -> createAccountEmpty
+  | e == txElemName revokeAccountEmpty -> revokeAccountEmpty
+  | otherwise -> panic "Invalid TxAccount"
+
+txElemToTxAsset :: TxElem -> TxAsset
+txElemToTxAsset e = if
+  | e == txElemName createAssetEmpty -> createAssetEmpty
+  | e == txElemName revokeAssetEmpty -> revokeAssetEmpty
+  | e == txElemName transferEmpty -> transferEmpty
+  | e == txElemName circulateEmpty -> circulateEmpty
+  | e == txElemName bindEmpty -> bindEmpty
+  | otherwise -> panic "Invalid TxAsset"
+
+txElemToTxContract :: TxElem -> TxContract
+txElemToTxContract e = if
+  | e == txElemName createContractEmpty -> createContractEmpty
+  | e == txElemName syncLocalEmpty -> syncLocalEmpty
+  | e == txElemName callEmpty -> callEmpty
+  | otherwise -> panic "Invalid TxContract"
+
+txElemToTransactionHeader :: TxElem -> TransactionHeader
+txElemToTransactionHeader e =  if
+  | e == txElemName txContractEmpty -> txContractEmpty
+  | e == txElemName txAccountEmpty -> txAccountEmpty
+  | e == txElemName txAssetEmpty -> txAssetEmpty
+  | otherwise -> panic "Invalid TxHeaderType flag"
+
+-------------------------------------------------------------------------------
+-- Empty transaction elements
+-------------------------------------------------------------------------------
+
+-- TxAccount
+createAccountEmpty :: TxAccount
+createAccountEmpty = CreateAccount mempty mempty mempty
+
+revokeAccountEmpty :: TxAccount
+revokeAccountEmpty = RevokeAccount emptyAddr
+
+-- TxContract
+createContractEmpty :: TxContract
+createContractEmpty = CreateContract mempty
+
+syncLocalEmpty :: TxContract
+syncLocalEmpty = SyncLocal emptyAddr Sync
+
+callEmpty :: TxContract
+callEmpty = Call emptyAddr mempty mempty
+
+-- TxAsset
+createAssetEmpty :: TxAsset
+createAssetEmpty = CreateAsset mempty 0 Nothing Asset.Discrete mempty
+
+revokeAssetEmpty :: TxAsset
+revokeAssetEmpty = RevokeAsset emptyAddr
+
+transferEmpty :: TxAsset
+transferEmpty = Transfer emptyAddr (Holder (emptyAddr :: Address AAccount)) 0
+
+circulateEmpty :: TxAsset
+circulateEmpty = Circulate emptyAddr 0
+
+bindEmpty :: TxAsset
+bindEmpty = Bind emptyAddr emptyAddr (toSafeInteger' 0, toSafeInteger' 0)
+
+-- transactionHeader
+txContractEmpty :: TransactionHeader
+txContractEmpty = TxContract createContractEmpty
+
+txAssetEmpty :: TransactionHeader
+txAssetEmpty = TxAsset createAssetEmpty
+
+txAccountEmpty :: TransactionHeader
+txAccountEmpty = TxAccount createAccountEmpty
+
+instance B.Binary InvalidTransaction where
+  put = Utils.putBinaryViaSerialize
+  get = Utils.getBinaryViaSerialize

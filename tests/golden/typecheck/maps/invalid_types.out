@@ -1,0 +1,20 @@
+Type error at Line 8, Column 19:
+   Could not match expected type 'map<datetime, int>' with actual type 'map<account, int>':
+      Type map<datetime, int> was inferred from the type signature of argument 3 of function 'mapInsert' on Line 8, Column 19
+      Type map<account, int> was inferred by top level definition for variable 'shares' on Line 2, Column 35
+
+Type error at Line 9, Column 3:
+   Invalid function name:  mapinsert
+
+Type error at Line 10, Column 3:
+   Invalid function name:  mapinsert
+
+Type error at Line 16, Column 16:
+   Could not match expected type 'map<assetFrac5, b>' with actual type 'map<account, int>':
+      Type map<assetFrac5, b> was inferred from the type signature of argument 2 of function 'mapDelete' on Line 16, Column 16
+      Type map<account, int> was inferred by top level definition for variable 'shares' on Line 2, Column 35
+
+Type error at Line 22, Column 12:
+   Could not match expected type 'map<msg, b>' with actual type 'map<account, int>':
+      Type map<msg, b> was inferred from the type signature of argument 2 of function 'lookup' on Line 22, Column 12
+      Type map<account, int> was inferred by top level definition for variable 'shares' on Line 2, Column 35

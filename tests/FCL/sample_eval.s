@@ -7,12 +7,13 @@ int z = 3;
 bool t = True;
 bool f = True;
 
-assetBin a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
-account b = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+assetBin a = a'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+account b = u'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 
 timedelta td = 1y1mo1d1h1m1s;
 datetime dt_future;
 datetime dt_past;
+timedelta future_past_diff;
 
 transition initial -> terminal;
 
@@ -63,6 +64,9 @@ f () {
   between (dt_past, dt_future) {
     x = x * 3;
   };
+ 
+  // test 'timeDiff' primop
+  future_past_diff = timeDiff(dt_past, dt_future);
 
   terminate("bye");
 }

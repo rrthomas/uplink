@@ -16,9 +16,10 @@ import Protolude hiding (Overflow, Underflow, DivideByZero)
 
 import Data.Serialize (Serialize)
 
+import Address
 import Script.Pretty hiding ((<>))
 import Contract (InvalidMethodName)
-import Script (Name)
+import Script (Name, Value, Method, Loc)
 import Script.Graph (GraphState(..), Label)
 
 -- | Scripts either run to completion or fail with a named error.
@@ -33,7 +34,6 @@ data EvalFail
   | Overflow                            -- ^ Overflow
   | Underflow                           -- ^ Underflow
   | DivideByZero                        -- ^ Division by zero
-  | HomomorphicFail Text                -- ^ Error when performing homomorphic ops on SafeInteger
   | InvalidState Label GraphState       -- ^ Invalid graph state entry
   | SubgraphLock                        -- ^ Subraph lock is held
   | LocalVarNotFound Name               -- ^ Variable lookup failed
@@ -41,6 +41,10 @@ data EvalFail
   | HugeInteger Text                    -- ^ SafeInteger bounds exceeded
   | HugeString Text                     -- ^ SafeString bounds exceeded
   | NoSuchPrimOp Name                   -- ^ Prim op name lookup fail
+  | NotAuthorisedError Method (Address AAccount) -- ^ Issuer not authorised to access method
+  | LookupFail Text                     -- ^ Foldable/Traversable type lookup fail
+  | ModifyFail Text                     -- ^ Map modify fail
+  | CallPrimOpFail Loc Value Text       -- ^ CollPrimOp called on non-collection value
   deriving (Eq, Show, Generic, Serialize, NFData)
 
 instance Pretty EvalFail where
@@ -55,7 +59,6 @@ instance Pretty EvalFail where
     Overflow                           -> "Overflow"
     Underflow                          -> "Underflow"
     DivideByZero                       -> "DivideByZero"
-    HomomorphicFail err                -> "Homomorphic fail:" <+> ppr err
     InvalidState label graphState      -> "Invalid state:" <+> ppr label <+> ", actual" <+> ppr graphState
     SubgraphLock                       -> "Subgraph lock is held"
     LocalVarNotFound nm                -> "Local var not found:" <+> ppr nm
@@ -63,3 +66,9 @@ instance Pretty EvalFail where
     HugeInteger err                    -> "SafeInteger bounds exceeded:" <+> ppr err
     HugeString err                     -> "SafeString bounds exceeded:" <+> ppr err
     NoSuchPrimOp nm                    -> "No such primop:" <+> ppr nm
+    NotAuthorisedError m r -> "Issuer" <+> ppr r <+> "not authorised to call method" <+> ppr m
+    LookupFail k                       -> "Lookup fail with key:" <+> ppr k
+    ModifyFail k                       -> "Modify map failure, no value with key:" <+> ppr k
+    CallPrimOpFail loc v msg           -> "Evaluation error at" <+> ppr loc
+                                    <$$+> "Invalid value" <+> ppr v
+                                    <$$+> ppr msg

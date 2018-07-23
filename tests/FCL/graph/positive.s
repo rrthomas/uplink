@@ -1,3 +1,5 @@
+// Everything good in this test.
+
 transition initial -> a;
 transition a -> b;
 transition b -> c;

@@ -1,0 +1,27 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: bootnode
+  name: bootnode
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: bootnode
+    spec:
+      containers:
+      - command:
+        - bash
+        - -c
+        - sleep 5 && cat /etc/hosts && uplink chain  -c config/bootnode.config.local.docker
+          -v -k config/validators/auth0/key -g config/chain.config
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+        name: bootnode
+        resources: {}
+      restartPolicy: Always
+status: {}

@@ -34,8 +34,8 @@ commitTo
   -> IO (Pedersen.ECCommitParams, ECC.Point)
 commitTo store = do
   let hash = Storage.hashStorage store
-  (a, commitParams) <- Pedersen.ecSetup Nothing
-  (Pedersen.ECPedersen commitment r) <- Pedersen.ecCommit (toInteger hash) commitParams
+  commitParams <- Pedersen.ecSetup Nothing
+  (Pedersen.ECPedersen commitment r) <- Pedersen.ecCommit hash commitParams
   pure (commitParams, Pedersen.unECCommitment commitment)
 
 -- | Verify a commitment for storage state

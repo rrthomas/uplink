@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kompose.cmd: kompose convert -f ../docker-compose.kubernetes.yml
+    kompose.version: 1.13.0 (84fa826)
+  creationTimestamp: null
+  labels:
+    io.kompose.service: uplink
+  name: uplink
+spec:
+  ports:
+  - name: "8545"
+    port: 8545
+    targetPort: 8545
+  selector:
+    io.kompose.service: uplink
+status:
+  loadBalancer: {}

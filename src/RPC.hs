@@ -62,8 +62,7 @@ import qualified Data.Pool as Pool
 import qualified Data.Map as Map
 import qualified Data.Text.Lazy as TL
 
-import Network.Utils as NUtils
-import Network.P2P.Service as Service
+import qualified Network.P2P.Service as S
 
 import Network
 import Network.HTTP.Client
@@ -127,10 +126,10 @@ rpcServer config runInIO localNode mConnPool = do
 
     -- Discover Tasks process to relay Cmd msgs to
     runProcess localNode $ void $ do
-      NUtils.findLocalService Tasks 1000000
+      S.findLocalService Cmd.ExternalCmd 1000000
     -- Discover Simulation process ot relay Simulation msgs to
     runProcess localNode $ void $ do
-      NUtils.findLocalService Simulation 1000000
+      S.findLocalService Sim.Simulation 1000000
 
     -- XXX Move from Stdout to a log file (set in Config?)
     WL.withStdoutLogger $ \appLogger ->
@@ -139,7 +138,7 @@ rpcServer config runInIO localNode mConnPool = do
       -- probably and ok catch-all, because exceptions during execution of RPC
       -- server are handled within `rpcApi`. This should only fail for one
       -- reason: the socket the RPC server binds to is already in use.
-      catchFailedSocketBind rpcPort $ do
+      catchFailedSocketBind rpcPort $
         -- Setup HTTP server for RPC
         if Config.rpcSsl config
           then
@@ -174,7 +173,7 @@ post_
   -> RpcT m ()
 post_ route action =
   WS.post route $ do
-    isTestNode <- lift $ NodeState.isTestNode
+    isTestNode <- lift NodeState.isTestNode
     catch action $ \(FatalError e) ->
       if isTestNode
         then jsonInternalErr $ show e
@@ -345,12 +344,12 @@ rpcApi localNode mConnPool readOnly = do
     -- Query a specific invalid tx from DB
     -- XXX look in invalidTxPool (in memory) before DB
     post_ "/transactions/invalid/:hash" $ do
-      eTxHash <- WS.parseParam <$> WS.param "hash"
-      case encodeUtf8 <$> eTxHash of
-        Left _ -> jsonInvalidParamErr "Invalid transaction hash"
+      eTxHash <- Hash.parseRawHash <$> WS.param "hash"
+      case eTxHash of
+        Left err -> jsonInvalidParamErr err
         Right txHash -> do
-          itx <- lift $ lift $ getInvalidTx (Hash.toHash txHash)
-          jsonRPCRespM itx
+          eInvalidTx <- lift $ lift $ getInvalidTx txHash
+          either jsonNotFoundErr jsonRPCRespM eInvalidTx
 
     post_ "/transactions/:blockIdx" $ do
       eBlockIdx <- WS.parseParam <$> WS.param "blockIdx"
@@ -514,7 +513,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
 
       Transaction tx -> do
         liftBase $ putText $
-          "RPC Recieved Transaction:\n   " <> show tx
+          "RPC Received Transaction:\n   " <> show tx
         runProcess localNode $ do
           -- XXX handle potential failure on submission
           _ <- Cmd.commTasksProc $ Cmd.Transaction tx
@@ -523,7 +522,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
 
       Query textQ -> do
         liftBase $ putText $
-          "RPC Recieved Query:\n   " <> show textQ
+          "RPC Received Query:\n   " <> show textQ
         putMVar' =<<
           case mConnPool of
             Nothing -> pure $ RPCRespError $
@@ -546,7 +545,7 @@ handleRPCCmd mConnPool localNode rpcCmd = do
       -- Issue a Simulate msg to the Simulation process
       Simulate simMsg -> do
         liftBase $ putText $
-          "RPC Recieved Query:\n   " <> show simMsg
+          "RPC Received Query:\n   " <> show simMsg
         runProcess localNode $ do
           eRes <- Sim.commSimulationProc simMsg
           liftBase $ putMVar rpcRespMVar $
@@ -575,11 +574,8 @@ handleRPCCmd mConnPool localNode rpcCmd = do
     handleTestRPCCmd testRPCCmd = do
       let p2pCmd = case testRPCCmd of
 
-            SaturateNetwork nTxs nSecs ->
-              Cmd.Test $ Cmd.SaturateNetwork nTxs nSecs
-
-            ResetMemPools ->
-              Cmd.Test Cmd.ResetMemPools
+            ResetMemPool ->
+              Cmd.Test Cmd.ResetMemPool
 
             ResetDB addr sig ->
               Cmd.Test $ Cmd.ResetDB addr sig
@@ -602,11 +598,7 @@ data RPCCmd
   deriving (Generic)
 
 data TestRPCCmd
-  = SaturateNetwork
-    { nTxs  :: Int
-    , nSecs :: Int
-    }
-  | ResetMemPools
+  = ResetMemPool
   | ResetDB
     { address   :: Address.Address AAccount
     , signature :: Encoding.Base64PByteString
@@ -686,10 +678,7 @@ instance FromJSON TestRPCCmd where
     method <- v .: "method"
     params <- v .: "params"
     case method :: Text of
-      "SaturateNetwork" -> SaturateNetwork
-        <$> params .: "nTxs"
-        <*> params .: "nSecs"
-      "ResetMemPools" -> pure ResetMemPools
+      "ResetMemPool" -> pure ResetMemPool
       "ResetDB" -> ResetDB
         <$> params .: "address"
         <*> params .: "signature"

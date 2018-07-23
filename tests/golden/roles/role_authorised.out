@@ -1,0 +1,2 @@
+[ ModifyState GraphTerminal , Terminate "Bye." ]
+fromList []

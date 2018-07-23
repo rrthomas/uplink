@@ -1,2 +1,2 @@
-Duplicate definitions found:
- - Duplicate enum: duplication
+Duplicate variables found:
+ > Duplicate enum: duplication

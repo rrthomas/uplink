@@ -1,2 +1,2 @@
-Duplicate definitions found:
- - Duplicate transition: transition a -> b
+Duplicate variables found:
+ > Duplicate transition: transition a -> b

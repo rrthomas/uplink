@@ -1,0 +1,34 @@
+Type error at Line 21, Column 7:
+   Could not match expected type 'set<float>' with actual type 'account':
+      Type set<float> was inferred from the return type of the function 'setInsert' on Line 21, Column 7
+      Type account was inferred from the type signature of argument 1 of function 'insertInvestor' on Line 17, Column 24
+
+Type error at Line 21, Column 23:
+   Could not match expected type 'set<float>' with actual type 'set<account>':
+      Type set<float> was inferred from the type signature of argument 2 of function 'setInsert' on Line 21, Column 23
+      Type set<account> was inferred from expression 'lookup(x, investors)' on Line 18, Column 13
+
+Type error at Line 25, Column 15:
+   Could not match expected type 'map<enum role, set<account>>' with actual type 'map<enum role, set<float>>':
+      Type map<enum role, set<account>> was inferred from the assignment to variable 'investors' on Line 25, Column 15
+      Type map<enum role, set<float>> was inferred from the return type of the function 'mapInsert' on Line 25, Column 15
+
+Type error at Line 25, Column 36:
+   Could not match expected type 'map<enum role, set<float>>' with actual type 'map<enum role, set<account>>':
+      Type map<enum role, set<float>> was inferred from the type signature of argument 3 of function 'mapInsert' on Line 25, Column 36
+      Type map<enum role, set<account>> was inferred by top level definition for variable 'investors' on Line 9, Column 3
+
+Type error at Line 33, Column 7:
+   Could not match expected type 'set<assetFrac2>' with actual type 'set<account>':
+      Type set<assetFrac2> was inferred from the return type of the function 'setDelete' on Line 33, Column 7
+      Type set<account> was inferred from expression 'lookup(x, investors)' on Line 30, Column 13
+
+Type error at Line 33, Column 20:
+   Could not match expected type 'set<assetFrac2>' with actual type 'set<account>':
+      Type set<assetFrac2> was inferred from the type signature of argument 2 of function 'setDelete' on Line 33, Column 20
+      Type set<account> was inferred from expression 'lookup(x, investors)' on Line 30, Column 13
+
+Type error at Line 37, Column 24:
+   Could not match expected type 'map<enum role, set<assetFrac2>>' with actual type 'map<enum role, set<account>>':
+      Type map<enum role, set<assetFrac2>> was inferred from the type signature of argument 3 of function 'mapInsert' on Line 37, Column 24
+      Type map<enum role, set<account>> was inferred by top level definition for variable 'investors' on Line 9, Column 3

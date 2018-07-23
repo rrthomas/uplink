@@ -1,0 +1,27 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: validator-2
+  name: validator-2
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: validator-2
+    spec:
+      containers:
+      - command:
+        - bash
+        - -c
+        - sleep 5 && uplink chain  -c config/node.config.local.docker
+          -k config/validators/auth2/key
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+        name: validator-2
+        resources: {}
+      restartPolicy: Always
+status: {}

@@ -1,0 +1,84 @@
+[ ModifyGlobal
+    Name { unName = "balances" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+            , VFloat 2.69134
+            )
+          , ( VAccount
+                (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+            , VFloat 4.03701
+            )
+          , ( VAccount
+                (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+            , VFloat 1.34567
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "woahSetOfMaps" }
+    (VSet
+       (fromList
+          [ VMap
+              (fromList
+                 [ ( VAccount
+                       (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   , VFloat 2.69134
+                   )
+                 , ( VAccount
+                       (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+                   , VFloat 1.34567
+                   )
+                 ])
+          , VMap
+              (fromList
+                 [ ( VAccount
+                       (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+                   , VFloat 4.03701
+                   )
+                 ])
+          ]))
+, ModifyState (GraphLabel Label { unLabel = "terminal" })
+]
+fromList
+  [ ( Key { unKey = "balances" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+             , VFloat 2.69134
+             )
+           , ( VAccount
+                 (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+             , VFloat 4.03701
+             )
+           , ( VAccount
+                 (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+             , VFloat 1.34567
+             )
+           ])
+    )
+  , ( Key { unKey = "woahSetOfMaps" }
+    , VSet
+        (fromList
+           [ VMap
+               (fromList
+                  [ ( VAccount
+                        (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                    , VFloat 2.69134
+                    )
+                  , ( VAccount
+                        (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+                    , VFloat 1.34567
+                    )
+                  ])
+           , VMap
+               (fromList
+                  [ ( VAccount
+                        (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+                    , VFloat 4.03701
+                    )
+                  ])
+           ])
+    )
+  ]

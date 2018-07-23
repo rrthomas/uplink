@@ -1,0 +1,5 @@
+In method go:
+Variable "bob" undefined at:
+  - line 5:12
+Stack trace leading up to error:
+  - @initial:go to @terminal

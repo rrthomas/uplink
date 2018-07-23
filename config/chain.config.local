@@ -10,13 +10,13 @@ genesis
 authority
 {
   # Minimum difference between two consecutive block's timestamps in seconds
-  block-period = 5 
+  block-period = 1 
 
   # Number of consecutive blocks out of which a validator may only generate one
-  block-gen-limit = 1
+  block-gen-limit = 2
 
   # Voting threshold
-  threshold = 1
+  threshold = 2
   
   # Number of consecutive blocks out of which a validator may only generate one
   block-sign-limit = 1

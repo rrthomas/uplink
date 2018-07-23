@@ -1,0 +1,101 @@
+[ ModifyGlobal
+    Name { unName = "balances" }
+    (VMap
+       (fromList
+          [ ( VAccount
+                (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+            , VInt 4
+            )
+          , ( VAccount
+                (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+            , VInt 3
+            )
+          , ( VAccount
+                (Address "AAqhpDc5dabugYAemzc6DVtSyiC5RMoz5MiPdZBMrf7m")
+            , VInt 5
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "groups" }
+    (VSet
+       (fromList
+          [ VMap
+              (fromList
+                 [ ( VAccount
+                       (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   , VInt 2
+                   )
+                 , ( VAccount
+                       (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+                   , VInt 4
+                   )
+                 , ( VAccount
+                       (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+                   , VInt 3
+                   )
+                 ])
+          , VMap
+              (fromList
+                 [ ( VAccount
+                       (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+                   , VInt 6
+                   )
+                 , ( VAccount
+                       (Address "AAqhpDc5dabugYAemzc6DVtSyiC5RMoz5MiPdZBMrf7m")
+                   , VInt 5
+                   )
+                 ])
+          ]))
+, ModifyState GraphTerminal
+, Terminate ""
+]
+fromList
+  [ ( Key { unKey = "balances" }
+    , VMap
+        (fromList
+           [ ( VAccount
+                 (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+             , VInt 4
+             )
+           , ( VAccount
+                 (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+             , VInt 3
+             )
+           , ( VAccount
+                 (Address "AAqhpDc5dabugYAemzc6DVtSyiC5RMoz5MiPdZBMrf7m")
+             , VInt 5
+             )
+           ])
+    )
+  , ( Key { unKey = "groups" }
+    , VSet
+        (fromList
+           [ VMap
+               (fromList
+                  [ ( VAccount
+                        (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                    , VInt 2
+                    )
+                  , ( VAccount
+                        (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+                    , VInt 4
+                    )
+                  , ( VAccount
+                        (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc")
+                    , VInt 3
+                    )
+                  ])
+           , VMap
+               (fromList
+                  [ ( VAccount
+                        (Address "2R5XggBkMCQwh74KuqBh553jzCpY9ma7PmkPTBP8ti6j")
+                    , VInt 6
+                    )
+                  , ( VAccount
+                        (Address "AAqhpDc5dabugYAemzc6DVtSyiC5RMoz5MiPdZBMrf7m")
+                    , VInt 5
+                    )
+                  ])
+           ])
+    )
+  ]

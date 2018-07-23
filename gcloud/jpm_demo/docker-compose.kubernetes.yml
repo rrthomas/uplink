@@ -1,0 +1,89 @@
+version: '3'
+services:
+
+  bootnode:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+    entrypoint: bash -c "sleep 5 && cat /etc/hosts && uplink chain  -c config/bootnode.config.local.docker -v -k config/validators/auth0/key -g config/chain.config"
+
+  validator-1:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+    entrypoint: bash -c "sleep 5 && uplink chain  -c config/node.config.local.docker -k config/validators/auth1/key"
+    depends_on:
+      - bootnode
+
+  validator-2:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92
+    entrypoint: bash -c "sleep 5 && uplink chain  -c config/node.config.local.docker -k config/validators/auth2/key"
+    depends_on:
+      - bootnode
+
+  #validator-3:
+    #image: eu.gcr.io/uplink-test-cluster-174313/uplink:latest
+    #entrypoint: bash -c "sleep 5 && uplink chain  -c config/node.config.local.docker -k config/validators/auth3/key"
+    #depends_on:
+      #- bootnode
+
+  #validator-4:
+    #image: eu.gcr.io/uplink-test-cluster-174313/uplink:latest
+    #entrypoint: bash -c "sleep 5 && uplink chain  -c config/node.config.local.docker -k config/validators/auth4/key"
+    #depends_on:
+      #- bootnode
+
+  #validator-5:
+    #image: eu.gcr.io/uplink-test-cluster-174313/uplink:latest
+    #entrypoint: bash -c "sleep 5 && uplink chain  -c config/node.config.local.docker -k config/validators/auth5/key"
+    #depends_on:
+      #- bootnode
+
+  uplink:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink:24ef8dc78ce9bdec090228eeebd026b9e2e52e92  
+    entrypoint: bash -c "sleep 7 && yes n | uplink chain  -c config/node.config.local.docker"
+    depends_on:
+      - bootnode
+    deploy:
+      replicas: 6
+    ports:
+      - "8545:8545"
+
+  uplink-explorer:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:fa2f6147974c6f7b9b43235c608b425b04527284
+    ports:
+      - "80:80"
+    depends_on:
+      - bootnode
+    environment:
+      - HOST=bootnode
+  
+  composer:
+    image: eu.gcr.io/uplink-test-cluster-174313/composer:latest
+    ports:
+      - "5000:5000"
+    depends_on:
+      - bootnode
+    environment:
+      - RPC_HOST=bootnode
+      - ENV=prod
+    command: bash -c "
+          rm -rf dev.db migrations &&
+          python manage.py db init &&
+          python manage.py db migrate &&
+          python manage.py db upgrade &&
+          python manage.py fixtures &&
+          python manage.py server"
+#labels:
+      #kompose.service.expose: "35.189.207.52"
+      #kompose.service.type: loadbalancer
+ #nginx:
+    #build: nginx/
+
+  #fixtures:
+    #image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:latest
+    #entrypoint: sh -c "sleep 20 && pytest -s -vv /usr/src/app/src/uplink-sdk-py/integration_tests"
+    #depends_on:
+      #- bootnode
+    #environment:
+      #- RPC_HOST=bootnode
+    #deploy:
+      #restart_policy:
+        #condition: "no"
+

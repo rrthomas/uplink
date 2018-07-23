@@ -1,0 +1,65 @@
+# Default node settings
+
+network
+{
+  # Networking port
+  port = 8001
+  hostname = "127.0.0.1"
+
+  # Bootnodes ( ip:port )
+  bootnodes = [
+      "127.0.0.1:8001",
+      "127.0.0.1:8002",
+      "127.0.0.1:8003",
+      "127.0.0.1:8009"
+    ]
+
+  # Peers
+  max-peers = 200  # -1 for unbounded
+  min-peers = 2
+
+  # Only allow peers specified in bootnodes
+  closed = false
+
+  # Disable networking
+  nonetwork = false
+
+  # Proxy settings
+
+  # Preallocated accounts directory on the network (existing)
+  preallocated = "config/validators"
+  
+  # Network access token
+  access-token = "config/access-token/key"
+
+  transport = "tls"
+  tls {
+      server-certificate = "config/ssl/test_cert.pem"
+      server-key = "config/ssl/test_key.pem"
+  }
+}
+
+storage
+{
+  backend   = "leveldb:///uplink"
+  cacheSize = 4000       # Data packed per block.
+  blockSize = 16         # Number of keys between restart points for delta encoding of keys.
+  directory = ".uplink"  # Directory to store uplink node specific files
+}
+
+logging
+{
+  rules = [ ["*", "*", "stdout", "no colors"]
+          , ["*", "*", "./debug.log", "no colors"]
+	  ]
+}
+
+rpc
+{
+  port         = 8545
+  ssl          = false
+  key          = "key.pem"
+  crt          = "certificate.pem"
+  cors-origin  = []
+  cors-headers = []
+}

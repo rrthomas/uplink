@@ -47,6 +47,7 @@ import qualified Script.Pretty as Pretty
 import qualified Script.Parser as Parser
 import qualified Script.Typecheck as Typecheck
 
+import Crypto.Random.Types (MonadRandom(..))
 import Data.Serialize (Serialize, encode, decode)
 import qualified Data.Map as Map
 import qualified Data.Binary as B
@@ -103,7 +104,7 @@ validateContract Contract {..} =
       ]
 
 -- | Digitally sign a contract with a private key.
-signContract :: Key.PrivateKey -> Contract -> IO Key.Signature
+signContract :: MonadRandom m => Key.PrivateKey -> Contract -> m Key.Signature
 signContract = Key.signS
 
 lookupVarGlobalStorage :: Text -> Contract -> Maybe Script.Value

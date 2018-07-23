@@ -39,13 +39,6 @@ wireTests = testGroup "Wire Protocol Tests"
         tx <- Ref.versionMsg
         pure (dumpBytes (Message.encodeMsg tx))
 
-    , goldenVsStringDiff "Test ServiceRestart" differ testSvrOut $ do
-        let svr = Message.Test Ref.serviceRestartMsg
-        pure (dumpBytes (encode svr))
-
-    , goldenVsStringDiff "Test ResetMemPool" differ testRtxOut $ do
-        let rmp = Message.Test Ref.resetMemPoolMsg
-        pure (dumpBytes (encode rmp))
     ]
   where
     txOut        = "tests/golden/wire/tx_wire.out"
@@ -53,8 +46,6 @@ wireTests = testGroup "Wire Protocol Tests"
     blockOut     = "tests/golden/wire/block_wire.out"
     pingOut      = "tests/golden/wire/ping_wire.out"
     versionOut   = "tests/golden/wire/version_wire.out"
-    testSvrOut   = "tests/golden/wire/test_service_restart.out"
-    testRtxOut   = "tests/golden/wire/test_reset_mempool.out"
 
     differ ref new = ["diff", "-u", ref, new]
 

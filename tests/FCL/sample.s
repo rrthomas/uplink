@@ -3,9 +3,9 @@ global fixed3 f = 1.234f;
 global fixed2 q;
 local int y = 7;
 local float v;
-assetFrac5 z = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
-contract c = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; 
-account a = 'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+assetFrac5 z = a'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
+contract c = c'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65'; 
+account a = u'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65';
 
 datetime dt;
 
@@ -46,7 +46,7 @@ finalize () {
   transitionTo(:terminal);
 }
 
-@setX
+@setX { u'H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65' }
 setX (int j, float k) {
   x = k;
   y = y * j;
@@ -85,22 +85,23 @@ f (int j, bool k) {
 
 
 @g
-g (assetDisc f, account t) {
-  if (assetExists(f) && accountExists(t)) {
-    transferTo(f, 20);
-    transferFrom(f, 20, t);
+g (assetDisc ad, account t) {
+  if (assetExists(ad) && accountExists(t)) {
+    transferTo(ad, 20);
+    transferFrom(ad, 20, t);
   };
 }
 
 @initial
-circulate(assetFrac2 a, fixed2 amount) {
-  circulate(a,amount);
+circulate(assetFrac2 af2, fixed2 amount) {
+  circulate(af2,amount);
   transitionTo(:circulated);
 }
 
 @circulated
-transfer(assetBin a, account from, account to, bool amount) {
-  transferHoldings(from,a,amount,to);
+transfer(assetBin ab, account from, account to, bool amount) {
+  transferHoldings(from,ab,amount,to);
   terminate("finished transfer");
 }
 
+add50(int xyz) { xyz + 50; }

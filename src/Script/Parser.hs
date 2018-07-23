@@ -15,16 +15,18 @@ module Script.Parser (
   parseScript,
   parseText,
   parseFile,
-  parseLit,
-  parseFixedN,
 
+  parseDefn,
+  parseLit,
+  parseType,
+  parseFixedN,
   parseTimeDelta,
   parseDateTime,
-
 
   expr,
   callExpr,
   datetimeParser,
+
   -- ** Parser Errors
   ParseError,
   ParseErrInfo(..),
@@ -56,15 +58,18 @@ import qualified Text.Parsec.Token as Tok
 import Data.Char (digitToInt)
 import Data.Functor.Identity (Identity)
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.Map as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Aeson (ToJSON(..), FromJSON)
 
 import Fixed
-import Script
+import Script hiding (mapType)
 import Address
 import Script.Lexer as Lexer
 import Script.Pretty hiding (parens)
+import Script.Prim (lookupPrim)
 import qualified SafeString as SS
 import qualified Script.Token as Token
 import qualified Datetime.Types as DT
@@ -95,13 +100,21 @@ parseFile filename = do
   return $ first (mkParseErrInfo program)
     $ parse (contents script <* eof) filename program
 
+parseDefn :: Text -> Either ParseErrInfo Def
+parseDefn input = first (mkParseErrInfo input)
+  $ parse (contents def) "definition" input
+
 parseLit :: Text -> Either ParseErrInfo Lit
 parseLit input = first (mkParseErrInfo input)
   $ parse (contents lit) "literal" input
 
+parseType :: Text -> Either ParseErrInfo Type
+parseType input = first (mkParseErrInfo input)
+  $ parse (contents type_) "type" input
+
 parseFixedN :: Text -> Either ParseErrInfo FixedN
 parseFixedN input = first (mkParseErrInfo input)
-  $ parse (contents fixedN) "literal" input
+  $ parse (contents fixedN) "fixedN" input
 
 parseTimeDelta :: Text -> Either ParseErrInfo TimeDelta
 parseTimeDelta input = first (mkParseErrInfo input)
@@ -128,13 +141,14 @@ lit =  fixedLit
    <|> timedeltaLit
    <|> int64Lit
    <|> boolLit
-   <|> replAddressLit
    <|> addressLit
    <|> stateLit
    <|> datetimeLit
    <|> msgLit
    <|> voidLit
    <|> enumConstrLit
+   <|> mapLit
+   <|> setLit
    <?> "literal"
 
 locLit :: Parser LLit
@@ -199,28 +213,17 @@ boolLit = (fmap LBool
  <|> True  <$ try (reserved Token.true))
  <?> "boolean literal"
 
-
-replAddressLit :: Parser Lit
-replAddressLit = try $ do
-  type_ <- char 'c' <|> char 'a' <|> char 'u'
-  addr <- between
-    (symbol "\'")
-    (symbol "\'")
-    (many1 alphaNum)
-  let addr' = Address.fromRaw $ BS8.pack addr
-  if | type_ == 'c' -> pure $ LContract addr'
-     | type_ == 'a' -> pure $ LAsset addr'
-     | type_ == 'u' -> pure $ LAccount addr'
-     | otherwise    -> parserFail "Cannot parser address literal"
+rawAddress :: Parser (Address a)
+rawAddress
+  = Address.fromRaw . BS8.pack <$> between (symbol "\'") (symbol "\'") (many1 alphaNum)
 
 addressLit :: Parser Lit
-addressLit = do
-  addr <- between
-    (symbol "\'")
-    (symbol "\'")
-    (many1 alphaNum)
-  return $ LAddress $
-    Address.fromRaw $ BS8.pack addr
+addressLit = try $ do
+  type_ <- char 'c' <|> char 'a' <|> char 'u'
+  if | type_ == 'c' -> LContract <$> rawAddress
+     | type_ == 'a' -> LAsset <$> rawAddress
+     | type_ == 'u' -> LAccount <$> rawAddress
+     | otherwise    -> parserFail "Cannot parser address literal"
 
 datetimeParser :: Parser DateTime
 datetimeParser = try $ do
@@ -291,6 +294,23 @@ voidLit = LVoid <$ try (reserved Token.void)
 enumConstrLit :: Parser Lit
 enumConstrLit = LConstr <$> try (symbol "`" *> Lexer.enumConstr)
 
+mapLit :: Parser Lit
+mapLit =
+  LMap . Map.fromList <$>
+    braces (commaSep parseMapItem <* optional newline)
+  where
+    parseMapItem = do
+      klit <- lit
+      lexeme (symbol ":")
+      vlit <- lit
+      optional newline
+      pure (klit, vlit)
+
+setLit :: Parser Lit
+setLit =
+  LSet . Set.fromList <$>
+    try (parens (commaSep lit <* optional newline))
+
 -------------------------------------------------------------------------------
 -- Types
 -------------------------------------------------------------------------------
@@ -309,6 +329,7 @@ type_ =  intType
      <|> dateType
      <|> timedeltaType
      <|> enumType
+     <|> collectionType
      <?> "type"
 
 intType :: Parser Type
@@ -379,6 +400,24 @@ timedeltaType = TTimeDelta <$ try (reserved Token.timedelta)
 enumType :: Parser Type
 enumType = TEnum <$> try (reserved Token.enum *> Lexer.name)
 
+collectionType :: Parser Type
+collectionType =
+  fmap TColl $  mapType
+            <|> setType
+
+mapType :: Parser TCollection
+mapType = do
+  try (reserved Token.map)
+  a <- symbol "<" *> type_
+  lexeme comma
+  b <- type_ <* symbol ">"
+  pure (TMap a b)
+
+setType :: Parser TCollection
+setType = do
+  try (reserved Token.set)
+  TSet <$> (symbol "<" *> type_ <* symbol ">")
+
 -------------------------------------------------------------------------------
 -- Definitions
 -------------------------------------------------------------------------------
@@ -412,18 +451,20 @@ globalDef :: Parser Def
 globalDef = do
   optional $ reserved Token.global
   typ <- type_
+  role <- accessRestriction
   id <- name
   reservedOp Token.assign
   lexpr <- expr
-  return $ GlobalDef typ id lexpr
+  return $ GlobalDef typ role id lexpr
  <?> "global definition"
 
 globalDefNull :: Parser Def
 globalDefNull = do
   optional $ reserved Token.global
   typ <- type_
+  role <- accessRestriction
   Located loc id <- locName
-  return $ GlobalDefNull typ (Located loc id)
+  return $ GlobalDefNull typ role (Located loc id)
  <?> "global definition"
 
 -------------------------------------------------------------------------------
@@ -470,8 +511,15 @@ subtransitionTag = (
  where
   atat = char '@' >> char '@'
 
+accessRestriction :: Parser AccessRestriction
+accessRestriction = (
+    try (RoleAnyOf <$> braces (commaSep1 expr))
+    <|> pure RoleAny
+    )
+    <?> "variable access control"
+
 -------------------------------------------------------------------------------
--- Methods
+-- Methods & Helper Functions
 -------------------------------------------------------------------------------
 
 arg :: Parser Arg
@@ -480,12 +528,19 @@ arg = Arg <$> type_ <*> locName
 
 method :: Parser Method
 method = do
-  tag <- (try transitionTag <|> subtransitionTag)
+  tag <- try (transitionTag <|> subtransitionTag)
+  access <- accessRestriction
   nm <- name
   args <- parens $ commaSep arg
   body <- block
-  return $ Method tag nm args body
+  return $ Method tag access nm args body
  <?> "method"
+
+helper :: Parser Helper
+helper =  Helper
+      <$> Lexer.locName
+      <*> parens (commaSep arg)
+      <*> block
 
 -------------------------------------------------------------------------------
 -- Exprs
@@ -590,7 +645,11 @@ assignExpr = do
 
 callExpr :: Parser Expr
 callExpr = do
-  fname <- try $ name <* symbol Token.lparen
+  lnm@(Located _ nm) <-
+    try $ Lexer.locName <* symbol Token.lparen
+  let fname = case lookupPrim nm of
+        Nothing  -> Right lnm
+        Just pop -> Left pop
   args <- commaSep expr <* symbol Token.rparen
   return $ ECall fname args
  <?> "call statement"
@@ -716,7 +775,8 @@ script = do
   defns <- endBy def semi
   graph <- endBy transition semi
   methods <- many method
-  return $ Script enums defns graph methods
+  helpers <- many helper
+  return $ Script enums defns graph methods helpers
  <?> "script"
 
 -------------------------------------------------------------------------------

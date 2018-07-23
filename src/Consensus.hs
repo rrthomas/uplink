@@ -65,7 +65,7 @@ signBlock
   :: (MonadProcessBase m, MonadReadDB m)
   => Block.Block
   -> NodeT m (Either BlockValidationError Key.Signature)
-signBlock block = do
+signBlock block =
     NodeState.withApplyCtx $ \applyCtx -> do
 
      -- Query NodeState
@@ -141,7 +141,7 @@ generateBlock = do
     case validationPred prevBlock currTs memPool poaState poa of
       -- If validation pred fails, loop and keep trying
       Just err -> do
-        Log.info $ "Not creating block " <> show (Block.index prevBlock + 1) <> ": " <> show err
+        Log.debug $ "Not creating block " <> show (Block.index prevBlock + 1) <> ": " <> show err
         -- If a no valid transaction exist in the mempool, the time since the
         -- last block was generated will far exceed the block period. This will
         -- cause this function to loop without waiting any time at all. A default
@@ -238,7 +238,7 @@ generateBlock = do
           Nothing
             -- If now is later than the block period after the prev signed block ts
             | now > (snd prevSignedBlkData) + blockPeriod -> do
-                Log.warning "Resetting poaState because of potential deadlock..."
+                Log.debug "Resetting poaState because of potential deadlock..."
                 -- Wait for a random amount of time before attempting to gen a new block
                 resetPoAStateAndWait
             | otherwise -> pure ()
@@ -246,12 +246,12 @@ generateBlock = do
             -- Reset the prev gen block field because block of same height
             -- or greater has already been applied to the node ledger state
             | newerLatestBlock currGenBlock -> do
-                Log.info $ "Resetting poaState because next block has been generated..."
+                Log.debug "Resetting poaState because next block has been generated..."
                 resetPoAState
             -- If there has been two block periods passing without a block of
             -- the same height as this node's previously generated block, reset
             | blockPeriodHasPassed now (Block.getTimestamp currGenBlock) -> do
-                Log.warning "Resetting poaState because of potential deadlock..."
+                Log.warning "Resetting poaState because of potential deadlock. Block period has passed..."
                 -- Wait for a random amount of time before attempting to gen a new block
                 resetPoAStateAndWait
             -- Otherwise, don't reset the `prevGenBlock` field
@@ -261,7 +261,7 @@ generateBlock = do
         resetPoAStateAndWait = do
           resetPoAState
           waitedFor <- liftBase waitRandom
-          Log.info $ "Waited for " <> show waitedFor <> "us."
+          Log.debug $ "Waited for " <> show waitedFor <> "us."
 
         resetPoAState =
           NodeState.setPoAState $
@@ -401,13 +401,13 @@ acceptBlockSig blkSig@(Block.BlockSignature sig signerAddr) = do
                 Block.InvalidBlock (Block.index currGenBlock) $
                   Block.InvalidBlockSignature err
               -- Otherwise add it to the block
-              Right _  -> do
+              Right _  ->
                 NodeState.modifyPoAState_ $
                   flip CAS.addSigToPrevGenBlock blkSig
 
         -- If block has enough sigs, return it
         prevBlock  <- NodeState.getLastBlock
-        if (blockHasEnoughSigs prevBlock currGenBlock)
+        if blockHasEnoughSigs prevBlock currGenBlock
           then pure $ Just currGenBlock
           else pure Nothing
 

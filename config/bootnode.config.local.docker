@@ -25,7 +25,7 @@ network
   
   # Network access token
   access-token = "config/access-token/key"
-   
+
 }
 
 storage
@@ -39,11 +39,15 @@ storage
 logging
 {
   rules = [ ["*", "*", "stdout", "no colors"]
-          , ["p2p:controller", "*", "logs/controller.log", "no colors"]
-	  , ["main", "*", "logs/main.log", "no colors"]
-	  , ["supervisor", "*", "logs/supervisor.log", "no colors"]
-	  , ["blockgenproc", "*", "logs/blockgenproc.log", "no colors"]
-	  , ["test-comm", "*", "logs/test-comm.log", "no colors"]
+          , ["PeerController", "*", "logs/controller.log", "no colors"]
+	  , ["Consensus", "*", "logs/consensus.log", "no colors"]
+	  , ["ConsensusBlockGen", "*", "logs/consensus-block-gen.log", "no colors"]
+	  , ["ConsensusMessaging", "*", "logs/consensus-messaging.log", "no colors"]
+	  , ["Simulation", "*", "logs/simulation.log", "no colors"]
+          , ["Messaging", "*", "logs/messaging.log", "no colors"]
+          , ["ExternalCmd", "*", "logs/external-cmd.log", "no colors"]
+          , ["Main", "*", "logs/main.log", "no colors"]
+          , ["UplinkValidator", "*", "logs/uplink-validator.log", "no colors"]
 	  ]
 }
 

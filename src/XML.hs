@@ -10,7 +10,8 @@ import Protolude
 
 import Text.XML.Expat.Pickle
 import Text.XML.Expat.Format
-import Unsafe (unsafeFromJust)
+
+import qualified Data.Map as Map
 
 import Block
 import Asset
@@ -212,29 +213,27 @@ xpValue =
   xpAlt tag ps
     where
       tag (VInt _)       = 0
-      tag (VCrypto _)    = 1
-      tag (VFloat _)     = 2
-      tag (VFixed _)     = 3
-      tag (VBool _)      = 4
-      tag VVoid          = 5
-      tag (VSig _)       = 6
-      tag (VMsg _)       = 7
-      tag (VAddress _)   = 8
-      tag (VAccount _)   = 9
-      tag (VAsset _)     = 10
-      tag (VContract _)  = 11
-      tag (VDateTime _)  = 12
-      tag (VTimeDelta _) = 13
-      tag (VState _)     = 14
-      tag VUndefined     = 15
-      tag (VEnum _)      = 16
+      tag (VFloat _)     = 1
+      tag (VFixed _)     = 2
+      tag (VBool _)      = 3
+      tag VVoid          = 4
+      tag (VSig _)       = 5
+      tag (VMsg _)       = 6
+      tag (VAccount _)   = 7
+      tag (VAsset _)     = 8
+      tag (VContract _)  = 9
+      tag (VDateTime _)  = 10
+      tag (VTimeDelta _) = 11
+      tag (VState _)     = 12
+      tag VUndefined     = 13
+      tag (VEnum _)      = 14
+      tag (VMap _)       = 15
+      tag (VSet _)       = 16
       ps = [ xpWrap (VInt, \(VInt v) -> v)
              $ xpElemNodes "VInt" (xpContent xpPrim)
-           , xpWrap (VCrypto . toSafeInteger', \(VCrypto v) -> fromSafeInteger v)
-             $ xpElemNodes "VCrypto" (xpContent xpPrim)
            , xpWrap (VFloat, \(VFloat v) -> v)
              $ xpElemNodes "VFloat" (xpContent xpPrim)
-           , xpWrap (VFixed . (\(Right v) -> v) . Script.Parser.parseFixedN,  -- XXX
+           , xpWrapEither (first show . fmap VFixed . Script.Parser.parseFixedN,
              \(VFixed v) -> Pretty.prettyPrint v) $ xpElemNodes "VFixed" (xpContent xpPrim)
            , xpWrap (VBool, \(VBool v) -> v)
              $ xpElemNodes "VBool" (xpContent xpPrim)
@@ -244,18 +243,16 @@ xpValue =
              $ xpElemNodes "VSig" (xpContent xpPrim)
            , xpWrap (VMsg, \(VMsg v) -> v)
              $ xpElemNodes "VMsg" (xpContent xpPrim)
-           , xpWrap (VAddress, \(VAddress v) -> v)
-             $ xpElemNodes "VAddress" (xpContent xpAddress)
            , xpWrap (VAccount, \(VAccount v) -> v)
              $ xpElemNodes "VAccount" (xpContent xpAddress)
            , xpWrap (VAsset, \(VAsset v) -> v)
              $ xpElemNodes "VAsset" (xpContent xpAddress)
            , xpWrap (VContract, \(VContract v) -> v)
              $ xpElemNodes "VContract" (xpContent xpAddress)
-           , xpWrap (VDateTime . Script.DateTime . unsafeFromJust . parseDatetime,  -- XXX
-             \(VDateTime dt) -> formatDatetime (Script.unDateTime dt))
-             $ xpElemNodes "VDateTime" (xpContent xpPrim)
-           , xpWrap (VTimeDelta. (\(Right v) -> v) . Script.Parser.parseTimeDelta,  -- XXX
+           , xpWrapMaybe (fmap (VDateTime . Script.DateTime) . parseDatetime . toS,
+             \(VDateTime dt) -> toS $ formatDatetime (Script.unDateTime dt))
+             $ xpElemNodes "VDateTime" (xpContent xpText)
+           , xpWrapEither (first show . fmap VTimeDelta . Script.Parser.parseTimeDelta,
              \(VTimeDelta (TimeDelta d)) -> DT.displayDelta d)
              $ xpElemNodes "VTimeDelta" (xpContent xpPrim)
            , xpWrap (VState . Script.Label, \(VState (Script.Label v)) -> v)
@@ -264,6 +261,8 @@ xpValue =
              $ xpElemNodes "VUndefined" xpUnit
            , xpWrap (VEnum . EnumConstr, \(VEnum c) -> unEnumConstr c)
              $ xpElemNodes "VEnum" (xpContent xpPrim)
+           , xpWrap (VMap . Map.fromList, \(VMap vmap) -> Map.toList vmap)
+             $ xpElemNodes "VMap" (xpList (xpPair xpValue xpValue))
         ]
 
 xpTxAsset :: PU [UNode Text] TxAsset

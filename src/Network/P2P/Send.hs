@@ -38,68 +38,54 @@ import qualified Network.P2P.Logging as Log
 
 -- | Send a message to a specific peer process
 nsendPeer
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> NodeId
-  -> a
-  -> m ()
-nsendPeer service peer =
-  nsendRemote peer (show service)
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => NodeId -> s -> a -> m ()
+nsendPeer nid s =
+  nsendRemote nid (show s)
 
 -- | Broadcast a message to a specific service on all peers.
 nsendPeers
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> a
-  -> NodeT m ()
-nsendPeers service msg = do
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => s -> a -> NodeT m ()
+nsendPeers s msg = do
   peers <- getPeerNodeIds
-  Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
+  Log.debug $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
   forM_ peers $ \peer -> do
-    Log.info $ "Sending msg to " <> (show peer :: Text)
-    nsendPeer service peer msg
+    Log.debug $ "Sending msg to " <> (show peer :: Text)
+    nsendPeer peer s msg
 
 -- | Broadcast multiple messages to a specific service on all peers.
 nsendPeersMany
-  :: (MonadProcessBase m, B.Binary a, Typeable a)
-  => Service
-  -> [a]
-  -> NodeT m ()
-nsendPeersMany service msgs = do
+  :: (MonadProcessBase m, Service s, B.Binary a, Typeable a)
+  => s -> [a] -> NodeT m ()
+nsendPeersMany s msgs = do
   peers <- getPeerNodeIds
-  Log.info $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
+  Log.debug $ "nsendPeers: Sending msg to " <> show (length peers) <> " peers."
   forM_ msgs $ \msg ->
     forM_ peers $ \peer -> do
-      Log.info $ "Sending msg to " <> (show peer :: Text)
-      nsendPeer service peer msg
+      Log.debug $ "Sending msg to " <> (show peer :: Text)
+      nsendPeer peer s msg
 
 -------------------------------------------------------------------------------
 
 -- | Like nsendPeer but serialize with Data.Serialize instead of Data.Binary
 nsendPeer'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> NodeId
-  -> a
-  -> m ()
+  :: (MonadProcessBase m, Service s, S.Serialize a)
+  => NodeId -> s -> a -> NodeT m ()
 nsendPeer' s p =
   nsendPeer s p . S.encode
 
 -- | Like nsendPeers but serialize with Data.Serialize instead of Data.Binary
 nsendPeers'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> a
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, S.Serialize a)
+  => s -> a -> NodeT m ()
 nsendPeers' s =
   nsendPeers s . S.encode
 
 -- | Like nsendPeersMany but serialize with Data.Serialize instead of Data.Binary
 nsendPeersMany'
-  :: (MonadProcessBase m, S.Serialize a)
-  => Service
-  -> [a]
-  -> NodeT m ()
+  :: (MonadProcessBase m, Service s, S.Serialize a)
+  => s -> [a] -> NodeT m ()
 nsendPeersMany' s msgs =
   nsendPeersMany s $ (map S.encode msgs)
 

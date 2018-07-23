@@ -55,12 +55,9 @@ module DB.LevelDB (
   resetDB,
   deleteDBs,
   deleteDBs_
-
 ) where
 
 import Protolude
-
-import Control.Arrow ((&&&))
 
 import Account (Account)
 import Asset (Asset)
@@ -78,6 +75,7 @@ import Control.Monad.Base
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
 import Control.Distributed.Process.Lifted.Class
+import Control.Arrow (left, (&&&))
 
 import DB.Class (MonadDB(..), MonadReadDB, MonadWriteDB)
 import qualified DB.Class as DBC
@@ -91,6 +89,7 @@ import qualified Database.LevelDB.Internal as DBInternal (unsafeClose)
 import qualified Data.Serialize as S
 import qualified Encoding
 import qualified Hash
+import qualified Utils
 import System.IO.Error
 
 newtype LevelDBT m a = LevelDBT
@@ -436,9 +435,15 @@ selectAllBS db =
 -- Database Setup
 -------------------------------------------------------------------------------
 
+
 -- | Initialize a LevelDB database.
 create :: FilePath -> IO LevelDB.DB
-create dbPath = LevelDB.open dbPath (LevelDB.defaultOptions { LevelDB.createIfMissing = True } )
+create dbPath = LevelDB.open
+  dbPath
+  (LevelDB.defaultOptions
+    { LevelDB.createIfMissing = True
+    }
+  )
 
 {-# NOINLINE close #-}
 -- | Close a LevelDB handler.
@@ -465,9 +470,9 @@ createDB root = do
      then pure $ Left $ "Directory '" <> toS root <> "' already exists. Not overwriting."
      else do
        createDirectoryIfMissing True root
-       db <- createDB' root
+       db <- Utils.retryN 5 3000000 (createDB' root)
        lockDb root
-       pure $ Right db
+       pure $ left (const $ "Failed to create DB on path: " <> show root) db
 
 -- | Setup a directory as a LevelDB database. The directory must already exist.
 -- Locks the database so that other processes cannot read or write from/to the database.

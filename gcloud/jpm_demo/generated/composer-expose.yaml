@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: composer
+  name: composer-expose
+spec:
+  loadBalancerIP: 35.195.115.199
+  ports:
+  - port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    io.kompose.service: composer
+  type: LoadBalancer
+  loadBalancerSourceRanges:
+  - 213.86.221.35/24
+  - 209.6.202.147/24
+status:
+  loadBalancer: {}
+

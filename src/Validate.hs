@@ -70,9 +70,9 @@ import qualified Address
 import qualified Storage
 import qualified Contract
 import qualified Transaction as Tx
-import qualified Homomorphic as Homo
 
 import qualified Script
+import qualified Script.Compile as C
 import Script.Eval (EvalCtx(..))
 import qualified Script.Eval as Eval
 import qualified Script.Init
@@ -167,7 +167,7 @@ verifyBlock world block =
         Block.InvalidBlockOrigin genAddr
     Right acc -> do
       -- Verify all block signatures
-      forM_ (Block.signatures block) $ \(Block.BlockSignature signature signerAddr) -> do
+      forM_ (Block.signatures block) $ \(Block.BlockSignature signature signerAddr) ->
         case Ledger.lookupAccount signerAddr world of
           Left _    ->
             Left $ mkInvalidBlockErr $
@@ -181,7 +181,7 @@ verifyBlock world block =
       first (mkInvalidBlockErr . Block.InvalidBlockTx) $
         mapM_ (verifyTransaction world) blockTxs
   where
-    verifyBlockSig pubKey sig = do
+    verifyBlockSig pubKey sig =
       first Block.InvalidBlockSignature $
         Block.verifyBlockSig pubKey sig block
 
@@ -189,7 +189,7 @@ verifyBlock world block =
 
 -- | Verify a transaction signature & hash
 verifyTransaction :: World -> Transaction -> Either Tx.InvalidTransaction ()
-verifyTransaction world tx@Transaction{..} = do
+verifyTransaction world tx@Transaction{..} =
   case header of
     -- In the strange case of a CreateAccount transaction...
     Tx.TxAccount (Tx.CreateAccount pub _ _) ->
@@ -435,9 +435,12 @@ applyTxContract tx txContract = do
 
       world <- gets accumWorld
       applyCtx <- ask
-      eContract <- liftBase $ do
-        evalCtx <- initEvalCtxTxCreateContract applyCtx tx contractAddr
-        Script.Init.createContractWithEvalCtx evalCtx world scriptText
+      eContract <- liftBase $
+        case C.compile scriptText of
+          Left err  -> pure (Left err)
+          Right (_, ast) -> do
+            let evalCtx = initEvalCtxTxCreateContract applyCtx tx contractAddr ast
+            Script.Init.createContractWithEvalCtx evalCtx world ast
       case eContract of
         Left err -> throwTxContract $ Tx.InvalidContract $ toS err
         Right contract -> do
@@ -474,7 +477,7 @@ applyTxContract tx txContract = do
         Right method -> do
           -- Typecheck method w/ supplied args
           first Tx.InvalidCallArgType $
-            TC.tcMethod enums method args
+            TC.tcMethodCall enums method args
           Right method
 
     applyCall
@@ -490,8 +493,8 @@ applyTxContract tx txContract = do
 
       -- Evaluate the method call
       evalRes <- liftBase $ do
-        evalCtx <- initEvalCtxTxCall applyCtx contract tx
-        let evalState = Eval.initEvalState contract world
+        let evalCtx = initEvalCtxTxCall applyCtx contract tx
+            evalState = Eval.initEvalState contract world
         Eval.execEvalM evalCtx evalState $
           Eval.evalMethod method argVals
 
@@ -537,10 +540,9 @@ initEvalCtxTxCall
   :: ApplyCtx
   -> Contract
   -> Transaction
-  -> IO Eval.EvalCtx
-initEvalCtxTxCall ApplyCtx{..} contract tx = do
-  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
-  pure EvalCtx
+  -> Eval.EvalCtx
+initEvalCtxTxCall ApplyCtx{..} contract tx =
+  EvalCtx
     { currentBlock = fromIntegral $ Block.index applyCurrBlock
     , currentValidator = applyNodeAddress
     , currentTransaction = Tx.hashTransaction tx
@@ -550,17 +552,17 @@ initEvalCtxTxCall ApplyCtx{..} contract tx = do
     , currentTxIssuer = Tx.origin tx
     , currentAddress = Contract.address contract
     , currentPrivKey = applyNodePrivKey
-    , currentStorageKey = pub
+    , currentHelpers = Script.scriptHelpers (Contract.script contract)
     }
 
 initEvalCtxTxCreateContract
   :: ApplyCtx
   -> Transaction
   -> Address AContract
-  -> IO Eval.EvalCtx
-initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr = do
-  (pub,_) <- Homo.genRSAKeyPair Homo.rsaKeySize -- XXX: Actual key of validator
-  pure EvalCtx
+  -> Script.Script
+  -> Eval.EvalCtx
+initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr script =
+  EvalCtx
     { currentBlock = fromIntegral $ Block.index applyCurrBlock
     , currentValidator = applyNodeAddress
     , currentTransaction = Tx.hashTransaction tx
@@ -570,7 +572,7 @@ initEvalCtxTxCreateContract ApplyCtx{..} tx contractAddr = do
     , currentTxIssuer = Tx.origin tx
     , currentAddress = contractAddr
     , currentPrivKey = applyNodePrivKey
-    , currentStorageKey = pub
+    , currentHelpers = Script.scriptHelpers script
     }
 
 -- | Helper to construct InvalidTransactions from InvalidTxHeaders

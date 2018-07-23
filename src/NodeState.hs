@@ -22,6 +22,7 @@ module NodeState
 
   , NodeConfig(..)
   , initNodeConfig
+  , askNodeConfig
 
   , NodeEnv(..)
   , initNodeEnv
@@ -116,7 +117,6 @@ import Block (Block)
 import qualified Account
 import qualified Block
 import qualified Key
-import qualified Network.P2P.Logging as Log
 import qualified Ledger
 import qualified Transaction as Tx
 import qualified TxLog
@@ -127,6 +127,8 @@ import qualified Validate as V
 
 import Node.Peer
 import Node.Files (NodeData(..), NodeDataFilePaths(..))
+
+import Network.P2P.Logging.Rule
 
 import qualified Consensus.Authority.Params as CAP
 import qualified Consensus.Authority.State as CAS
@@ -151,11 +153,13 @@ data NodeConfig = NodeConfig
   { account      :: Account.Account    -- ^ Active account
   , privKey      :: Key.PrivateKey     -- ^ Active account's private key
   , accountType  :: NodeAccType        -- ^ Is account new or existing
+  , bootnodes    :: [NodeId]           -- ^ A list of bootnodes
   , preallocated :: FilePath           -- ^ Directory for preallocated accounts
   , testMode     :: Bool               -- ^ If the node is in "test" mode or not
   , dataFilePaths :: NodeDataFilePaths -- ^ File paths to node data store on disk
   , genesisBlock :: Block.Block        -- ^ Network genesis block
   , accessToken  :: Key.ECDSAKeyPair   -- ^ Network access token
+  , loggerRules  :: [LogRule]          -- ^ Rules for logging
   }
 
 initNodeState
@@ -191,21 +195,25 @@ initNodeConfig
   :: NodeData          -- ^ Data structure containing most node config info
   -> NodeDataFilePaths -- ^ File paths to data a node stores outside of the DB
   -> NodeAccType       -- ^ Is the node account new or existing
+  -> [NodeId]          -- ^ List of boot node ids
   -> Block             -- ^ The genesis block
   -> FilePath          -- ^ Filepath to the preallocated network accounts
   -> Bool              -- ^ Is the node in test mode
   -> Key.ECDSAKeyPair  -- ^ Network Access Token
+  -> [LogRule]         -- ^ Rules for logging
   -> NodeConfig
-initNodeConfig nd ndfps nacctyp gblk preall test atok =
+initNodeConfig nd ndfps nacctyp bootnodes gblk preall test atok lrs =
   NodeConfig
     { account       = nodeAccount nd
     , privKey       = snd (nodeKeys nd)
     , accountType   = nacctyp
+    , bootnodes     = bootnodes
     , preallocated  = preall
     , testMode      = test
     , dataFilePaths = ndfps
     , genesisBlock  = gblk
     , accessToken   = atok
+    , loggerRules   = lrs
     }
 
 data NodeEnv = NodeEnv
@@ -222,10 +230,12 @@ initNodeEnv
   => NodeData          -- ^ Data structure containing most node config info
   -> NodeDataFilePaths -- ^ File paths to data a node stores outside of the DB
   -> NodeAccType       -- ^ Is the node account new or existing
+  -> [NodeId]          -- ^ List of bootnodes
   -> Block             -- ^ The genesis block
   -> FilePath          -- ^ Filepath to the preallocated network accounts
   -> Bool              -- ^ Is the node in test mode
-  -> Key.ECDSAKeyPair  -- ^ Is the node in test mode
+  -> Key.ECDSAKeyPair  -- ^ Network access token
+  -> [LogRule]         -- ^ Rules for Logging
   -> Ledger.World      -- ^ Initial World State
   -> Peers             -- ^ Node Peers
   -> MemPool.MemPool   -- ^ Initial MemPool
@@ -233,7 +243,7 @@ initNodeEnv
   -> CAS.PoAState      -- ^ Initial PoA State
   -> Block.Block       -- ^ Last Block in Chain
   -> m (Either NodeEnvInitError NodeEnv)
-initNodeEnv nd ndfps nacctyp gblk preall test atok w ps mp nitxs poas lblk = do
+initNodeEnv nd ndfps nacctyp bns gblk preall test atok lrs w ps mp nitxs poas lblk = do
   let eInvalidTxPool = MemPool.mkInvalidTxPool nitxs
   case eInvalidTxPool of
     Left _ -> pure $ Left $ InvalidItxPoolSize nitxs
@@ -242,7 +252,7 @@ initNodeEnv nd ndfps nacctyp gblk preall test atok w ps mp nitxs poas lblk = do
       pure $ Right $ NodeEnv nodeConfig nodeState
   where
     nodeConfig =
-      initNodeConfig nd ndfps nacctyp gblk preall test atok
+      initNodeConfig nd ndfps nacctyp bns gblk preall test atok lrs
 
 --------------------------------------------------------------------------------
 -- NodeT Monad Transformer
@@ -366,14 +376,14 @@ setLedger :: MonadBase IO m => Ledger.World -> NodeT m ()
 setLedger ledger' = modifyNodeState_ ledger $ const $ pure ledger'
 
 -- | Reset the ledger to it's initial state with preallocated accounts
-resetLedger :: MonadProcess m => NodeT m ()
+resetLedger :: MonadProcess m => NodeT m (Either Text ())
 resetLedger = do
   eAccs <- loadPreallocatedAccs
   let eFreshWorld = first show .
         flip Ledger.addAccounts mempty =<< eAccs
   case eFreshWorld of
-    Left err         -> Log.warning $ show err
-    Right freshWorld -> setLedger freshWorld
+    Left err         -> pure $ Left err
+    Right freshWorld -> Right <$> setLedger freshWorld
 
 withLedgerState :: MonadBase IO m => (Ledger.World -> NodeT m a) -> NodeT m a
 withLedgerState f = f =<< getLedger
@@ -558,22 +568,24 @@ withApplyCtx f = do
 --   > else                         - NonExistent
 getTxStatus :: MonadReadDB m => H.Hash E.Base16ByteString -> NodeT m Tx.Status
 getTxStatus txHash = do
-  inMempool <- elemTxMemPool' txHash
-  if inMempool
-    then pure Tx.Pending
-    else do
-      elemInvalidTxPool <- elemInvalidTxPool txHash
-      if elemInvalidTxPool
-        then pure Tx.Rejected
-        else do
-          eTx <- lift $ DB.readTransaction txHash
-          case eTx of
-            Right _  -> pure Tx.Accepted
-            Left err -> do
-              eItx <- lift $ DB.readInvalidTx txHash
-              case eItx of
-                Right _  -> pure Tx.Rejected
-                Left err -> pure Tx.NonExistent
+  eTx <- lift $ DB.readTransaction txHash
+  case eTx of
+    Right _  -> pure Tx.Accepted
+    Left err -> do
+      eItx <- lift $ DB.readInvalidTx txHash
+      case eItx of
+        Right _  -> pure Tx.Rejected
+        Left err -> do
+          inMempool <- elemTxMemPool' txHash
+          if inMempool
+            then pure Tx.Pending
+            else do
+              elemInvalidTxPool <- elemInvalidTxPool txHash
+              if elemInvalidTxPool
+                then pure Tx.Rejected
+                else do
+                  pure Tx.NonExistent
+
 -------------------------------------------------------------------------------
 -- Query Ledger (World) state
 -------------------------------------------------------------------------------

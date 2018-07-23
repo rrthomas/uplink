@@ -61,7 +61,7 @@ import Protolude hiding (put, get, putByteString)
 import qualified Data.Coerce
 import qualified GHC.Show
 import Time (Timestamp)
-import Address (Address(..), AAsset, EitherAccountContract, AAccount, AContract, AUnknown, addressFromField)
+import Address (Address(..), AAsset, EitherAccountContract, AAccount, AContract, addressFromField)
 import qualified Metadata
 import qualified Hash
 import qualified Fixed
@@ -131,7 +131,7 @@ instance FromJSON Holder where
 instance ToJSONKey Holder where
   toJSONKey = contramapToJSONKeyFunction getAddr toJSONKey
     where
-      getAddr :: Holder -> Address AUnknown
+      getAddr :: Holder -> Address AAccount
       getAddr (Holder a) = Data.Coerce.coerce a
 
 instance FromJSONKey Holder where
@@ -181,7 +181,7 @@ data Asset = Asset
   , holdings  :: Holdings          -- ^ Holdings map
   , reference :: Maybe Ref         -- ^ Reference unit
   , assetType :: AssetType         -- ^ Asset type
-  , address   :: (Address AAsset)  -- ^ Asset address
+  , address   :: Address AAsset    -- ^ Asset address
   , metadata  :: Metadata.Metadata -- ^ Asset address
   } deriving (Eq, Show, Generic, NFData, B.Binary, Serialize)
 
@@ -213,7 +213,7 @@ data AssetType
   = Discrete               -- ^ Discrete (Non-zero integer value)
   | Fractional Fixed.PrecN -- ^ Fractional (Fixed point decimal value)
   | Binary                 -- ^ Binary (Held/Not-Held) (supply is +1 for held, 0 for not-held)
-  deriving (Eq, Ord, Show, Read, Generic, NFData, Hashable, Hash.Hashable)
+  deriving (Eq, Ord, Show, Read, Generic, NFData, Hash.Hashable)
 
 instance ToField AssetType where
   toField = toField . (show :: AssetType -> [Char])

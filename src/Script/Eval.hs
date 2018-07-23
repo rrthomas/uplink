@@ -58,10 +58,10 @@ import qualified Hash
 import qualified Key
 import qualified Ledger
 import qualified Script.Prim as Prim
-import qualified Homomorphic as Homo
 
 import qualified Datetime as DT
 import Datetime.Types (within, Interval(..), add, sub, subDeltas, scaleDelta)
+import qualified Datetime.Types as DT
 
 import Data.Fixed (Fixed(..), showFixed)
 import qualified Data.List as List
@@ -92,7 +92,7 @@ data EvalCtx = EvalCtx
   , currentTxIssuer    :: Address AAccount   -- ^ Transaction sender
   , currentAddress     :: Address AContract -- ^ Address of current Contract
   , currentPrivKey     :: Key.PrivateKey    -- ^ Private key of Validating node
-  , currentStorageKey  :: Homo.PubKey       -- ^ Public key for storage homomorphic encryption (RSA public key)
+  , currentHelpers     :: [Helper]          -- ^ Script helper functions available for call in method body
   } deriving (Generic, NFData)
 
 type LocalStorages = Map (Address AAccount) Storage
@@ -170,6 +170,30 @@ insertTempVar (Name var) val = modify' $ \evalState ->
     evalState { tempStorage = insertVar (tempStorage evalState) }
   where
     insertVar = Map.insert (Key var) val
+
+-- | Extends the temp storage with temporary variable updates. Emulates a
+-- closure environment for evaluating the body of helper functions by
+-- assigning values to argument names. Effectively ad-hoc substitution.
+localTempStorage :: [(Name,Value)] -> EvalM a -> EvalM a
+localTempStorage varVals evalM = do
+  currTempStorage <- tempStorage <$> get
+  let store = Map.fromList (map (first (Key . unName)) varVals)
+      newTempStorage = Map.union store currTempStorage
+  modify $ \evalState ->
+    evalState { tempStorage = newTempStorage }
+  res <- evalM
+  modify $ \evalState ->
+    evalState { tempStorage = currTempStorage }
+  pure res
+
+-- | Warning: This function will throw an exception on a non-existent helper, as
+-- this indicates the typechecker failed to spot an undefined function name.
+lookupHelper :: LName -> EvalM Helper
+lookupHelper lhnm = do
+  helpers <- currentHelpers <$> ask
+  case List.find ((==) lhnm . helperName) helpers of
+    Nothing     -> panicImpossible $ Just "lookupHelper: Undefined helper function name"
+    Just helper -> pure helper
 
 -- | Emit a delta updating  the state of a global reference.
 updateGlobalVar :: Name -> Value -> EvalM ()
@@ -300,10 +324,11 @@ evalLExpr (Located _ e) = case e of
            else do
              v <- evalLExpr rhs
              insertTempVar lhs v
-      Just _  -> do
-        res <- evalLExpr rhs
-        updateGlobalVar lhs res
-        emitDelta $ Delta.ModifyGlobal lhs res
+      Just initVal -> do
+        resVal <- evalLExpr rhs
+        when (initVal /= resVal) $ do
+          updateGlobalVar lhs resVal
+          emitDelta $ Delta.ModifyGlobal lhs resVal
 
     pure VVoid
 
@@ -390,19 +415,6 @@ evalLExpr (Located _ e) = case e of
     valB <- evalLExpr b
     let binOpFail = panicInvalidBinOp op valA valB
     case (valA, valB) of
-      (VCrypto a', VCrypto b') ->
-        case op of
-          Script.Add -> VCrypto <$> homoAdd a' b'
-          Script.Sub -> VCrypto <$> homoSub a' b'
-          _ -> binOpFail
-      (VCrypto a', VInt b') ->
-        case op of
-          Script.Mul -> VCrypto <$> homoMul a' b'
-          _ -> binOpFail
-      (VInt a', VCrypto b') ->
-        case op of
-          Script.Mul -> VCrypto <$> homoMul b' a'
-          _ -> binOpFail
       (VInt a', VInt b') ->
         case op of
           Script.Add -> pure $ VInt (a' + b')
@@ -505,10 +517,17 @@ evalLExpr (Located _ e) = case e of
           else panicImpossible $ Just "evalLExpr: EVar"
       Just val -> return val
 
-  ECall f args   ->
-    case Prim.lookupPrim f of
-      Nothing -> throwError $ NoSuchPrimOp f
-      Just prim -> evalPrim prim args
+  ECall ef args   ->
+    case ef of
+      Left primOp -> evalPrim primOp args
+      Right hnm   -> do
+        helper <- lookupHelper hnm
+        argVals <- mapM evalLExpr args
+        let argNmsAndVals =
+               map (first (locVal . argName)) $
+                 zip (helperArgs helper) argVals
+        localTempStorage argNmsAndVals $ do
+          evalLExpr (helperBody helper)
 
   EBefore dt e -> do
     now <- currentTimestamp <$> ask
@@ -764,7 +783,14 @@ evalPrim ex args = case ex of
     VDateTime (DateTime end) <- evalLExpr endExpr
     return $ VBool $ within dt (Interval start end)
 
+  TimeDiff -> do
+    [VDateTime (DateTime dt), VDateTime (DateTime dt')] <- mapM evalLExpr args
+    pure $ VTimeDelta (TimeDelta (DT.diff dt dt'))
+
   AssetPrimOp a -> evalAssetPrim a args
+  MapPrimOp m   -> evalMapPrim m args
+  SetPrimOp m   -> evalSetPrim m args
+  CollPrimOp c  -> evalCollPrim c args
 
   Bound -> notImplemented -- XXX
 
@@ -892,6 +918,125 @@ evalAssetPrim assetPrimOp args =
       VFixed f -> fromIntegral $ getFixedInteger f
       otherVal -> panicInvalidHoldingsVal otherVal
 
+evalMapPrim :: Prim.MapPrimOp -> [LExpr] -> EvalM Value
+evalMapPrim mapPrimOp args =
+  case mapPrimOp of
+    Prim.MapInsert -> do
+      [k, v, VMap mapVal] <- mapM evalLExpr args
+      pure $ VMap (Map.insert k v mapVal)
+    Prim.MapDelete -> do
+      [k, VMap mapVal] <- mapM evalLExpr args
+      pure $ VMap (Map.delete k mapVal)
+    Prim.MapLookup -> do
+      [k, VMap mapVal] <- mapM evalLExpr args
+      case Map.lookup k mapVal of
+        Nothing -> throwError $ LookupFail (show k)
+        Just v  -> pure v
+    Prim.MapModify -> do
+      let [kexpr, Located _ (EVar lnm), mexpr] = args
+      k <- evalLExpr kexpr
+      VMap mapVal <- evalLExpr mexpr
+      case Map.lookup k mapVal of
+        Nothing -> throwError $ ModifyFail (show k)
+        Just v  -> do
+          helper <- lookupHelper lnm
+          -- arity check passed in typechecker
+          let [harg] = map (locVal . argName) (helperArgs helper)
+          newVal <- localTempStorage [(harg,v)] $ evalLExpr (helperBody helper)
+          pure $ VMap (Map.insert k newVal mapVal)
+
+evalSetPrim :: Prim.SetPrimOp -> [LExpr] -> EvalM Value
+evalSetPrim setPrimOp args =
+  case setPrimOp of
+    Prim.SetInsert -> do
+      [v, VSet setVal] <- mapM evalLExpr args
+      pure $ VSet (Set.insert v setVal)
+    Prim.SetDelete -> do
+      [v, VSet setVal] <- mapM evalLExpr args
+      pure $ VSet (Set.delete v setVal)
+
+evalCollPrim :: Prim.CollPrimOp -> [LExpr] -> EvalM Value
+evalCollPrim collPrimOp args =
+  case collPrimOp of
+    Prim.Aggregate -> do
+      let [vExpr, Located _ (EVar lnm), collExpr] = args
+      initVal <- evalLExpr vExpr
+      helper <- lookupHelper lnm
+      collVal <- evalLExpr collExpr
+      let [hargNm1, hargNm2] = map (locVal . argName) (helperArgs helper)
+          foldColl' = foldColl (helperBody helper) (hargNm1, initVal) hargNm2
+      case collVal of
+        -- Currently, fold is performed over map vals ordered by keys
+        VMap vmap -> foldColl' (Map.elems vmap)
+        VSet vset -> foldColl' (Set.toList vset)
+        otherwise -> throwInvalidCollErr (located collExpr) collVal
+    Prim.Transform -> do
+      let [Located _ (EVar lnm), collExpr] = args
+      helper <- lookupHelper lnm
+      collVal <- evalLExpr collExpr
+      let [hargNm] = map (locVal . argName) (helperArgs helper)
+      case collVal of
+        VMap vmap -> VMap <$> mapColl (helperBody helper) hargNm vmap
+        VSet vset -> VSet . Set.fromList <$>
+          mapColl (helperBody helper) hargNm (Set.toList vset)
+        otherwise -> throwInvalidCollErr (located collExpr) collVal
+    Prim.Filter -> do
+      let [Located _ (EVar lnm), collExpr] = args
+      helper <- lookupHelper lnm
+      collVal <- evalLExpr collExpr
+      let [hargNm] = map (locVal . argName) (helperArgs helper)
+      case collVal of
+        VMap vmap ->
+          fmap (VMap . Map.fromList) $
+            flip filterM (Map.toList vmap) $ \(k,v) ->
+              filterPred (helperBody helper) (hargNm,v)
+        VSet vset ->
+          fmap (VSet . Set.fromList) $
+            flip filterM (Set.toList vset) $ \v ->
+              filterPred (helperBody helper) (hargNm,v)
+        otherwise -> throwInvalidCollErr (located collExpr) collVal
+    Prim.Element -> do
+      let [vExpr, collExpr] = args
+      val <- evalLExpr vExpr
+      collVal <- evalLExpr collExpr
+      case collVal of
+        VMap vmap -> pure (VBool (val `elem` vmap))
+        VSet vset -> pure (VBool (val `elem` vset))
+        otherwise -> throwInvalidCollErr (located collExpr) collVal
+    Prim.IsEmpty -> do
+      let [collExpr] = args
+      collVal <- evalLExpr collExpr
+      case collVal of
+        VMap vmap -> pure (VBool (Map.null vmap))
+        VSet vset -> pure (VBool (Set.null vset))
+        otherwise -> throwInvalidCollErr (located collExpr) collVal
+  where
+    throwInvalidCollErr loc v = throwError $
+      CallPrimOpFail loc v "Cannot call a collection primop on a non-collection value"
+
+    -- Map over a collection type (which happen to all implement Traversable)
+    mapColl :: Traversable f => LExpr -> Name -> f Value -> EvalM (f Value)
+    mapColl body nm coll =
+      forM coll $ \val ->
+        localTempStorage [(nm, val)] (evalLExpr body)
+
+    filterPred :: LExpr -> (Name, Value) -> EvalM Bool
+    filterPred body var = do
+      res <- localTempStorage [var] (evalLExpr body)
+      pure $ case res of
+        VBool True  -> True
+        VBool False -> False
+        otherwise -> panicImpossible $ Just "Body of helper function used in filter primop did not return Bool"
+
+    foldColl :: LExpr -> (Name, Value) -> Name -> [Value] -> EvalM Value
+    foldColl fbody (accNm, initVal) argNm vals =
+        foldM accum initVal vals
+      where
+        accum accVal v =
+          localTempStorage
+            [(accNm, accVal), (argNm, v)]
+            (evalLExpr fbody)
+
 getAccountAddr :: LExpr -> EvalM (Address AAccount)
 getAccountAddr accExpr =
   Account.address <$> getAccount accExpr
@@ -949,13 +1094,29 @@ checkGraph meth = do
     handleTag "terminal" = GraphTerminal
     handleTag lab = GraphLabel lab
 
+checkAccess :: Method -> EvalM ()
+checkAccess m = do
+    case methodAccess m of
+      RoleAny -> return ()
+      RoleAnyOf rs -> do
+        group <- mapM (valToAccount <=< evalLExpr) rs
+        issuer <- currentTxIssuer <$> ask
+        unless
+          (issuer `elem` group)
+          (throwError $ NotAuthorisedError m issuer)
+  where
+    valToAccount :: Value -> EvalM (Address AAccount)
+    valToAccount (VAccount aaddr) = return aaddr
+    valToAccount x = throwError $ Impossible "Type checker ensures that this is an account."
+
 -- | Does not perform typechecking on args supplied, eval should only happen
 -- after typecheck.
 evalMethod :: Method -> [Value] -> EvalM Value
-evalMethod meth @ (Method _ nm argTyps body) args
+evalMethod meth @ (Method _ access nm argTyps body) args
   | numArgs /= numArgsGiven = throwError $
       MethodArityError nm numArgs numArgsGiven
   | otherwise = do
+      checkAccess meth
       -- Sidegraph precondition check
       checkSideGraph meth
       checkGraph meth
@@ -1016,12 +1177,10 @@ hashValue :: Value -> EvalM ByteString
 hashValue = \case
   VMsg msg       -> pure $ SS.toBytes msg
   VInt n         -> pure (show n)
-  VCrypto n      -> pure (show n)
   VFloat n       -> pure (show n)
   VFixed n       -> pure (show n)
   VBool n        -> pure (show n)
   VState n       -> pure (show n)
-  VAddress a     -> pure (rawAddr a)
   VAccount a     -> pure (rawAddr a)
   VContract a    -> pure (rawAddr a)
   VAsset a       -> pure (rawAddr a)
@@ -1029,6 +1188,8 @@ hashValue = \case
   VDateTime dt   -> pure $ S.encode dt
   VTimeDelta d   -> pure $ S.encode d
   VEnum c        -> pure (show c)
+  VMap vmap      -> pure (show vmap)
+  VSet vset      -> pure (show vset)
   VSig _         -> throwError $ Impossible "Cannot hash signature"
   VUndefined     -> throwError $ Impossible "Cannot hash undefined"
 
@@ -1047,43 +1208,3 @@ panicInvalidUnOp op x = panicImpossible $ Just $
 panicInvalidHoldingsVal :: Value -> a
 panicInvalidHoldingsVal v = panicImpossible $ Just $
   "Only VInt, VBool, and VFixed can be values of asset holdings. Instead, saw: "  <> show v
-
--------------------------------------------------------------------------------
--- Homomorphic Binary Ops
--------------------------------------------------------------------------------
-
-homoOp
-  :: (Homo.PubKey -> Homo.CipherText -> Homo.CipherText -> Homo.CipherText)
-  -> SafeInteger
-  -> SafeInteger
-  -> EvalM SafeInteger
-homoOp f a b = do
-  let a' = Homo.CipherText $ fromSafeInteger a
-  let b' = Homo.CipherText $ fromSafeInteger b
-  pubKey <- currentStorageKey <$> ask
-
-  let ct = f pubKey a' b'
-  convertToSafeInteger ct
-
--- | Homomorphic addition of two encrypted SafeIntegers
-homoAdd :: SafeInteger -> SafeInteger -> EvalM SafeInteger
-homoAdd = homoOp Homo.cipherAdd
-
--- | Homomorphic subtraction of two encrypted SafeIntegers
-homoSub :: SafeInteger -> SafeInteger -> EvalM SafeInteger
-homoSub = homoOp Homo.cipherSub
-
--- | Multiplies an ecrypted SafeInteger by an Int64 value
-homoMul :: SafeInteger -> Int64 -> EvalM SafeInteger -- XXX is this safe? Probably not
-homoMul a b = do
-  let a' = Homo.CipherText $ fromSafeInteger a
-  let b' = toInteger b
-  pubKey <- currentStorageKey <$> ask
-
-  let ct = Homo.cipherMul pubKey a' b'
-  convertToSafeInteger ct
-
-convertToSafeInteger :: Homo.CipherText -> EvalM SafeInteger
-convertToSafeInteger (Homo.CipherText c) = case toSafeInteger c of
-  Left err -> throwError $ HomomorphicFail $ show err
-  Right safeInt -> return safeInt

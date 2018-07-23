@@ -1,0 +1,1 @@
+NotAuthorisedError (Method {methodTag = Main (Label {unLabel = "initial"}), methodAccess = RoleAnyOf [EVar (Name {unName = "bob"}),ELit (LAccount (Address "6pxGdGG6nQP3VoCW7HoGkCGDNCiCEWP3P5jHtrvgphBc"))], methodName = Name {unName = "init"}, methodArgs = [], methodBody = ECall (Left Terminate) [ELit (LMsg "Bye.")]}) (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")

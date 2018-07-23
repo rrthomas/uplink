@@ -1,0 +1,27 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: uplink-explorer
+  name: uplink-explorer
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: uplink-explorer
+    spec:
+      containers:
+      - env:
+        - name: HOST
+          value: bootnode
+        image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:fa2f6147974c6f7b9b43235c608b425b04527284
+        name: uplink-explorer
+        ports:
+        - containerPort: 80
+        resources: {}
+      restartPolicy: Always
+status: {}

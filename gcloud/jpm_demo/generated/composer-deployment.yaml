@@ -1,0 +1,35 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: composer
+  name: composer
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: composer
+    spec:
+      containers:
+      - args:
+        - bash
+        - -c
+        - ' rm -rf dev.db migrations && python manage.py db init && python manage.py
+          db migrate && python manage.py db upgrade && python manage.py fixtures &&
+          python manage.py server'
+        env:
+        - name: ENV
+          value: prod
+        - name: RPC_HOST
+          value: bootnode
+        image: eu.gcr.io/uplink-test-cluster-174313/composer:latest
+        name: composer
+        ports:
+        - containerPort: 5000
+        resources: {}
+      restartPolicy: Always
+status: {}

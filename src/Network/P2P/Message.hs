@@ -7,16 +7,14 @@
 module Network.P2P.Message (
   version,
 
+  -- ** Service Definition
+  Messaging(..),
+
   -- ** Types
   Message(..),
   SendTransactionMsg(..),
 
   messagingProc,
-
-  TestMessage(..),
-  ServiceRestartMsg(..),
-  ResetMemPoolMsg(..),
-  handleTestMessage,
 
   -- ** Message Construction
   mkBlockMsg,
@@ -39,9 +37,7 @@ module Network.P2P.Message (
 
 import Protolude hiding (get,put,catch)
 
-import Control.Exception.Lifted (catch)
 import Control.Distributed.Process.Lifted.Class (MonadProcessBase, liftP)
-import Control.Distributed.Process.Lifted hiding (Message, catch, handleMessage)
 
 import Data.Serialize as S hiding (expect)
 import qualified Data.Binary as B
@@ -100,7 +96,7 @@ version = "0.1a"
 -------------------------------------------------------------------------------
 
 -- (pk, addr, tx)
-data SendTransactionMsg = SendTransactionMsg
+newtype SendTransactionMsg = SendTransactionMsg
   { transaction :: Transaction
   } deriving (Show, Generic, Serialize, Typeable, B.Binary, Hash.Hashable)
 
@@ -133,9 +129,7 @@ data Message
   deriving (Show, Generic, Serialize, Typeable, B.Binary, Hash.Hashable)
 
 mkBlockMsg :: MonadProcessBase m => Block.Block -> NodeT m Message
-mkBlockMsg blk = do
-  nodeIdSS <- fmap fromBytes' $ liftP extractNodeId
-  pure $ Block $ BlockMsg blk nodeIdSS
+mkBlockMsg blk = Block . BlockMsg blk . fromBytes' <$> liftP extractNodeId
 
 mkGetBlockAtIdxMsg :: MonadProcessBase m => Int -> NodeT m Message
 mkGetBlockAtIdxMsg idx = do
@@ -147,20 +141,24 @@ mkGetBlockAtIdxMsg idx = do
 -- Wire Protocol (TestMessages)
 -------------------------------------------------------------------------------
 
-data ServiceRestartMsg = ServiceRestartMsg
-  { serviceName :: Service
-  , delay       :: Int
-  } deriving (Show, Generic, Serialize, B.Binary, Hash.Hashable)
-
 data ResetMemPoolMsg = ResetMemPoolMsg
   deriving (Show, Generic, Serialize, B.Binary, Hash.Hashable)
 
 -- | A datatype defining the messages that should only be able to be
 -- executed when the node is booted in a test state with '--test'
 data TestMessage
-  = ServiceRestart ServiceRestartMsg
-  | ResetMemPool ResetMemPoolMsg
+  = ResetMemPool ResetMemPoolMsg
   deriving (Show, Generic, Serialize, B.Binary, Hash.Hashable)
+
+-------------------------------------------------------------------------------
+-- P2P Messaging Service Definition
+-------------------------------------------------------------------------------
+
+data Messaging = Messaging
+  deriving (Show, Generic, B.Binary)
+
+instance Service Messaging where
+  serviceSpec _ = Worker messagingProc
 
 -------------------------------------------------------------------------------
 -- P2P Messaging Process
@@ -172,15 +170,12 @@ data TestMessage
 -- function to receive typed values, a Data.Binary instance must be written.
 messagingProc
   :: (MonadReadWriteDB m, MonadProcessBase m)
-  => Service
-  -> NodeT m ()
-messagingProc service = do
-  NodeEnv nodeConfig nodeState <- ask
-  forever $ do
-    eRes <- expectSigned
-    case eRes of
-      Left err -> Log.warning $ show err
-      Right msg -> handleMessage service msg
+  => NodeT m ()
+messagingProc = forever $ do
+  eRes <- expectSigned
+  case eRes of
+    Left err -> Log.warning $ show err
+    Right msg -> handleMessage msg
 
 -- | Handle a message datastream, parsingg into the appropriate wire protocol
 -- message and then dispatching to Node logic to write the entity to world state.
@@ -189,11 +184,10 @@ messagingProc service = do
 -- function to receive typed values, a Data.Binary instance must be written.
 handleMessage
   :: (MonadReadWriteDB m, MonadProcessBase m)
-  => Service
-  -> Message
+  => Message
   -> NodeT m ()
-handleMessage replyService msg = do
-  Log.info $ "Recieved Message:\n   " <> show msg
+handleMessage msg = do
+  Log.info $ "Received Message:\n   " <> show msg
   case msg of
 
     Ping sender -> do
@@ -205,7 +199,7 @@ handleMessage replyService msg = do
           Log.info $ "Got a ping from " <> show sender
           myNodeId <- liftP $ toS <$> extractNodeId
           let response = Pong (SafeString.fromBytes' myNodeId)
-          nsendPeerSigned replyService nodeId response
+          nsendPeerSigned nodeId Messaging response
 
     Pong sender -> do
       mNodeId <- liftIO $ mkNodeId (SafeString.toBytes sender)
@@ -238,13 +232,17 @@ handleMessage replyService msg = do
 
     Block (BlockMsg block sender) -> do
       success <- Consensus.acceptBlock block
-      when success $ do
-        blkAtIdxMsg <- mkGetBlockAtIdxMsg (Block.index block + 1)
-        mReplyToNodeId <- liftIO $ mkNodeId $ toBytes sender
-        case mReplyToNodeId of
-          Left err            -> Log.warning err
-          Right replyToNodeId ->
-            nsendPeerSigned replyService replyToNodeId blkAtIdxMsg
+      if success
+        then do
+          blkAtIdxMsg <- mkGetBlockAtIdxMsg (Block.index block + 1)
+          mReplyToNodeId <- liftIO $ mkNodeId $ toBytes sender
+          case mReplyToNodeId of
+            Left err            -> Log.warning err
+            Right replyToNodeId ->
+              nsendPeerSigned replyToNodeId Messaging blkAtIdxMsg
+        else
+          -- TODO Not sure if this is correct...
+          void $ mkGetBlockAtIdxMsg (Block.index block - 1)
 
     GetBlock gmsg@(GetBlockMsg idx sender) -> do
       eBlock <- lift $ DB.readBlock idx
@@ -257,53 +255,11 @@ handleMessage replyService msg = do
             Left err -> Log.warning err
             Right nodeId -> do
               blockMsg <- mkBlockMsg blk
-              nsendPeerSigned replyService nodeId blockMsg
-
-    -- For Messages operating on a "test node"
-    Test testMsg -> handleTestMessage replyService testMsg
+              nsendPeerSigned nodeId Messaging blockMsg
 
     _   -> do
       Log.critical (show msg)
       pass
-
-
--- | Handler for TestMessages when node is operating in "test" mode
-handleTestMessage :: MonadProcessBase m => Service -> TestMessage -> NodeT m ()
-handleTestMessage service testMsg = case testMsg of
-
-  ServiceRestart (ServiceRestartMsg service delay) -> do
-    Log.info $ "Restarting '" <> show service <> "' service."
-    serviceRestart service $ max 0 delay
-    Log.info "Service running."
-
-  ResetMemPool _ -> do
-    Log.info "Resetting MemPool"
-    NodeState.resetTxMemPool
-
--------------------------------------------------------------------------------
--- Helpers
--------------------------------------------------------------------------------
-
--- XXX Write code to restart all restartable processes,
--- Take advantage of Control.Distributed.Process.Managed to restart
-serviceRestart :: MonadProcessBase m => Service -> Int -> NodeT m ()
-serviceRestart service delay = case service of
-  TestMessaging -> do
-    selfPid <- liftP getSelfPid
-    service' <- liftP $ whereis $ show service
-    case service' of
-      Nothing -> Log.warning $ mconcat
-        ["No service with name ", show service ," exists on this node."]
-      Just pid
-        | selfPid == pid -> Log.warning "Cannot restart self"
-        | otherwise -> do
-            let exitCmd = exit pid ("Restarting..." :: ByteString)
-            catch (liftP exitCmd) $ \(_ :: SomeException) -> do
-              liftIO $ threadDelay delay
-              -- XXX Restart process for real...
-              Log.info "Successfully restarted process"
-  _ -> Log.warning "Can't restart process, not implemented."
-
 
 -------------------------------------------------------------------------------
 -- Serialization

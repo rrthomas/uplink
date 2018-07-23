@@ -55,7 +55,7 @@ maxSize = 10000
 
 -- | Strings safe for network serialization
 newtype SafeString = SafeString ByteString
-  deriving (Read, Eq, Ord, IsString, Generic, NFData, BI.Binary, Hashable, ToField, FromField)
+  deriving (Read, Eq, Ord, IsString, Generic, NFData, BI.Binary, ToField, FromField)
 
 -- Exceptions for handling invalid string construction
 data HugeString = HugeString

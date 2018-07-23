@@ -6,6 +6,7 @@ Core AST for the FCL core language.
 
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
 
 module Script (
@@ -14,7 +15,10 @@ module Script (
   Expr(..),
   Pattern(..),
   Match(..),
+  Role,
   Method(..),
+  Helper(..),
+  AccessRestriction(..),
   EnumDef(..),
   Def(..),
   Arg(..),
@@ -42,6 +46,8 @@ module Script (
 
   -- ** Name
   Name(..),
+  defnName,
+  defnLName,
 
   -- ** Enum constructor
   EnumConstr(..),
@@ -57,6 +63,7 @@ module Script (
   -- ** Types
   TVar(..),
   TAsset(..),
+  TCollection(..),
   Type(..),
 
   -- ** Helpers
@@ -88,23 +95,24 @@ import Control.Monad (fail)
 import Fixed
 import Script.Graph
 import Script.Pretty
+import Script.Prim (PrimOp)
 import qualified Script.Pretty as Pretty
 
 import SafeInteger
 import SafeString
-import Address (Address, rawAddr, AAccount, AContract, AAsset, AUnknown)
+import Address (Address, rawAddr, AAccount, AContract, AAsset)
 import qualified Hash
 import qualified Script.Token as Token
 
 import qualified Datetime.Types as DT
 
 import qualified Data.Binary as B
-import Data.Hashable (Hashable)
 import Data.String (IsString(..))
 import Data.Serialize (Serialize(..), encode, decode, putInt8, getInt8)
 import Data.Serialize.Text()
 import Data.Aeson (ToJSON(..), FromJSON(..))
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 import Database.PostgreSQL.Simple.ToField   (ToField(..), Action(..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), ResultError(..), returnError)
@@ -150,7 +158,7 @@ type LPattern = Located Pattern
 
 -- | Enum constructor.
 newtype EnumConstr = EnumConstr { unEnumConstr :: SafeString }
-  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData)
+  deriving (Eq, Show, Ord, Generic, Hash.Hashable, NFData)
 
 instance ToJSON EnumConstr where
   toJSON = toJSON . unEnumConstr
@@ -160,14 +168,14 @@ instance FromJSON EnumConstr where
 
 -- | Variable names
 newtype Name = Name { unName :: Text }
-  deriving (Eq, Show, Ord, Generic, Hashable, Hash.Hashable, NFData, B.Binary, Serialize)
+  deriving (Eq, Show, Ord, Generic, Hash.Hashable, NFData, B.Binary, Serialize)
 
 -- | Datetime literals
 newtype DateTime = DateTime { unDateTime :: DT.Datetime }
-  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable)
+  deriving (Eq, Ord, Show, Generic, NFData, Serialize)
 
 newtype TimeDelta = TimeDelta { unTimeDelta :: DT.Delta }
-   deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable, ToJSON, FromJSON)
+   deriving (Eq, Ord, Show, Generic, NFData, Serialize, ToJSON, FromJSON)
 
 instance Hash.Hashable TimeDelta where
   toHash = Hash.toHash . (toS :: [Char] -> ByteString) . show
@@ -196,8 +204,8 @@ data Expr
   | EAfter   LExpr LExpr           -- ^ Time guard
   | EBetween LExpr LExpr LExpr     -- ^ Time guard
   | ECase    LExpr [Match]         -- ^ Case statement
-  | EAssign  Name  LExpr           -- ^ Reference update
-  | ECall    Name  [LExpr]         -- ^ Function call
+  | EAssign  Name  LExpr           -- ^ Variable update
+  | ECall    (Either PrimOp LName) [LExpr] -- ^ Function call
   | ENoOp                          -- ^ Empty method body
   deriving (Eq, Ord, Show, Generic, Hash.Hashable, NFData)
 
@@ -221,56 +229,62 @@ data UnOp = Not -- ^ Logical negation
 
 -- | Literal representing Value
 data Lit
-  = LInt      Int64
-  | LFloat    Double
-  | LFixed    FixedN
-  | LBool     Bool
-  | LState    Label
-  | LAddress  (Address AUnknown)
-  | LAccount  (Address AAccount)
-  | LAsset    (Address AAsset)
-  | LContract (Address AContract)
-  | LMsg      SafeString
-  | LSig      (SafeInteger,SafeInteger)
+  = LInt       Int64
+  | LFloat     Double
+  | LFixed     FixedN
+  | LBool      Bool
+  | LState     Label
+  | LAccount   (Address AAccount)
+  | LAsset     (Address AAsset)
+  | LContract  (Address AContract)
+  | LMsg       SafeString
+  | LSig       (SafeInteger,SafeInteger)
   | LDateTime  DateTime
   | LTimeDelta TimeDelta
-  | LUndefined
+  | LConstr    EnumConstr
+  | LMap       (Map Lit Lit)
+  | LSet       (Set Lit)
   | LVoid
-  | LConstr EnumConstr
   deriving (Eq, Ord, Show, Generic, Hash.Hashable, NFData)
 
 -- | Values in which literals are evaluated to
 data Value
-  = VInt Int64             -- ^ Integral types
-  | VCrypto SafeInteger    -- ^ Homomorphic encrypted integral types
-  | VFloat Double          -- ^ Floating types
-  | VFixed FixedN          -- ^ Fixed point types
-  | VBool Bool             -- ^ Boolean value
-  | VAddress (Address AUnknown)      -- ^ Address
-  | VAccount (Address AAccount)      -- ^ Account Address
+  = VInt Int64                     -- ^ Integral types
+  | VFloat Double                  -- ^ Floating types
+  | VFixed FixedN                  -- ^ Fixed point types
+  | VBool Bool                     -- ^ Boolean value
+  | VAccount (Address AAccount)    -- ^ Account Address
   | VAsset (Address AAsset)        -- ^ Asset Address
-  | VContract (Address AContract)     -- ^ Contract Address
-  | VMsg SafeString        -- ^ Msgs (ASCII)
+  | VContract (Address AContract)  -- ^ Contract Address
+  | VMsg SafeString                -- ^ Msgs (ASCII)
   | VSig (SafeInteger,SafeInteger) -- ^ ESDSA Sig
-  | VVoid                  -- ^ Void
-  | VDateTime DateTime     -- ^ A datetime with a timezone
-  | VTimeDelta TimeDelta   -- ^ A difference in time
-  | VEnum EnumConstr       -- ^ Constructor of the given enum type
-  | VState Label           -- ^ Named state label
-  | VUndefined             -- ^ Undefined
-  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hashable, Hash.Hashable)
+  | VVoid                          -- ^ Void
+  | VDateTime DateTime             -- ^ A datetime with a timezone
+  | VTimeDelta TimeDelta           -- ^ A difference in time
+  | VEnum EnumConstr               -- ^ Constructor of the given enum type
+  | VState Label                   -- ^ Named state label
+  | VMap (Map Value Value)         -- ^ Map of values to values
+  | VSet (Set Value)               -- ^ Set of values
+  | VUndefined                     -- ^ Undefined
+  deriving (Eq, Ord, Show, Generic, NFData, Serialize, Hash.Hashable)
 
 -- | Type variables used in inference
 data TVar
   = TV  Text -- ^ General type variable
   | TAV Text -- ^ Type variable used for inferring return types of prim ops operating over assets
-  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable)
+  | TCV Text -- ^ Type variable used for inferring return types of prim ops operating over collections
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 data TAsset
   = TDiscrete         -- ^ Type of Discrete Assets
   | TBinary           -- ^ Type of Binary Assets
   | TFractional PrecN -- ^ Type of Fractional Assets
-  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable, Serialize)
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Serialize)
+
+data TCollection
+  = TMap Type Type  -- ^ Type of FCL Maps
+  | TSet Type       -- ^ Type of FCL Sets
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Serialize)
 
 -- | Core types for FCL
 data Type
@@ -278,9 +292,6 @@ data Type
   | TVar TVar       -- ^ (Internal) Type variable used in inference
   | TAny            -- ^ (Internal) Polymorphic type
   | TAssetAny       -- ^ (Internal) Polymorphic asset type determining type of holdings in prim ops
-  | TRef Type       -- ^ (Internal) Variable type
-  | TCrypto Type    -- ^ (Internal) Local variables
-  | TAddress        -- ^ (Internal) Type of addresses
   | TInt            -- ^ Type of 64 bit integers
   | TFloat          -- ^ Type of double precision floats
   | TFixed PrecN    -- ^ Type of double precision floats
@@ -295,7 +306,9 @@ data Type
   | TTimeDelta      -- ^ Type of difference in time
   | TState          -- ^ Contract state
   | TEnum Name      -- ^ Enumeration type
-  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable, Hashable)
+  | TFun [Type] Type -- ^ Type signature of helper functions--argument types and return type
+  | TColl TCollection -- ^ Type of collection values
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 -- | Function argument
 data Arg
@@ -308,12 +321,29 @@ data GraphLabel
   | Subg Label -- ^ Subgraph ( novation, owner transfer, etc )
   deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
+-- | Role (TODO)
+type Role = LExpr
+
+-- | Access control
+data AccessRestriction
+  = RoleAny       -- ^ No access control; anyone can call the method
+  | RoleAnyOf [LExpr] -- ^ Only those in this "set" can call the method
+  deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+
 -- | Method
 data Method = Method
-  { methodTag  :: GraphLabel
-  , methodName :: Name
-  , methodArgs :: [Arg]
-  , methodBody :: LExpr
+  { methodTag    :: GraphLabel
+  , methodAccess :: AccessRestriction
+  , methodName   :: Name
+  , methodArgs   :: [Arg]
+  , methodBody   :: LExpr
+  } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+
+-- | "Pure" Helper functions
+data Helper = Helper
+  { helperName :: LName
+  , helperArgs :: [Arg]
+  , helperBody :: LExpr
   } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 -- | Enumeration
@@ -324,11 +354,21 @@ data EnumDef = EnumDef
 
 -- | Definition
 data Def
-  = GlobalDef Type Name LExpr
-  | GlobalDefNull Type LName
+  = GlobalDef Type AccessRestriction Name LExpr
+  | GlobalDefNull Type AccessRestriction LName
   | LocalDef Type Name LExpr
   | LocalDefNull Type LName
   deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
+
+defnName :: Def -> Name
+defnName = locVal . defnLName
+
+defnLName :: Def -> LName
+defnLName = \case
+  GlobalDef _ _ nm _    -> Located NoLoc nm
+  GlobalDefNull _ _ lnm -> lnm
+  LocalDef _ nm _       -> Located NoLoc nm
+  LocalDefNull _ lnm    -> lnm
 
 -- | Script
 data Script = Script
@@ -336,6 +376,7 @@ data Script = Script
   , scriptDefs        :: [Def]
   , scriptTransitions :: [Transition]
   , scriptMethods     :: [Method]
+  , scriptHelpers     :: [Helper]
   } deriving (Eq, Ord, Show, Generic, NFData, Hash.Hashable)
 
 emptyScript :: Script
@@ -344,6 +385,7 @@ emptyScript = Script
   , scriptDefs        = []
   , scriptTransitions = []
   , scriptMethods     = []
+  , scriptHelpers     = []
   }
 
 -- | Method args names and types
@@ -404,26 +446,31 @@ mapFixedType fn =
     Fixed5 _ ->  Prec5
     Fixed6 _ ->  Prec6
 
--- | Map types to values, taking enum types into account. Returns
 -- @Nothing@ in case of an unknown constructor.
 mapType :: EnumInfo -> Script.Value -> Maybe Type
-mapType enumInfo (VEnum c) = TEnum <$> Map.lookup c (constrToEnum enumInfo)
-mapType _ VInt{} = pure TInt
-mapType _ VCrypto{} = pure $ TCrypto TInt
-mapType _ VFloat{} = pure TFloat
-mapType _ (VFixed f) = pure $ mapFixedType f
-mapType _ VBool{} = pure TBool
-mapType _ VAccount{} = pure TAccount
-mapType _ VAsset{} = pure TAssetAny
-mapType _ VContract{}= pure TContract
-mapType _ VAddress{} = pure TAddress
-mapType _ VVoid = pure TVoid
-mapType _ VMsg{} = pure TMsg
-mapType _ VSig{} = pure TSig
-mapType _ VDateTime{} = pure TDateTime
-mapType _ VTimeDelta{} = pure TTimeDelta
-mapType _ VState{} = pure TState
-mapType _ VUndefined = pure TAny
+mapType enumInfo (VEnum c)    = TEnum <$> Map.lookup c (constrToEnum enumInfo)
+mapType _        VInt{}       = pure TInt
+mapType _        VFloat{}     = pure TFloat
+mapType _        (VFixed f)   = pure $ mapFixedType f
+mapType _        VBool{}      = pure TBool
+mapType _        VAccount{}   = pure TAccount
+mapType _        VAsset{}     = pure TAssetAny
+mapType _        VContract{}  = pure TContract
+mapType _        VVoid        = pure TVoid
+mapType _        VMsg{}       = pure TMsg
+mapType _        VSig{}       = pure TSig
+mapType _        VDateTime{}  = pure TDateTime
+mapType _        VTimeDelta{} = pure TTimeDelta
+mapType _        VState{}     = pure TState
+mapType _        VUndefined   = pure TAny
+mapType einfo   (VMap vmap)   =
+  case Map.toList vmap of
+    []        -> pure (TColl (TMap TAny TAny))
+    ((k,v):_) -> TColl <$> (TMap <$> mapType einfo k <*> mapType einfo v)
+mapType einfo   (VSet vset)   =
+  case Set.toList vset of
+    []        -> pure (TColl (TSet TAny))
+    (v:_) -> TColl <$> (TSet <$> mapType einfo v)
 
 data EnumInfo = EnumInfo
   { constrToEnum :: Map EnumConstr Name
@@ -461,12 +508,14 @@ instance IsString TVar where
 instance Serialize TVar where
   put (TV tv)  = putInt8 0 >> put (encodeUtf8 tv)
   put (TAV tv) = putInt8 1 >> put (encodeUtf8 tv)
+  put (TCV tv) = putInt8 2 >> put (encodeUtf8 tv)
   get = do
     tag <- getInt8
     let constr =
           case tag of
             0 -> TV
             1 -> TAV
+            2 -> TCV
             n -> fail "Inavlid tag deserialized for TVar"
     constr . decodeUtf8 <$> get
 
@@ -491,7 +540,9 @@ instance Serialize Match where
 instance Serialize Expr where
 instance Serialize BinOp where
 instance Serialize UnOp where
+instance Serialize AccessRestriction where
 instance Serialize Method where
+instance Serialize Helper where
 instance Serialize Script where
 instance Serialize GraphLabel where
 
@@ -583,17 +634,23 @@ instance Pretty Lit where
     LFixed mfix    -> ppr mfix
     LBool bool     -> ppr bool
     LMsg msg       -> dquotes $ ppr msg
-    LAddress addr  -> squotes $ ppr $ rawAddr addr
-    LAccount addr  -> squotes $ ppr $ rawAddr addr
-    LAsset addr    -> squotes $ ppr $ rawAddr addr
-    LContract addr -> squotes $ ppr $ rawAddr addr
+    LAccount addr  -> "u" <> squotes (ppr $ rawAddr addr)
+    LAsset addr    -> "a" <> squotes (ppr $ rawAddr addr)
+    LContract addr -> "c" <> squotes (ppr $ rawAddr addr)
     LSig (r,s)     -> tupleOf [ppr r, ppr s]
     LVoid          -> token Token.void
     LState label   -> token Token.colon <> ppr label
-    LUndefined     -> dquotes "Undefined" -- Not in syntax
     LDateTime dt   -> dquotes $ ppr $ (DT.formatDatetime (unDateTime dt) :: [Char])
     LTimeDelta d   -> ppr d
     LConstr ec     -> text "`" <> ppr ec
+    LMap lmap      ->
+      case Map.toList lmap of
+        []           -> lbrace <> rbrace
+        ((k,v):rest) ->
+          lbrace <+> ppr k <+> ":" <+> ppr v <$$>
+            foldl (\doc (k,v) -> doc <$$> "," <+> ppr k <+> ":" <+> ppr v) "" rest <$$>
+          rbrace
+    LSet lset      -> tupleOf (Set.toList lset)
 
 instance Pretty Type where
   ppr = \case
@@ -603,7 +660,6 @@ instance Pretty Type where
     TBool       -> token Token.bool
     TAny        -> token Token.any
     TAssetAny   -> token Token.asset
-    TAddress    -> token Token.contract
     TAccount    -> token Token.account
     TAsset TBinary   -> token Token.assetBin
     TAsset TDiscrete -> token Token.assetDis
@@ -618,33 +674,42 @@ instance Pretty Type where
     TSig        -> token Token.sig
     TMsg        -> token Token.msg
     TError      -> text $ "<error-type>"  -- Not in syntax
-    TVar (TV v) -> text $ toSL v
-    TVar (TAV v) -> text $ toSL v
-    TRef t      -> hcat ["ref <", ppr t, ">"]  -- Not in syntax
-    TCrypto t   -> hsep [ppr Token.local, ppr t]
+    TVar v      -> ppr v
     TDateTime   -> token Token.datetime
     TTimeDelta  -> token Token.timedelta
     TState      -> token Token.state
     TEnum e     -> token Token.enum <+> token (unName e)
+    TFun as r   -> tupleOf (map ppr as) <+> "->" <+> ppr r
+    TColl tcol  -> ppr tcol
+
+instance Pretty TVar where
+  ppr (TV v)  = text $ toSL v
+  ppr (TAV v) = text $ toSL v
+  ppr (TCV v) = text $ toSL v
+
+instance Pretty TCollection where
+  ppr = \case
+    TMap tk tv -> token Token.map <> "<" <> ppr tk <> "," <+> ppr tv <> ">"
+    TSet ts    -> token Token.set <> "<" <> ppr ts <> ">"
 
 instance Pretty Script.Value where
   ppr = \case
     VInt n       -> ppr n
-    VCrypto n    -> ppr n
     VFloat n     -> ppr n
     VFixed n     -> ppr n
     VBool n      -> ppr n
-    VAddress n   -> ppr n
     VAccount n   -> ppr n
     VAsset n     -> ppr n
     VContract n  -> ppr n
-    VMsg n       -> ppr n
+    VMsg n       -> dquotes $ ppr n
     VSig (r,s)   -> ppr r <> "," <> ppr s
     VVoid        -> token Token.void
     VDateTime dt -> ppr (DT.formatDatetime (unDateTime dt) :: [Char])
     VTimeDelta d -> ppr d
     VEnum c      -> ppr c
     VState n     -> ppr n
+    VMap vmap    -> foldl (\doc (k,v) -> doc <$$+> ppr k <+> ":" <+> ppr v) rbrace (Map.toList vmap) <$$> lbrace
+    VSet vset    -> tupleOf (Set.toList vset)
     VUndefined   -> "undefined"
 
 instance Pretty Arg where
@@ -668,9 +733,23 @@ instance Pretty BinOp where
 instance Pretty UnOp where
   ppr Not = token Token.not
 
+instance Pretty AccessRestriction where
+  ppr RoleAny = ""
+  ppr (RoleAnyOf xs) = listOf xs
+
 instance Pretty Method where
-  ppr (Method tag name args (Located _ body)) =
-    ppr tag <$$> ppr name <> tupleOf (map ppr args) <+>
+  ppr (Method tag access name args (Located _ body)) =
+    ppr tag <+> ppr access <$$> ppr name <> tupleOf (map ppr args) <+>
+      case body of
+        ENoOp -> lbrace <+> rbrace
+        e@(ESeq _ _) -> lbrace
+          <$$> indent 2 (semify $ ppr e)
+          <$$> rbrace
+        other -> lbrace <$$> indent 2 (semify (ppr other)) <$$> rbrace
+
+instance Pretty Helper where
+  ppr (Helper name args (Located _ body)) =
+    ppr name <> tupleOf (map ppr args) <+>
       case body of
         ENoOp -> lbrace <+> rbrace
         e@(ESeq _ _) -> lbrace
@@ -686,19 +765,23 @@ instance Pretty EnumDef where
 
 instance Pretty Def where
   ppr = \case
-    GlobalDefNull typ (Located _ name) -> hsep [token Token.global, ppr typ, ppr name] <> token Token.semi
+    GlobalDefNull typ role (Located _ name)
+      -> hsep [token Token.global, ppr typ, ppr role, ppr name] <> token Token.semi
     LocalDefNull typ (Located _ name)  -> hsep [token Token.local, ppr typ, ppr name] <> token Token.semi
-    GlobalDef typ name expr             -> hsep [token Token.global, ppr typ, ppr name `assign` ppr expr]
+    GlobalDef typ role name expr
+      -> hsep [token Token.global, ppr typ, ppr role, ppr name `assign` ppr expr]
     LocalDef typ name expr              -> hsep [token Token.local, ppr typ, ppr name `assign` ppr expr]
 
 instance Pretty Script where
-  ppr (Script enums defns graph methods) = vsep
+  ppr (Script enums defns graph methods functions) = vsep
     [ vsep (map ppr enums)
     , vsep (map ppr defns)
     , Pretty.softbreak
     , vsep (map (semify . ppr) graph)
     , Pretty.softbreak
     , vsep (spaced (map ppr methods))
+    , Pretty.softbreak
+    , vsep (spaced (map ppr functions))
     ]
 
 instance Pretty GraphLabel where
@@ -723,14 +806,14 @@ evalLit lit = case lit of
   LAccount n  -> VAccount n
   LAsset n    -> VAsset n
   LContract n -> VContract n
-  LAddress n  -> VAddress n
   LMsg n      -> VMsg n
   LSig n      -> VSig n
   LState n    -> VState n
-  LUndefined  -> VUndefined
   LDateTime d -> VDateTime d
   LTimeDelta d -> VTimeDelta d
-  LConstr c -> VEnum c
+  LConstr c   -> VEnum c
+  LMap lmap   -> VMap (Map.mapKeys evalLit (Map.map evalLit lmap))
+  LSet lset   -> VSet (Set.map evalLit lset)
 
 evalLLit :: LLit -> Script.Value
 evalLLit (Located _ lit) = evalLit lit

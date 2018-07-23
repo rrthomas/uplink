@@ -1,5 +1,0 @@
-fromList
-  [ ( Key { unKey = "x" } , VInt 5 )
-  , ( Key { unKey = "y" } , VCrypto 5 )
-  , ( Key { unKey = "z" } , VCrypto 15 )
-  ]

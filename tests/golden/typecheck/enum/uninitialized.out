@@ -1,11 +1,26 @@
 [ ( Name { unName = "start" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
-  , Write
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "i" } ] }
   )
-, ( Name { unName = "increase" } , Sig [] TVoid , Write )
-, ( Name { unName = "assignedStop" } , Sig [] TAny , Write )
+, ( Name { unName = "increase" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "i" }
+            , WriteVar Name { unName = "i" }
+            ]
+      }
+  )
+, ( Name { unName = "assignedStop" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
 , ( Name { unName = "assign" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
-  , Write
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "i" } ] }
   )
 ]

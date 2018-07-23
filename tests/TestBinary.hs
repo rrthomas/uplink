@@ -27,6 +27,7 @@ import qualified Account
 import qualified Address
 import qualified Script
 import qualified Time
+import Transaction
 import qualified Consensus.Authority as CA
 import qualified Consensus.Authority.Params as CAP
 
@@ -36,19 +37,8 @@ import qualified Reference as Ref
 import Crypto.Number.Basic
 import Crypto.Random.Types (getRandomBytes)
 
-instance Arbitrary SI.SafeInteger where
-  arbitrary =
-    let minBound' = SI.fromSafeInteger minBound
-        maxBound' = SI.fromSafeInteger maxBound
-    in SI.toSafeInteger' <$> choose (minBound',maxBound')
 
-newtype UnsafeInteger = UnsafeInteger Integer
-  deriving Show
-
-instance Arbitrary UnsafeInteger where
-  arbitrary = UnsafeInteger <$> choose (n*2, n*(2^4096))
-    where
-      n = SI.fromSafeInteger maxBound
+import TestArbitrary
 
 -- | Test that a data structure round-trips throught its binary serializer and
 -- deserializer preserving the same structure.
@@ -59,7 +49,6 @@ binaryTests =
         let testGenBlockSeed = "83bc234a"
         genBlock <- Block.genesisBlock testGenBlockSeed Ref.testTimestamp Ref.testPoA
         binaryTestHUnit Block.encodeBlock Block.decodeBlock (Ref.testBlock genBlock [])
-
     , testCase "Address Serialization" $ do
         binaryTestHUnit S.encode S.decode (pure Ref.testAddr)
     , testCase "Transaction binary roundtrip (uses Serialize instance)" $ do
@@ -88,7 +77,8 @@ binaryTests =
     , localOption (QuickCheckTests 10000) $
         testProperty "decode(encode(SafeInteger n)) == SafeInteger n" $ \(safeInt :: SI.SafeInteger) ->
           S.decode (S.encode safeInt) == Right safeInt
-
+    
+   
     , testProperty "Safe deserialization of malicious SafeInteger" $ \(UnsafeInteger n) ->
         let safeInt' = SI.unsafeToSafeInteger n
         in case S.decode (SI.unsafeEncode safeInt') of -- serialize & deserialize a safe int larger than maxBits
@@ -140,7 +130,25 @@ binaryTests =
                , serializeTest f5
                , serializeTest f6
                ]
-
+    , testGroup "Transaction Serialization"
+      [ testProperty "TxAsset roundtrip" $
+        \(txAsset :: TxAsset) -> 
+          let decoded = S.decode (S.encode txAsset) :: Either [Char] TxAsset
+          in S.decode (S.encode txAsset) == Right txAsset
+      , testProperty "TxAccount roundtrip" $
+        \(txAccount :: TxAccount) ->
+          let decoded = S.decode (S.encode txAccount) :: Either [Char] TxAccount
+          in S.decode (S.encode txAccount) == Right txAccount
+      , testProperty "TxContract roundtrip" $
+        \(txContract:: TxContract) ->
+          let decoded = S.decode (S.encode txContract) :: Either [Char] TxContract
+          in S.decode (S.encode txContract) == Right txContract
+      
+      , testProperty "TransactionHeader roundtrip" $ 
+        \(txHeader :: TransactionHeader) -> 
+          let decoded = S.decode (S.encode txHeader) :: Either [Char] TransactionHeader
+          in S.decode (S.encode txHeader) == Right txHeader
+      ]
     ] ++ consensusMsgBinTests
 
 consensusMsgBinTests :: [TestTree]

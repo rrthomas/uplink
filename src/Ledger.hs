@@ -48,6 +48,7 @@ import Protolude hiding (from, to, get, put)
 import Control.Arrow ((&&&))
 
 import Data.Aeson (ToJSON, FromJSON, eitherDecode)
+import qualified Data.Binary as B
 import Data.Serialize (Serialize)
 import qualified Data.Map as Map
 
@@ -91,7 +92,7 @@ data World = World
   { contracts :: Map.Map (Address AContract) Contract
   , assets    :: Map.Map (Address AAsset) Asset
   , accounts  :: Map.Map (Address AAccount) Account.Account
-  } deriving (Show, Eq, Generic, NFData, Serialize, ToJSON, FromJSON)
+  } deriving (Show, Eq, Generic, NFData, Serialize, B.Binary, ToJSON, FromJSON)
 
 instance Monoid World where
   mempty = genesisWorld

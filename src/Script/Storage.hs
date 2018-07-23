@@ -15,10 +15,8 @@ module Script.Storage (
 import Protolude hiding ((<>))
 
 import Ledger (World)
-import Address
 import Script
 import Storage
-import SafeInteger
 import Script.Pretty
 import Script.Eval (EvalM, EvalState(..), EvalCtx(..))
 import qualified Script.Eval as Eval
@@ -30,12 +28,12 @@ import Script.Graph (GraphState(..))
 import Control.Monad.State.Strict (modify')
 
 initLocalStorageVars :: Script -> Contract.LocalStorageVars
-initLocalStorageVars (Script _ defns _ _) =
+initLocalStorageVars (Script _ defns _ _ _) =
   Contract.LocalStorageVars $ Set.fromList
     [ name | LocalDefNull _ (Located _ name) <- defns ]
 
 initGlobalStorage :: Script -> Storage
-initGlobalStorage (Script _ defns _ _)
+initGlobalStorage (Script _ defns _ _ _)
   = foldl' buildStores mempty defns
   where
     buildStores :: Storage -> Def -> Storage
@@ -43,10 +41,10 @@ initGlobalStorage (Script _ defns _ _)
       LocalDef TInt (Name nm) lit ->
         Map.insert (Key nm) VUndefined gstore
 
-      GlobalDef type_ (Name nm) expr ->
+      GlobalDef type_ _ (Name nm) expr ->
         Map.insert (Key nm) VUndefined gstore
 
-      GlobalDefNull _ (Located _ (Name nm)) ->
+      GlobalDefNull _ _ (Located _ (Name nm)) ->
         Map.insert (Key nm) VUndefined gstore
 
       -- XXX what are we supposed to do with local vars?
@@ -57,7 +55,7 @@ initStorage
   -> World      -- ^ World to evaluate the top-level definitions in
   -> Script     -- ^ Script
   -> IO GlobalStorage
-initStorage evalCtx world s@(Script _ defns _ _)
+initStorage evalCtx world s@(Script _ defns _ _ _)
   = do
   res <- Eval.execEvalM evalCtx emptyEvalState $ mapM_ assignGlobal defns
   case res of
@@ -68,8 +66,8 @@ initStorage evalCtx world s@(Script _ defns _ _)
     assignGlobal = \case
       LocalDef type_ nm expr -> do
         val <- Eval.evalLExpr expr
-        modify' (insertVar nm (toVCrypto TInt val))
-      GlobalDef type_ nm expr -> do
+        modify' (insertVar nm val)
+      GlobalDef type_ _ nm expr -> do
         val <- Eval.evalLExpr expr
         modify' (insertVar nm val)
       _ -> pure ()
@@ -91,16 +89,6 @@ initStorage evalCtx world s@(Script _ defns _ _)
       , worldState       = world
       , deltas           = []
       }
-
-toVCrypto :: Script.Type -> Value -> Value
-toVCrypto TInt (VInt n) = VCrypto $ toSafeInteger' n
-toVCrypto t     v       = convAddr t v
-
-convAddr :: Script.Type -> Value -> Value
-convAddr TAccount (VAddress addr) = VAccount (addrFromUnknown addr)
-convAddr (TAsset _)(VAddress addr) = VAsset (addrFromUnknown addr)
-convAddr TContract (VAddress addr) = VContract (addrFromUnknown addr)
-convAddr _ x = x
 
 -- | Pretty print storage map
 dumpStorage :: EnumInfo -> Map Key Value -> Doc

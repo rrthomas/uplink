@@ -1,11 +1,11 @@
--- This file has been generated from package.yaml by hpack version 0.20.0.
+-- This file has been generated from package.yaml by hpack version 0.28.2.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: ffb064c9b98f23985e1a35eb6cd43be04f622199e28c6a7959f47a669f1ee419
+-- hash: 1e1a5054ca07d279a4c1df11faa1cb565d7a9c404b5f1b24c43f5604a0f0914c
 
 name:           uplink
-version:        0.1.6
+version:        0.1.7
 synopsis:       A distributed ledger for finance.
 category:       Database
 homepage:       https://github.com/adjoint-io/uplink#readme
@@ -15,13 +15,17 @@ license:        Apache
 license-file:   LICENSE
 build-type:     Simple
 cabal-version:  >= 1.10
-
 extra-source-files:
     README.md
 
 source-repository head
   type: git
   location: https://github.com/adjoint-io/uplink
+
+flag ekg
+  description: Monitor using HTTP server
+  manual: True
+  default: False
 
 flag optimized
   description: Perform compiler optimizations
@@ -34,94 +38,6 @@ flag static
   default: False
 
 library
-  hs-source-dirs:
-      src
-  default-extensions: LambdaCase RecordWildCards OverloadedStrings NoImplicitPrelude FlexibleInstances FlexibleContexts Rank2Types
-  ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-imports -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
-  build-depends:
-      aeson >=0.11
-    , aeson-pretty
-    , ansi-terminal
-    , arithmoi
-    , array
-    , asn1-encoding
-    , asn1-types
-    , async
-    , attoparsec >=0.13.1.0
-    , base >=4.7 && <5.0
-    , base58-bytestring
-    , base64-bytestring
-    , binary
-    , bytestring
-    , cereal
-    , cereal-text
-    , configurator
-    , containers
-    , cryptonite >=0.21
-    , datetimes
-    , deepseq
-    , directory
-    , distributed-process
-    , distributed-process-lifted
-    , dlist
-    , exceptions
-    , fgl
-    , file-embed
-    , filelock
-    , filepath
-    , gitrev
-    , hashable
-    , haskeline
-    , hexpat >=0.20
-    , hexpat-pickle >=0.6
-    , hostname-validate
-    , hourglass
-    , hslogger
-    , http-client
-    , http-types
-    , iproute
-    , leveldb-haskell
-    , lifted-async
-    , lifted-base
-    , memory
-    , merkle-tree
-    , monad-control
-    , mtl >=2.2
-    , network
-    , network-transport
-    , network-transport-inmemory
-    , network-transport-tcp
-    , network-uri
-    , parsec
-    , pedersen-commitment
-    , pem
-    , postgres-tmp
-    , postgresql-simple
-    , pretty-hex
-    , pretty-show
-    , process
-    , protolude >=0.2
-    , random
-    , repline
-    , resource-pool
-    , safe
-    , scientific
-    , scotty
-    , stm
-    , text
-    , time
-    , transformers
-    , transformers-base
-    , unix
-    , unordered-containers
-    , wai
-    , wai-logger
-    , warp
-    , warp-tls
-    , wl-pprint-text
-    , x509
-  if os(linux) && flag(static)
-    ghc-options: -static -optl-static
   exposed-modules:
       Driver
       Config
@@ -149,6 +65,7 @@ library
       MemPool
       Time
       Address
+      Transaction.RandomGen
       Hash
       Key
       Homomorphic
@@ -188,6 +105,7 @@ library
       Network.P2P.Send
       Network.P2P.Simulate
       Network.P2P.Logging
+      Network.P2P.Logging.Rule
       Consensus
       Consensus.Authority
       Consensus.Authority.Params
@@ -216,14 +134,12 @@ library
   other-modules:
       REPL.Lexer
       REPL.Parser
+      Transaction.Generics
       Paths_uplink
-  default-language: Haskell2010
-
-executable uplink
-  main-is: Main.hs
   hs-source-dirs:
-      exe
-  default-extensions: NoImplicitPrelude OverloadedStrings
+      src
+  default-extensions: LambdaCase RecordWildCards OverloadedStrings NoImplicitPrelude FlexibleInstances FlexibleContexts Rank2Types
+  ghc-options: -fwarn-tabs -fwarn-incomplete-patterns -fwarn-incomplete-uni-patterns -fwarn-incomplete-record-updates -fwarn-redundant-constraints -fwarn-implicit-prelude -fwarn-overflowed-literals -fwarn-orphans -fwarn-identities -fwarn-dodgy-exports -fwarn-dodgy-imports -fwarn-duplicate-exports -fwarn-overlapping-patterns -fwarn-missing-fields -fwarn-missing-methods -fwarn-missing-signatures -fwarn-noncanonical-monad-instances -fwarn-unused-imports -fwarn-unused-pattern-binds -fwarn-unused-type-patterns -fwarn-unrecognised-pragmas -fwarn-wrong-do-bind -fwarn-hi-shadowing -fno-warn-name-shadowing -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-unused-do-bind
   build-depends:
       aeson >=0.11
     , aeson-pretty
@@ -249,6 +165,8 @@ executable uplink
     , directory
     , distributed-process
     , distributed-process-lifted
+    , distributed-process-supervisor
+    , distributed-static
     , dlist
     , exceptions
     , fgl
@@ -277,6 +195,109 @@ executable uplink
     , network-transport
     , network-transport-inmemory
     , network-transport-tcp
+    , network-transport-tcp-tls
+    , network-uri
+    , parsec
+    , pedersen-commitment
+    , pem
+    , postgres-tmp
+    , postgresql-simple
+    , pretty-hex
+    , pretty-show
+    , process
+    , protolude >=0.2
+    , random
+    , rank1dynamic
+    , repline
+    , resource-pool
+    , retry
+    , safe
+    , scientific
+    , scotty
+    , stm
+    , text
+    , time
+    , transformers
+    , transformers-base
+    , unix
+    , unordered-containers
+    , wai
+    , wai-logger
+    , warp
+    , warp-tls
+    , wl-pprint-text
+    , x509
+  if flag(ekg)
+    build-depends:
+        ekg
+  if flag(ekg)
+    cpp-options: -DEKG
+  default-language: Haskell2010
+
+executable uplink
+  main-is: Main.hs
+  other-modules:
+      Paths_uplink
+  hs-source-dirs:
+      exe
+  default-extensions: NoImplicitPrelude OverloadedStrings
+  ghc-options: -with-rtsopts=-T
+  build-depends:
+      aeson >=0.11
+    , aeson-pretty
+    , ansi-terminal
+    , arithmoi
+    , array
+    , asn1-encoding
+    , asn1-types
+    , async
+    , attoparsec >=0.13.1.0
+    , base >=4.7 && <5.0
+    , base58-bytestring
+    , base64-bytestring
+    , binary
+    , bytestring
+    , cereal
+    , cereal-text
+    , configurator
+    , containers
+    , cryptonite >=0.21
+    , datetimes
+    , deepseq
+    , directory
+    , distributed-process
+    , distributed-process-lifted
+    , distributed-process-supervisor
+    , distributed-static
+    , dlist
+    , exceptions
+    , fgl
+    , file-embed
+    , filelock
+    , filepath
+    , gitrev
+    , hashable
+    , haskeline
+    , hexpat >=0.20
+    , hexpat-pickle >=0.6
+    , hostname-validate
+    , hourglass
+    , hslogger
+    , http-client
+    , http-types
+    , iproute
+    , leveldb-haskell
+    , lifted-async
+    , lifted-base
+    , memory
+    , merkle-tree
+    , monad-control
+    , mtl >=2.2
+    , network
+    , network-transport
+    , network-transport-inmemory
+    , network-transport-tcp
+    , network-transport-tcp-tls
     , network-uri
     , optparse-applicative
     , parsec
@@ -289,8 +310,10 @@ executable uplink
     , process
     , protolude >=0.2
     , random
+    , rank1dynamic
     , repline
     , resource-pool
+    , retry
     , safe
     , scientific
     , scotty
@@ -308,17 +331,36 @@ executable uplink
     , warp-tls
     , wl-pprint-text
     , x509
+  if flag(ekg)
+    build-depends:
+        ekg
   if os(linux) && flag(static)
     ghc-options: -static -optl-static
   if flag(optimized)
     ghc-options: -threaded -O2 -rtsopts
-  other-modules:
-      Paths_uplink
   default-language: Haskell2010
 
 test-suite uplink-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules:
+      Helpers
+      KeyTests
+      Reference
+      TestArbitrary
+      TestBinary
+      TestDB
+      TestJson
+      TestNetwork
+      TestPaillier
+      TestQueryLang
+      TestScript
+      TestStorage
+      TestTx
+      TestTxAsset
+      TestWire
+      TestXML
+      Paths_uplink
   hs-source-dirs:
       tests
   build-depends:
@@ -347,6 +389,8 @@ test-suite uplink-test
     , directory
     , distributed-process
     , distributed-process-lifted
+    , distributed-process-supervisor
+    , distributed-static
     , dlist
     , exceptions
     , fgl
@@ -375,6 +419,7 @@ test-suite uplink-test
     , network-transport
     , network-transport-inmemory
     , network-transport-tcp
+    , network-transport-tcp-tls
     , network-uri
     , parsec
     , pedersen-commitment
@@ -386,8 +431,10 @@ test-suite uplink-test
     , process
     , protolude >=0.2
     , random
+    , rank1dynamic
     , repline
     , resource-pool
+    , retry
     , safe
     , scientific
     , scotty
@@ -409,27 +456,16 @@ test-suite uplink-test
     , warp-tls
     , wl-pprint-text
     , x509
-  other-modules:
-      Helpers
-      KeyTests
-      Reference
-      TestBinary
-      TestDB
-      TestJson
-      TestPaillier
-      TestQueryLang
-      TestScript
-      TestStorage
-      TestTx
-      TestTxAsset
-      TestWire
-      TestXML
-      Paths_uplink
+  if flag(ekg)
+    build-depends:
+        ekg
   default-language: Haskell2010
 
 benchmark uplink-benchmarks
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules:
+      Paths_uplink
   hs-source-dirs:
       bench
   build-depends:
@@ -458,6 +494,8 @@ benchmark uplink-benchmarks
     , directory
     , distributed-process
     , distributed-process-lifted
+    , distributed-process-supervisor
+    , distributed-static
     , dlist
     , exceptions
     , fgl
@@ -486,6 +524,7 @@ benchmark uplink-benchmarks
     , network-transport
     , network-transport-inmemory
     , network-transport-tcp
+    , network-transport-tcp-tls
     , network-uri
     , parsec
     , pedersen-commitment
@@ -497,8 +536,10 @@ benchmark uplink-benchmarks
     , process
     , protolude >=0.2
     , random
+    , rank1dynamic
     , repline
     , resource-pool
+    , retry
     , safe
     , scientific
     , scotty
@@ -516,6 +557,7 @@ benchmark uplink-benchmarks
     , warp-tls
     , wl-pprint-text
     , x509
-  other-modules:
-      Paths_uplink
+  if flag(ekg)
+    build-depends:
+        ekg
   default-language: Haskell2010

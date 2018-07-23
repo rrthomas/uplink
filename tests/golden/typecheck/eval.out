@@ -47,7 +47,6 @@
                }
          })
 , ModifyGlobal Name { unName = "w" } (VFloat 6.0)
-, ModifyGlobal Name { unName = "x" } (VInt 5)
 , ModifyGlobal Name { unName = "z" } (VInt 4)
 , ModifyGlobal Name { unName = "y" } (VInt (-2))
 , ModifyGlobal Name { unName = "y" } (VInt (-3))
@@ -59,6 +58,123 @@
 , ModifyGlobal Name { unName = "x" } (VInt 6)
 , ModifyGlobal Name { unName = "y" } (VInt (-2))
 , ModifyGlobal Name { unName = "x" } (VInt 18)
+, ModifyGlobal
+    Name { unName = "future_past_diff" }
+    (VTimeDelta
+       TimeDelta
+         { unTimeDelta =
+             Delta
+               { dPeriod =
+                   Period
+                     { unPeriod =
+                         Period { periodYears = 87 , periodMonths = 3 , periodDays = 12 }
+                     }
+               , dDuration =
+                   Duration
+                     { unDuration =
+                         Duration
+                           { durationHours = 19 h
+                           , durationMinutes = 55 m
+                           , durationSeconds = 56 s
+                           , durationNs = 0 ns
+                           }
+                     }
+               }
+         })
 , ModifyState GraphTerminal
 , Terminate "bye"
 ]
+fromList
+  [ ( Key { unKey = "a" }
+    , VAsset (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+    )
+  , ( Key { unKey = "b" }
+    , VAccount (Address "H1tbrEKWGpbPjSeG856kz2DjViCwMU3qTw3i1PqCLz65")
+    )
+  , ( Key { unKey = "dt_future" }
+    , VDateTime
+        DateTime
+          { unDateTime =
+              Datetime
+                { year = 2090
+                , month = 10
+                , day = 11
+                , hour = 4
+                , minute = 13
+                , second = 40
+                , zone = 300
+                , week_day = 3
+                }
+          }
+    )
+  , ( Key { unKey = "dt_past" }
+    , VDateTime
+        DateTime
+          { unDateTime =
+              Datetime
+                { year = 2003
+                , month = 6
+                , day = 28
+                , hour = 8
+                , minute = 17
+                , second = 44
+                , zone = 300
+                , week_day = 6
+                }
+          }
+    )
+  , ( Key { unKey = "f" } , VBool True )
+  , ( Key { unKey = "future_past_diff" }
+    , VTimeDelta
+        TimeDelta
+          { unTimeDelta =
+              Delta
+                { dPeriod =
+                    Period
+                      { unPeriod =
+                          Period { periodYears = 87 , periodMonths = 3 , periodDays = 12 }
+                      }
+                , dDuration =
+                    Duration
+                      { unDuration =
+                          Duration
+                            { durationHours = 19 h
+                            , durationMinutes = 55 m
+                            , durationSeconds = 56 s
+                            , durationNs = 0 ns
+                            }
+                      }
+                }
+          }
+    )
+  , ( Key { unKey = "m" } , VFixed (Fixed1 (F1 (-4.0))) )
+  , ( Key { unKey = "n" } , VFixed (Fixed5 (F5 (-45.00000))) )
+  , ( Key { unKey = "t" } , VBool False )
+  , ( Key { unKey = "td" }
+    , VTimeDelta
+        TimeDelta
+          { unTimeDelta =
+              Delta
+                { dPeriod =
+                    Period
+                      { unPeriod =
+                          Period { periodYears = 1 , periodMonths = 1 , periodDays = 1 }
+                      }
+                , dDuration =
+                    Duration
+                      { unDuration =
+                          Duration
+                            { durationHours = 1 h
+                            , durationMinutes = 1 m
+                            , durationSeconds = 1 s
+                            , durationNs = 0 ns
+                            }
+                      }
+                }
+          }
+    )
+  , ( Key { unKey = "w" } , VFloat 3.0 )
+  , ( Key { unKey = "x" } , VInt 18 )
+  , ( Key { unKey = "y" } , VInt (-2) )
+  , ( Key { unKey = "z" } , VInt 4 )
+  ]

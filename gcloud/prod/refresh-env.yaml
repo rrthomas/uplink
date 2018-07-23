@@ -1,0 +1,74 @@
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: refresh-env
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: refresh-env
+            image: google/cloud-sdk:alpine
+            args:
+            - /bin/sh
+            - -c
+            - |
+                date;
+                echo Hello from the Kubernetes cluster;
+                echo $ACCT_AUTH | base64 -d > account-auth.json
+                gcloud auth activate-service-account --key-file account-auth.json
+                gcloud --quiet components update kubectl
+                gcloud container clusters get-credentials prod-cluster --zone europe-west2-b --project uplink-test-cluster-174313
+                kubectl delete pod -l io.kompose.service=bootnode
+                kubectl delete pod -l io.kompose.service=uplink
+                kubectl delete pod -l io.kompose.service=uplink-explorer
+
+            env:
+            - name: ACCT_AUTH
+              value: |
+                ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3RfaWQiOiAidXBsaW5rLXRl
+                c3QtY2x1c3Rlci0xNzQzMTMiLAogICJwcml2YXRlX2tleV9pZCI6ICI4YjM4OGI0MTIzZDE1ZTg2
+                ZDYwZjZlZDgxOTI4MTczOWIxZDRlNzk1IiwKICAicHJpdmF0ZV9rZXkiOiAiLS0tLS1CRUdJTiBQ
+                UklWQVRFIEtFWS0tLS0tXG5NSUlFdlFJQkFEQU5CZ2txaGtpRzl3MEJBUUVGQUFTQ0JLY3dnZ1Nq
+                QWdFQUFvSUJBUUM3WEptM2JHK0lQQ0lMXG5VRklwY3VIcnpGOTQ0UTZvbmM0bzNFaFRjenlGdDJP
+                LzBBaU5xb0p6V0c1c2tFTGpTeEY4ZVNiQ0o2U0R2UFlGXG5QaEc4NUhyZThnRXRodGtTUnJMWVhK
+                cFRIYm9yeURmOWZDWVQ5aVlwY1lCY1U0em9hREZHR3liSllsbk1HNXdCXG5KTW8xM2s0eFArTHAy
+                d1dwRTJIMU0wRDRUcFM0aElzcEZ1TDA3VFgzb2ZMRHJPUWo2aklnUkowL01PNzJhVjB3XG5wYWxt
+                OTNNVG1mRVhFNGNsVEcvbVRDTnAyaVNjeDNpbmtoVDBUYXlyL3lWU3pnU0FITzdGcTlYZGUrc01Q
+                bEJ5XG5oeC91a3M5MnV4Nnp2YUJWYVpjd0k1TDUrbjFRejF2bC95eWdsb1YzNjRXakpZZHh3elFh
+                VUVYUjhwNi8xL2pqXG5HckxVZEF5SkFnTUJBQUVDZ2dFQURocFJRN280eHZObnlKdzZJdjZQdk5U
+                OFZyZnlCNFVoVUhnTVJhUEY2WGE5XG5YbUhGVXd5RGx6VVAwc0lsRnNDK3h6VERVeGZ5elN1N0JQ
+                Z0FFOHpLNXQ4bWNZdlY2UWREVFAvamFlQXg5RHUwXG40ekttRnhpUEZNMkRVTy9GQ25WVlNDYWhD
+                OFdJWnRHcE0zaldjNm1SRHluMDVZOWo1SzhkejN3Vkp0dWJYQ3dVXG5rTThzcXhyUlZnYnhjbWNY
+                Ri9GR1g1WEp4eTFOcUZ2YVBiYWNJcHZzWWFyanZTcGhFWjBhK08rYnFzNnowNUFrXG40R0c3TFJZ
+                dnJ3YVFCVlVLaFBpMm1xaDN6c0xtTEk0RVRkUDBxSmY2VXF4d3F2UGliQmVOL25jdXJxWWlBa245
+                XG5wc3Z1OTVXUDVWRk5yVnFnRkgrZTNORHhIWjJFSkhHOTVWS2dqNERnQVFLQmdRRDlENHBtZVkx
+                Ykk3VFhMdFY3XG5sWnNGVHNHaDRia3cxTVo0ejd6N3VhNWR5dFUzbkpqNnF3RDN1RC80eUZwbFNF
+                UWdmL1pJWVc1ZjMxNHNxWDhhXG5ORXRlc2NyZ3B4L2xyN3NzRjJFUkM3YzQzYUdoR1BaVDBkdnpp
+                aGUxUWcwQlEwUjRKYXZacVRJL1hraVkvdml1XG5acEQ3czlJYmFSN3BnNEpXUnNaWm91Qk1BUUtC
+                Z1FDOWliVk5teHZ6NXIvdkpCakZWOW9WS1U5dVVMSi9NeWFGXG5CSEJraTMrZ0xYVVlqRVhQbEM1
+                N1BWT1lYamt3U3VuNGUvVi9UNWpXaE1yenllVTJSVGMvZHY3R0J3dkxSRkd4XG5hbkcvajcxK1J2
+                WWgxVW14UzhSVklUeWozU1Z5RVN6YnQvQ2huT2taNURuSTJleFJ2dm8wMlV1c3l6QVlKbjRZXG5r
+                TWdVeWV0Z2lRS0JnREFQNW9wRjVibjhreGtYVlFadXlJMStncm9iSTlBSmFWU0NwL0xyTmhtc0ww
+                aXJua1psXG5lZjZTYU52NE9XcnBDYjllYmtrYThCcVhVc3lLdUpBaWhIb01yR3AwYzFOdFI5QTg5
+                SHVIVFJvb3hjelI3OTdGXG5pYys4VjNwZWZCZlVUY20vNWQ2bUN0d01MUitadFdOeUtYRVVtd0FI
+                dkE0L290NTkvS2dEampRQkFvR0FOREwxXG54SjdBTHdiUXUwcWtxOHpMR2VMYnBsVUJJN2p4bGRh
+                b0lYaXR1RzVzZmtzN2VyU2pySHN5UjVkRGhzSks5NDBrXG5DbURnaGN2aW5RdHdYZWJvRlVsdlZ4
+                aGZyaVp0blQva2ZjNVhjS3lZWXE3NzhhRWRQQmpBTzV6UEVFQWNxNUpYXG42aHB0dEJ5L3NVb2JK
+                RlJGVWtLNTdhZXo0aUxQdlhJNk9FZDMxSWtDZ1lFQTR6R3lINUVRN2IzNmd5R3N0dEdBXG5uMmxH
+                WUhsWVlMYXJmb0RPaVVYaXpsaHFvdDE4a3M4SVk1QWxqVHAwdy96VnhRcUVLV05PYnBpMm9jcHhp
+                MEptXG5SVkVsK3psamZNMVZtc0wvOTY1bzgvclorVEkwbmV5VmhXbzlZTG91VlRaTGM5ajhIbVpp
+                d0QxWEg0OFRZWVVpXG45cFVPYzlKQXAyWjhSazVBTWlhUkZWRT1cbi0tLS0tRU5EIFBSSVZBVEUg
+                S0VZLS0tLS1cbiIsCiAgImNsaWVudF9lbWFpbCI6ICI2MTMzNTE3NzY2NTktY29tcHV0ZUBkZXZl
+                bG9wZXIuZ3NlcnZpY2VhY2NvdW50LmNvbSIsCiAgImNsaWVudF9pZCI6ICIxMDQ5MjMxNjIzNTI5
+                MTYwNjk1ODEiLAogICJhdXRoX3VyaSI6ICJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20vby9v
+                YXV0aDIvYXV0aCIsCiAgInRva2VuX3VyaSI6ICJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20v
+                by9vYXV0aDIvdG9rZW4iLAogICJhdXRoX3Byb3ZpZGVyX3g1MDlfY2VydF91cmwiOiAiaHR0cHM6
+                Ly93d3cuZ29vZ2xlYXBpcy5jb20vb2F1dGgyL3YxL2NlcnRzIiwKICAiY2xpZW50X3g1MDlfY2Vy
+                dF91cmwiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vcm9ib3QvdjEvbWV0YWRhdGEveDUw
+                OS82MTMzNTE3NzY2NTktY29tcHV0ZSU0MGRldmVsb3Blci5nc2VydmljZWFjY291bnQuY29tIgp9
+                Cg==
+          restartPolicy: OnFailure

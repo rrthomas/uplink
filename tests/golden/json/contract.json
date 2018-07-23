@@ -1,5 +1,5 @@
 {
-    "script": "enum E {\nFoo, Bar\n};\nglobal int x = 0;\nglobal enum E y = `Foo;\n\ntransition initial -> set;\ntransition set -> get;\n\n@initial\nsetY() {\n  y = `Bar;\n  transitionTo(:set);\n}\n\n@get\ngetX() { }\n\n@set\nsetX() {\n  x = 42;\n  transitionTo(:get);\n}",
+    "script": "enum E {\nFoo, Bar\n};\nglobal int x = 0;\nglobal enum E y = `Foo;\nglobal map<account, enum E> m = {};\n\ntransition initial -> set;\ntransition set -> get;\ntransition get -> terminal;\n\n@initial\nsetY() {\n  y = `Bar;\n  transitionTo(:set);\n}\n\n@get\ngetX() {\n  transitionTo(:terminal);\n}\n\n@set\nsetX() {\n  x = 42;\n  transitionTo(:get);\n}\n\ninsertFoo(account a) {\n  mapInsert(a, `Foo, m);\n}",
     "state": "initial",
     "address": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
     "owner": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve",
@@ -13,7 +13,7 @@
             "contents": 3
         },
         "d": {
-            "tag": "VAddress",
+            "tag": "VAccount",
             "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
         },
         "b": {
@@ -24,23 +24,20 @@
             "tag": "VVoid",
             "contents": null
         },
+        "h": {
+            "tag": "VAsset",
+            "contents": "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh"
+        },
         "c": {
             "tag": "VBool",
             "contents": true
         },
-        "f": {
-            "tag": "VCrypto",
-            "contents": 42
+        "i": {
+            "tag": "VContract",
+            "contents": "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve"
         }
     },
-    "localStorage": {
-        "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve": {
-            "f": {
-                "tag": "VCrypto",
-                "contents": 42
-            }
-        }
-    },
+    "localStorage": {},
     "methods": [
         "setY",
         "getX",

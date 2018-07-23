@@ -35,7 +35,6 @@ import Crypto.Number.Basic (numBits)
 
 import Data.Aeson as A
 import Data.Aeson.Types as A
-import Data.Hashable (Hashable)
 import Data.Serialize as S
   (Serialize(..), runPut
   , getWord8, putWord8
@@ -73,7 +72,7 @@ instance Exception HugeInteger
 
 -- | Integers safe for serialization
 newtype SafeInteger = SafeInteger Integer
-  deriving (Eq, Ord, Read, Hashable, NFData)
+  deriving (Eq, Ord, Read, NFData)
 
 instance Bounded SafeInteger where
   maxBound = SafeInteger maxBound'

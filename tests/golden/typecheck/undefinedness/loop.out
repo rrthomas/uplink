@@ -1,7 +1,40 @@
-[ ( Name { unName = "start" } , Sig [] TVoid , Write )
-, ( Name { unName = "one" } , Sig [] TVoid , Write )
-, ( Name { unName = "two" } , Sig [] TVoid , Write )
-, ( Name { unName = "three" } , Sig [] TVoid , Write )
-, ( Name { unName = "four" } , Sig [ TInt ] TVoid , Write )
-, ( Name { unName = "exit" } , Sig [] TAny , Write )
+[ ( Name { unName = "start" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "x" } ] }
+  )
+, ( Name { unName = "one" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "y" } ] }
+  )
+, ( Name { unName = "two" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "z" } ] }
+  )
+, ( Name { unName = "three" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "z" } ] }
+  )
+, ( Name { unName = "four" }
+  , Sig [ TInt ] TVoid
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "x" }
+            , ReadVar Name { unName = "y" }
+            , ReadVar Name { unName = "z" }
+            , WriteVar Name { unName = "x" }
+            , WriteVar Name { unName = "y" }
+            , WriteVar Name { unName = "z" }
+            ]
+      }
+  )
+, ( Name { unName = "exit" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
 ]

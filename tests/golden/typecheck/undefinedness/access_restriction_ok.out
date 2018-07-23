@@ -1,0 +1,16 @@
+[ ( Name { unName = "init" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "reallyAlice" }
+            , WriteVar Name { unName = "alice" }
+            ]
+      }
+  )
+, ( Name { unName = "go" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
+]

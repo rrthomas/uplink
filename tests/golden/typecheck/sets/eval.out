@@ -1,0 +1,119 @@
+[ ModifyGlobal
+    Name { unName = "investors" }
+    (VMap
+       (fromList
+          [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+            , VSet (fromList [])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+            , VSet (fromList [])
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "investors" }
+    (VMap
+       (fromList
+          [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+            , VSet (fromList [])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+                   ])
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "investors" }
+    (VMap
+       (fromList
+          [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "Fw68hsis6JPW4ed3ER1VC959TTf9DqberLxrq5uECKxh")
+                   ])
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "investors" }
+    (VMap
+       (fromList
+          [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "fwBVDsVh8SYQy98CzYpNPcbyTRczVUZ96HszhNRB8Ve")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+            , VSet (fromList [])
+            )
+          ]))
+, ModifyGlobal
+    Name { unName = "investors" }
+    (VMap
+       (fromList
+          [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+            , VSet (fromList [])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+            , VSet
+                (fromList
+                   [ VAccount (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+                   ])
+            )
+          , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+            , VSet (fromList [])
+            )
+          ]))
+, ModifyState GraphTerminal
+, Terminate ""
+]
+fromList
+  [ ( Key { unKey = "investors" }
+    , VMap
+        (fromList
+           [ ( VEnum EnumConstr { unEnumConstr = "BigInvestor" }
+             , VSet (fromList [])
+             )
+           , ( VEnum EnumConstr { unEnumConstr = "MedInvestor" }
+             , VSet
+                 (fromList
+                    [ VAccount (Address "4Stv5gWGt78D3p919HFcKEschSmyGKGrAX2G35xJgdhw")
+                    ])
+             )
+           , ( VEnum EnumConstr { unEnumConstr = "SmallInvestor" }
+             , VSet (fromList [])
+             )
+           ])
+    )
+  ]

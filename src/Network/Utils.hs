@@ -9,13 +9,6 @@ module Network.Utils (
   mkNodeId,
   extractNodeId,
 
-  -- ** Service Communication
-  findLocalService,
-  waitForLocalService,
-  waitForLocalService',
-
-  findRemoteService,
-
   commProc,
 
   -- ** Generic
@@ -28,6 +21,7 @@ import Protolude hiding (newChan, waitEitherCatch, withAsync)
 import Control.Monad.Base
 import Control.Monad.Trans.Control
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async.Lifted (withAsync, waitEitherCatch)
 
 import Control.Distributed.Process.Lifted
@@ -44,8 +38,6 @@ import Network.Socket
   ( getAddrInfo, getNameInfo
   , HostName, ServiceName, AddrInfo(..)
   , NameInfoFlag(..))
-
-import Network.P2P.Service
 
 import Network.Transport (EndPointAddress(..))
 
@@ -124,7 +116,7 @@ extractNodeId = do
 
 -- | Make a NodeId from "host:port" string.
 mkNodeId :: ByteString -> IO (Either Text NodeId)
-mkNodeId address = do
+mkNodeId address =
   case parseHostPort address of
     Left err          -> pure $ Left err
     Right hostPort -> do
@@ -164,52 +156,6 @@ parseHostPort addr =
 -- Service Communication
 --------------------------------------------------------------------------------
 
--- | Find a service on the local node within the given timeout
-findLocalService
-  :: MonadProcessBase m
-  => Service
-  -> Int
-  -> m (Maybe ProcessId)
-findLocalService service timeout = do
-  let serviceNm = show service
-  whereis serviceNm >>= \case
-    Nothing -> do
-      let timeleft = timeout - 10000
-      if timeleft <= 0
-         then pure Nothing
-         else do
-           liftIO (threadDelay 10000)
-           findLocalService service timeout
-    Just pid -> pure $ Just pid
-
--- | Waits for local service to spawn for the given time before spawning the
--- process passed as an argument.
-waitForLocalService
-  :: MonadProcessBase m
-  => Service
-  -> Int
-  -> m a
-  -> m (Maybe a)
-waitForLocalService service timeout proc = do
-  mPid <- findLocalService service timeout
-  case mPid of
-    Nothing -> pure Nothing
-    Just _  -> Just <$> proc
-
--- | Like `waitForLocalService` but terminates the calling process if the
--- service is not found in the given timeout.
-waitForLocalService'
-  :: MonadProcessBase m
-  => Service
-  -> Int
-  -> m a
-  -> m a
-waitForLocalService' service timeout proc = do
-  mres <- waitForLocalService service timeout proc
-  case mres of
-    Nothing -> terminate
-    Just x  -> pure x
-
 validateHostname :: [Char] -> Bool
 validateHostname host =
   case readMaybe host of
@@ -219,23 +165,6 @@ validateHostname host =
         Just (_ :: IP.IPv6) -> True
         Nothing             ->
           TH.validHostname $ toS host
-
-
--- | Find the process id of a service on a remote node
-findRemoteService
-  :: MonadProcessBase m
-  => NodeId
-  -> Service
-  -> m ProcessId
-findRemoteService nodeId service = do
-  whereisRemoteAsync nodeId (show service)
-  reply <- expectTimeout 1500000
-  case reply of
-    Just (WhereIsReply tasks (Just pid)) ->
-      return pid
-    _ -> do
-      putText $ "Failed to connect to " <> show service <> " service at: " <> show nodeId
-      findRemoteService nodeId service
 
 -- | Send a message and block for response. Service agnostic
 commProc

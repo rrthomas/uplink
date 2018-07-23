@@ -1,12 +1,21 @@
-[ ( Name { unName = "start" } , Sig [] TVoid , Write )
+[ ( Name { unName = "start" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
 , ( Name { unName = "leftOrRight" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
-  , Write
+  , Effects { effectSet = fromList [ Write ] }
   )
-, ( Name { unName = "fromBtoD" } , Sig [] TVoid , Write )
+, ( Name { unName = "fromBtoD" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
 , ( Name { unName = "fromCtoD" }
   , Sig [ TEnum Name { unName = "direction" } ] TVoid
-  , Write
+  , Effects { effectSet = fromList [ Write ] }
   )
-, ( Name { unName = "stop" } , Sig [] TAny , Write )
+, ( Name { unName = "stop" }
+  , Sig [] TAny
+  , Effects { effectSet = fromList [ Write ] }
+  )
 ]

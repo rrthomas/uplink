@@ -1,26 +1,66 @@
-[ ( Name { unName = "setDate" } , Sig [] TVoid , NoEffect )
-, ( Name { unName = "initialize" } , Sig [] TVoid , Write )
-, ( Name { unName = "confirm" } , Sig [] TVoid , Write )
-, ( Name { unName = "settle" } , Sig [] TVoid , Write )
-, ( Name { unName = "finalize" } , Sig [] TVoid , Write )
+[ ( Name { unName = "setDate" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ WriteVar Name { unName = "dt" } ] }
+  )
+, ( Name { unName = "initialize" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "confirm" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "settle" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "finalize" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
 , ( Name { unName = "setX" }
   , Sig [ TInt , TFloat ] TVoid
-  , Write
+  , Effects
+      { effectSet =
+          fromList
+            [ Write
+            , ReadVar Name { unName = "f" }
+            , ReadVar Name { unName = "x" }
+            , ReadVar Name { unName = "y" }
+            , WriteVar Name { unName = "f" }
+            , WriteVar Name { unName = "x" }
+            , WriteVar Name { unName = "y" }
+            ]
+      }
   )
-, ( Name { unName = "fixX" } , Sig [] TVoid , Write )
-, ( Name { unName = "fixY" } , Sig [] TVoid , Write )
-, ( Name { unName = "update" } , Sig [] TVoid , Write )
-, ( Name { unName = "f" } , Sig [ TInt , TBool ] TVoid , NoEffect )
+, ( Name { unName = "fixX" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "fixY" }
+  , Sig [] TVoid
+  , Effects { effectSet = fromList [ Write ] }
+  )
+, ( Name { unName = "update" }
+  , Sig [] TVoid
+  , Effects
+      { effectSet = fromList [ Write , WriteVar Name { unName = "q" } ] }
+  )
+, ( Name { unName = "f" }
+  , Sig [ TInt , TBool ] TVoid
+  , Effects { effectSet = fromList [] }
+  )
 , ( Name { unName = "g" }
   , Sig [ TAsset TDiscrete , TAccount ] TVoid
-  , ReadWrite
+  , Effects { effectSet = fromList [ Write , Read ] }
   )
 , ( Name { unName = "circulate" }
   , Sig [ TAsset (TFractional Prec2) , TFixed Prec2 ] TVoid
-  , Write
+  , Effects { effectSet = fromList [ Write ] }
   )
 , ( Name { unName = "transfer" }
   , Sig [ TAsset TBinary , TAccount , TAccount , TBool ] TAny
-  , Write
+  , Effects { effectSet = fromList [ Write ] }
   )
 ]

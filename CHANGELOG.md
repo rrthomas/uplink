@@ -1,6 +1,20 @@
 Changelog
 ========
 
+1.7
+---
+
+*June 20, 2018*
+
+* Add support for TLS on top of TCP transport layer
+* Make transport layer configurable: TCP, TCP/TLS, or in-memory 
+* Add more robust supervision and recovery of Uplink Processes
+* FCL: Added Helper functions 
+* FCL: Disallow global variable name shadowing
+* FCL: Added generic collection values and higher-order primops operating over
+  collections
+* Bug fixes
+
 1.6
 ---
 
