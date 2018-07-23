@@ -105,7 +105,7 @@ jobs:
           name: Clone sdks
           command: |
             ssh-keyscan github.com >> ~/.ssh/known_hosts
-            git clone git@github.com:adjoint-io/uplink-sdk-py.git
+            git clone git@github.com:adjoint-io/uplink-sdk-python.git
       - run:
           name: Run python sdk integration tests
           command: |
