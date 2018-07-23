@@ -51,6 +51,7 @@ jobs:
              stack upgrade
              mv /root/.local/bin/stack /usr/local/bin/stack
              stack install --no-docker --only-dependencies -j2 --system-ghc --
+             stack test --no-docker --only-dependencies -j2 --system-ghc --
       - save_cache:
           key: uplink-{{ .Branch }}-{{ checksum "package.yaml" }}
           paths:
@@ -60,7 +61,7 @@ jobs:
           name: Build uplink
           command: |
             ./tools/mksettings.sh
-            stack build --no-docker --system-ghc --test --copy-bins
+            stack install --no-docker --system-ghc --test --fast 
       - run:
           name: Copy uplink binary to local dir
           command: |
@@ -104,7 +105,7 @@ jobs:
           name: Clone sdks
           command: |
             ssh-keyscan github.com >> ~/.ssh/known_hosts
-            git clone git@github.com:adjoint-io/uplink-sdk-python.git
+            git clone git@github.com:adjoint-io/uplink-sdk-py.git
       - run:
           name: Run python sdk integration tests
           command: |

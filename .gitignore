@@ -13,7 +13,6 @@ venv
 *.glob
 *.log
 
-*.pem
 *.csr
 
 *.deb
@@ -29,3 +28,9 @@ packages/debian/uplink/
 packages/debian/uplink/
 packages/debian/uplink-1.0/
 packages/debian/uplink-1.0/
+
+uplink.cabal
+
+uplink*/
+node*/
+tmp/

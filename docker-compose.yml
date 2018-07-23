@@ -1,0 +1,74 @@
+version: '3'
+services:
+
+  bootnode:
+    build: .
+    entrypoint: bash -c "uplink chain   -c config/bootnode.config.local.docker --test -v -k config/validators/auth0/key"
+    ports:
+      - "8545:8545"
+      - "8001:8001"
+    volumes:
+      - ./.stack-work/:/usr/src/app
+      - ./config/:/usr/src/app/config/
+
+  uplink:
+    build: .
+    entrypoint: bash -c " yes n | uplink chain  -v -c config/node.config.local.docker "
+    depends_on:
+      - bootnode
+    volumes:
+      - ./.stack-work/:/usr/src/app
+      - ./config/:/usr/src/app/config/
+
+
+  uplink-repl:
+    build: .
+    entrypoint: bash -c "uplink chain -c config/node.config.local.docker --test"
+    depends_on:
+      - bootnode
+    stdin_open: true
+    tty: true
+
+  validator-1:
+    build: .
+    entrypoint: bash -c "uplink chain  -v -c config/node.config.local.docker -k config/validators/auth1/key --test"
+    depends_on:
+      - bootnode
+
+  validator-2:
+    build: .
+    entrypoint: bash -c "uplink chain  -v -c config/node.config.local.docker -k config/validators/auth2/key --test"
+    depends_on:
+      - bootnode
+
+  validator-3:
+    build: .
+    entrypoint: bash -c "uplink chain  -v -c config/node.config.local.docker -k config/validators/auth3/key --test"
+    depends_on:
+      - bootnode
+  validator-4:
+    build: .
+    entrypoint: bash -c "uplink chain  -v -c config/node.config.local.docker -k config/validators/auth4/key --test"
+    depends_on:
+      - bootnode
+
+
+
+
+
+
+  # integration-tests-sdk-py:
+  #   build: sdks/uplink-sdk-py/
+  #   entrypoint: echo "Not in integration test mode, exiting. If you wish to run the integration tests, bring it up with -f docker-compose.yml -f docker-compose.integration-tests.yml"
+  #   depends_on:
+  #     - bootnode
+
+  uplink-explorer:
+    image: eu.gcr.io/uplink-test-cluster-174313/uplink-explorer:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - bootnode
+    environment:
+      - HOST=bootnode
+
