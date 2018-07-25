@@ -1,0 +1,31 @@
+version: '3'
+services:
+
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: postgres 
+
+  bootnode:
+    image: uplink
+    container_name: bootnode_container
+    entrypoint : bash -c "mkdir -p logs; touch logs/some.log; sleep 3; uplink chain init -c config/bootnode.config.local.docker -b 'postgresql://postgres:postgres@postgres:5432/uplink' -v -k config/validators/auth0/key --test -g config/chain.config.integration_tests"
+    depends_on:
+      - postgres
+  
+  validator:
+    image: uplink
+    container_name: validator_container
+    entrypoint: bash -c "mkdir -p logs; sleep 5; uplink chain init -c config/bootnode.config.local.docker -v -k config/validators/auth1/key --test -g config/chain.config.integration_tests"
+    depends_on: 
+    - bootnode 
+  
+  integration-tests-sdk-py:
+    build: uplink-sdk-py/ 
+    entrypoint: bash -c "sleep 7; pytest -vv -s integration_tests"
+    environment:
+      - RPC_HOST=bootnode
+    depends_on:
+      - bootnode
+      - validator
+  
