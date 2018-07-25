@@ -21,7 +21,7 @@ services:
     - bootnode 
   
   integration-tests-sdk-py:
-    build: uplink-sdk-py/ 
+    build: uplink-sdk-python/ 
     entrypoint: bash -c "sleep 7; pytest -vv -s integration_tests"
     environment:
       - RPC_HOST=bootnode
