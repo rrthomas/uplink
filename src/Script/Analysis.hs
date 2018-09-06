@@ -417,7 +417,7 @@ graphviz scr = Text.unlines
       edgeLabelTxt (LegalEdge l)
           ="[ label = " <> unName l <> " ]"
 
--- | Run "circo" on the graphviz output of an FCL script.
+-- | Run "dot" on the graphviz output of an FCL script.
 testVis :: Script -> IO ()
 testVis scr = do
   let dat = graphviz scr
