@@ -59,7 +59,7 @@ data AssetOp
   | TransferFrom {
       asset    :: Address AAsset    -- ^ Asset to transfer
     , amount   :: Int64             -- ^ Amount
-    , to       :: Address AAccount  -- ^ Receipient
+    , to       :: Address AAccount  -- ^ Recipient
     , contract :: Address AContract -- ^ Contract address
   } -- ^ Transfer holdings from contract to account
 
@@ -67,7 +67,7 @@ data AssetOp
       from   :: Address AAccount  -- ^ Sender
     , asset  :: Address AAsset    -- ^ Asset to transfer
     , amount :: Int64             -- ^ Amount
-    , to     :: Address AAccount  -- ^ Receipient
+    , to     :: Address AAccount  -- ^ Recipient
   } -- ^ Transfer holdings from account to account
 
   | Revert {
